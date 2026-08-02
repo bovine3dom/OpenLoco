@@ -98,6 +98,17 @@ namespace OpenLoco
             }
             return static_cast<T>(value >> level);
         }
+
+        template<typename T>
+        constexpr T applyInversedToCeil(const T value) const
+        {
+            if (level <= 0)
+            {
+                return applyInversedTo(value);
+            }
+            const auto divisor = static_cast<T>(1U << level);
+            return static_cast<T>(value / divisor + (value % divisor > 0 ? 1 : 0));
+        }
     };
 #pragma pack(pop)
 

@@ -242,8 +242,8 @@ namespace OpenLoco::Paint
         void drawStringStructs(Gfx::DrawingContext& drawingCtx);
 
         [[nodiscard]] Ui::ViewportInteraction::InteractionArg getNormalInteractionInfo(const Ui::ViewportInteraction::InteractionItemFlags flags) const;
-        [[nodiscard]] Ui::ViewportInteraction::InteractionArg getStationNameInteractionInfo(const Ui::ViewportInteraction::InteractionItemFlags flags) const;
-        [[nodiscard]] Ui::ViewportInteraction::InteractionArg getTownNameInteractionInfo(const Ui::ViewportInteraction::InteractionItemFlags flags) const;
+        [[nodiscard]] Ui::ViewportInteraction::InteractionArg getStationNameInteractionInfo(const Ui::ViewportInteraction::InteractionItemFlags flags, const Ui::Viewport& viewport, Ui::Point uiPosition) const;
+        [[nodiscard]] Ui::ViewportInteraction::InteractionArg getTownNameInteractionInfo(const Ui::ViewportInteraction::InteractionItemFlags flags, const Ui::Viewport& viewport, Ui::Point uiPosition) const;
         const Gfx::RenderTarget* getRenderTarget() const { return _renderTarget; }
         ZoomLevel getZoom() const { return _zoom; }
         int32_t getWorldX() const;

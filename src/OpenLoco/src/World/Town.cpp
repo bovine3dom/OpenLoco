@@ -86,6 +86,18 @@ namespace OpenLoco
         Gfx::Font::medium_normal,
     };
 
+    void Town::drawLabelAt(Gfx::DrawingContext& drawingCtx, ZoomLevel zoom, const Ui::Point& topLeft)
+    {
+        auto tr = Gfx::TextRenderer(drawingCtx);
+
+        char buffer[512]{};
+        StringManager::formatString(buffer, name);
+        tr.setCurrentFont(kZoomToTownFonts[zoom.index()]);
+
+        auto point = topLeft + Ui::Point(1, 1);
+        tr.drawString(point, AdvancedColour(Colour::white).outline(), buffer);
+    }
+
     void Town::drawLabel(Gfx::DrawingContext& drawingCtx, ZoomLevel zoom)
     {
         const auto& rt = drawingCtx.currentRenderTarget();
@@ -94,14 +106,7 @@ namespace OpenLoco
             return;
         }
 
-        auto tr = Gfx::TextRenderer(drawingCtx);
-
-        char buffer[512]{};
-        StringManager::formatString(buffer, name);
-        tr.setCurrentFont(kZoomToTownFonts[zoom.index()]);
-
-        auto point = Ui::Point(labelFrame.left[zoom.index()] + 1, labelFrame.top[zoom.index()] + 1);
-        tr.drawString(point, AdvancedColour(Colour::white).outline(), buffer);
+        drawLabelAt(drawingCtx, zoom, { labelFrame.left[zoom.index()], labelFrame.top[zoom.index()] });
     }
 
     // 0x00497616

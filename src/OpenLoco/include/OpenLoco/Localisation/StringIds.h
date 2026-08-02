@@ -2178,6 +2178,8 @@ namespace OpenLoco::StringIds
     constexpr StringId scalingModeSharp = 2462;
     constexpr StringId scalingModeMmpx = 2463;
     constexpr StringId scalingModeHqx = 2464;
+    constexpr StringId nativeViewportRendering = 2465;
+    constexpr StringId nativeViewportRenderingTooltip = 2466;
 
     constexpr StringId temporary_object_load_str_0 = 8192;
     constexpr StringId temporary_object_load_str_1 = 8193;

@@ -4,6 +4,12 @@
 #include "Ui/WindowManager.h"
 #include <OpenLoco/Core/EnumFlags.hpp>
 #include <OpenLoco/Engine/Ui/Point.hpp>
+#include <optional>
+
+namespace OpenLoco::Ui
+{
+    struct Viewport;
+}
 
 namespace OpenLoco::Input
 {
@@ -110,9 +116,10 @@ namespace OpenLoco::Input
     void handleMouse(int32_t x, int32_t y, MouseButton button);
     MouseButton getLastKnownButtonState();
     // Sets the current coordinates of the mouse position and accumulates the relative movement.
-    void moveMouse(int32_t x, int32_t y, int32_t relX, int32_t relY);
+    void moveMouse(int32_t x, int32_t y, int32_t relX, int32_t relY, Ui::Point outputPosition);
     // Applies the accumulated mouse position changes.
     void processMouseMovement();
+    void refreshMouseLocation();
     // Inputs the mouse wheel delta.
     void mouseWheel(int wheel);
     // Processes the mouse wheel delta.
@@ -120,6 +127,7 @@ namespace OpenLoco::Input
     void startCursorDrag();
     void stopCursorDrag();
     Ui::Point getNextDragOffset();
+    Ui::Point getNextViewportDragOffset(const Ui::Viewport& viewport);
     void processMouseOver(int32_t x, int32_t y);
     void processKeyboardInput();
 
@@ -141,10 +149,12 @@ namespace OpenLoco::Input
     struct QueuedMouseInput
     {
         Ui::Point pos;
+        Ui::Point outputPos;
         uint32_t button;
     };
     void enqueueMouseButton(const QueuedMouseInput& input);
     MouseButton nextMouseInput(int32_t& x, int32_t& y);
+    std::optional<Ui::Point> getMouseLocationOutput(const Ui::Point& uiPosition);
 
     Ui::WindowType getPressedWindowType();
     void setPressedWindowType(Ui::WindowType wndType);

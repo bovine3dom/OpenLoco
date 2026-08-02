@@ -13,6 +13,7 @@ namespace OpenLoco::Input
     static Flags _flags;
     static State _state;
     static Ui::Point _cursorDragStart;
+    static Ui::Point _cursorDragStartOutput;
     static uint32_t _cursorDragState;
     static bool _exitRequested = false;
 
@@ -55,6 +56,7 @@ namespace OpenLoco::Input
             _cursorDragState = 1;
             auto cursor = Ui::getCursorPos();
             _cursorDragStart = cursor;
+            _cursorDragStartOutput = Ui::getCursorPosOutput();
             Ui::hideCursor();
         }
     }
@@ -74,15 +76,33 @@ namespace OpenLoco::Input
     {
         auto current = Ui::getCursorPos();
 
-        auto delta = current - _cursorDragStart;
+        auto delta = Ui::windowToUi(current) - Ui::windowToUi(_cursorDragStart);
 
         Ui::setCursorPos(_cursorDragStart.x, _cursorDragStart.y);
 
-        auto scale = Config::get().scaleFactor;
-        delta.x /= scale;
-        delta.y /= scale;
-
         return { static_cast<int16_t>(delta.x), static_cast<int16_t>(delta.y) };
+    }
+
+    Ui::Point getNextViewportDragOffset(const Ui::Viewport& viewport)
+    {
+        const auto current = Ui::getCursorPos();
+        const auto usesOutputCoordinates = viewport.rasterWidth != viewport.width || viewport.rasterHeight != viewport.height;
+        Ui::Point delta;
+        if (usesOutputCoordinates)
+        {
+            delta = Ui::getCursorPosOutput() - _cursorDragStartOutput;
+        }
+        else
+        {
+            delta = viewport.uiToRaster(Ui::windowToUi(current) - Ui::windowToUi(_cursorDragStart));
+        }
+
+        Ui::setCursorPos(_cursorDragStart.x, _cursorDragStart.y);
+        if (usesOutputCoordinates)
+        {
+            _cursorDragStartOutput = Ui::windowToOutput(static_cast<float>(_cursorDragStart.x), static_cast<float>(_cursorDragStart.y));
+        }
+        return delta;
     }
 
     // 0x004072EC
@@ -138,12 +158,9 @@ namespace OpenLoco::Input
 
                 case SDL_EVENT_MOUSE_MOTION:
                 {
-                    auto scaleFactor = Config::get().scaleFactor;
-                    auto x = static_cast<int32_t>(e.motion.x / scaleFactor);
-                    auto y = static_cast<int32_t>(e.motion.y / scaleFactor);
-                    auto xrel = static_cast<int32_t>(e.motion.xrel / scaleFactor);
-                    auto yrel = static_cast<int32_t>(e.motion.yrel / scaleFactor);
-                    moveMouse(x, y, xrel, yrel);
+                    const auto position = Ui::windowToUi(e.motion.x, e.motion.y);
+                    const auto previous = Ui::windowToUi(e.motion.x - e.motion.xrel, e.motion.y - e.motion.yrel);
+                    moveMouse(position.x, position.y, position.x - previous.x, position.y - previous.y, Ui::windowToOutput(e.motion.x, e.motion.y));
                     break;
                 }
                 case SDL_EVENT_MOUSE_WHEEL:
@@ -151,17 +168,16 @@ namespace OpenLoco::Input
                     break;
                 case SDL_EVENT_MOUSE_BUTTON_DOWN:
                 {
-                    auto scaleFactor = Config::get().scaleFactor;
-                    const auto x = static_cast<int32_t>(e.button.x / scaleFactor);
-                    const auto y = static_cast<int32_t>(e.button.y / scaleFactor);
+                    const auto position = Ui::windowToUi(e.button.x, e.button.y);
+                    const auto outputPosition = Ui::windowToOutput(e.button.x, e.button.y);
                     setPendingMouseInputUpdate();
                     switch (e.button.button)
                     {
                         case SDL_BUTTON_LEFT:
-                            enqueueMouseButton({ { x, y }, 1 });
+                            enqueueMouseButton({ position, outputPosition, 1 });
                             break;
                         case SDL_BUTTON_RIGHT:
-                            enqueueMouseButton({ { x, y }, 2 });
+                            enqueueMouseButton({ position, outputPosition, 2 });
                             setRightMouseButtonDown(true);
                             break;
                     }
@@ -169,17 +185,16 @@ namespace OpenLoco::Input
                 }
                 case SDL_EVENT_MOUSE_BUTTON_UP:
                 {
-                    auto scaleFactor = Config::get().scaleFactor;
-                    const auto x = static_cast<int32_t>(e.button.x / scaleFactor);
-                    const auto y = static_cast<int32_t>(e.button.y / scaleFactor);
+                    const auto position = Ui::windowToUi(e.button.x, e.button.y);
+                    const auto outputPosition = Ui::windowToOutput(e.button.x, e.button.y);
                     setPendingMouseInputUpdate();
                     switch (e.button.button)
                     {
                         case SDL_BUTTON_LEFT:
-                            enqueueMouseButton({ { x, y }, 3 });
+                            enqueueMouseButton({ position, outputPosition, 3 });
                             break;
                         case SDL_BUTTON_RIGHT:
-                            enqueueMouseButton({ { x, y }, 4 });
+                            enqueueMouseButton({ position, outputPosition, 4 });
                             setRightMouseButtonDown(false);
                             break;
                     }

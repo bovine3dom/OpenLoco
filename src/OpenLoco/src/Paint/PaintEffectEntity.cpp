@@ -8,17 +8,23 @@
 #include "Effects/SmokeEffect.h"
 #include "Effects/SplashEffect.h"
 #include "Effects/VehicleCrashEffect.h"
+#include "Entities/EntityManager.h"
 #include "Graphics/Gfx.h"
 #include "Graphics/ImageIds.h"
 #include "Graphics/RenderTarget.h"
+#include "Graphics/TextRenderer.h"
+#include "Localisation/FormatArguments.hpp"
+#include "Localisation/Formatting.h"
 #include "Localisation/StringIds.h"
 #include "Map/Tile.h"
 #include "Objects/SteamObject.h"
 #include "Paint/Paint.h"
+#include "Ui/WindowManager.h"
 #include "World/CompanyManager.h"
 
 #include <array>
 #include <cassert>
+#include <cstdlib>
 
 namespace OpenLoco::Paint
 {
@@ -48,6 +54,61 @@ namespace OpenLoco::Paint
         0, 1, 2, 2, 3, 3, 3, 3, 2, 2, 1, 0, -1, -2, -2, -3, -3, -2, -2, -1,
     };
     // clang-format on
+
+    void drawMoneyEffects(Gfx::DrawingContext& drawingCtx, const Ui::Viewport& viewport)
+    {
+        if (viewport.zoom > ZoomLevel::half || Config::get().vehiclesMinScale < viewport.zoom)
+        {
+            return;
+        }
+
+        auto tr = Gfx::TextRenderer(drawingCtx);
+        tr.setCurrentFont(viewport.zoom <= ZoomLevel::full ? Gfx::Font::medium_bold : Gfx::Font::small);
+
+        for (const auto* entity : EntityManager::EntityList<EntityManager::EntityListIterator<EntityBase>, EntityManager::EntityListType::misc>())
+        {
+            const auto* effect = entity->asBase<EffectEntity>();
+            if (effect == nullptr)
+            {
+                continue;
+            }
+
+            const auto isWindowCurrency = effect->getSubType() == EffectType::windowCurrency;
+            if ((!isWindowCurrency && effect->getSubType() != EffectType::redGreenCurrency)
+                || (isWindowCurrency && !Config::get().cashPopupRendering))
+            {
+                continue;
+            }
+
+            const auto* money = static_cast<const MoneyEffect*>(effect);
+            const auto stringId = isWindowCurrency
+                ? (money->amount >= 0 ? StringIds::format_currency_income_in_company_colour : StringIds::format_currency_expense_in_company_colour_negative)
+                : (money->amount >= 0 ? StringIds::format_currency_income_green : StringIds::format_currency_expense_red_negative);
+            const auto amount = static_cast<uint32_t>(std::abs(static_cast<int64_t>(money->amount)));
+
+            char buffer[512]{};
+            FormatArguments args{};
+            args.push(amount);
+            StringManager::formatString(buffer, stringId, args);
+
+            if (isWindowCurrency)
+            {
+                const auto colour = AdvancedColour(CompanyManager::getCompanyColour(money->var_2E));
+                Ui::WindowManager::setWindowColours(Ui::WindowColour::primary, colour);
+                Ui::WindowManager::setWindowColours(Ui::WindowColour::secondary, colour);
+            }
+
+            auto worldPosition = World::gameToScreen(money->position, viewport.getRotation());
+            worldPosition.x += money->offsetX;
+            auto position = viewport.rasterToUiNearest({
+                                viewport.zoom.applyInversedTo(worldPosition.x) - viewport.zoom.applyInversedTo(viewport.viewX),
+                                viewport.zoom.applyInversedTo(worldPosition.y) - viewport.zoom.applyInversedTo(viewport.viewY),
+                            })
+                + Ui::Point{ viewport.x, viewport.y };
+            position.x -= tr.getStringWidth(buffer) / 2;
+            tr.drawStringYOffsets(position, Colour::black, buffer, &kWiggleYOffsets[money->wiggle]);
+        }
+    }
 
     // 0x00440331
     static void paintExhaustEntity(PaintSession& session, Exhaust* exhaustEntity)

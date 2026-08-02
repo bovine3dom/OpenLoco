@@ -413,16 +413,67 @@ namespace OpenLoco::Ui
         return _currentCursor;
     }
 
+    Point windowToUi(const Point& point)
+    {
+        return windowToUi(static_cast<float>(point.x), static_cast<float>(point.y));
+    }
+
+    Point windowToUi(const float x, const float y)
+    {
+        int32_t windowWidth = 0;
+        int32_t windowHeight = 0;
+        SDL_GetWindowSize(_window, &windowWidth, &windowHeight);
+        return {
+            windowWidth == 0 ? 0 : static_cast<int32_t>(x * width() / windowWidth),
+            windowHeight == 0 ? 0 : static_cast<int32_t>(y * height() / windowHeight),
+        };
+    }
+
+    Point windowToOutput(const float x, const float y)
+    {
+        int32_t windowWidth = 0;
+        int32_t windowHeight = 0;
+        SDL_GetWindowSize(_window, &windowWidth, &windowHeight);
+        const auto outputSize = Gfx::getDrawingEngine().getOutputSize();
+        return {
+            windowWidth == 0 ? 0 : static_cast<int32_t>(x * outputSize.width / windowWidth),
+            windowHeight == 0 ? 0 : static_cast<int32_t>(y * outputSize.height / windowHeight),
+        };
+    }
+
+    Point uiToWindow(const Point& point)
+    {
+        int32_t windowWidth = 0;
+        int32_t windowHeight = 0;
+        SDL_GetWindowSize(_window, &windowWidth, &windowHeight);
+        return {
+            width() == 0 ? 0 : static_cast<int32_t>(static_cast<int64_t>(point.x) * windowWidth / width()),
+            height() == 0 ? 0 : static_cast<int32_t>(static_cast<int64_t>(point.y) * windowHeight / height()),
+        };
+    }
+
+    Point uiToOutput(const Point& point)
+    {
+        const auto outputSize = Gfx::getDrawingEngine().getOutputSize();
+        return {
+            width() == 0 ? 0 : static_cast<int32_t>(static_cast<int64_t>(point.x) * outputSize.width / width()),
+            height() == 0 ? 0 : static_cast<int32_t>(static_cast<int64_t>(point.y) * outputSize.height / height()),
+        };
+    }
+
     // 0x00407FCD
     Point getCursorPosScaled()
     {
-        auto unscaledPos = getCursorPos();
+        float x = 0, y = 0;
+        SDL_GetMouseState(&x, &y);
+        return windowToUi(x, y);
+    }
 
-        auto scale = Config::get().scaleFactor;
-
-        auto x = unscaledPos.x / scale;
-        auto y = unscaledPos.y / scale;
-        return { static_cast<int32_t>(std::round(x)), static_cast<int32_t>(std::round(y)) };
+    Point getCursorPosOutput()
+    {
+        float x = 0, y = 0;
+        SDL_GetMouseState(&x, &y);
+        return windowToOutput(x, y);
     }
 
     Point getCursorPos()
@@ -435,10 +486,8 @@ namespace OpenLoco::Ui
     // 0x00407FEE
     void setCursorPosScaled(int32_t scaledX, int32_t scaledY)
     {
-        auto scale = Config::get().scaleFactor;
-        auto unscaledX = scaledX * scale;
-        auto unscaledY = scaledY * scale;
-        setCursorPos(unscaledX, unscaledY);
+        const auto windowPos = uiToWindow({ scaledX, scaledY });
+        setCursorPos(windowPos.x, windowPos.y);
     }
 
     void setCursorPos(int32_t x, int32_t y)
@@ -489,6 +538,7 @@ namespace OpenLoco::Ui
 
         Gui::resize();
         Gfx::invalidateScreen();
+        Input::refreshMouseLocation();
 
         if (Tutorial::state() != Tutorial::State::none)
         {

@@ -21,12 +21,9 @@ namespace OpenLoco::Scenario
         Ui::Viewport saveVp{};
         saveVp.x = 0;
         saveVp.y = 0;
-        saveVp.width = size.width;
-        saveVp.height = size.height;
         saveVp.flags = Ui::ViewportFlags::hideTownNames | Ui::ViewportFlags::hideStationNames;
         saveVp.zoom = ZoomLevel::half;
-        saveVp.viewWidth = saveVp.zoom.applyTo(size.width);
-        saveVp.viewHeight = saveVp.zoom.applyTo(size.height);
+        saveVp.setDimensions(size, size);
 
         const auto viewPos = saveVp.centre2dCoordinates(mapPosXYZ);
         saveVp.viewX = viewPos.x;

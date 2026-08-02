@@ -64,6 +64,19 @@ using namespace OpenLoco::World;
 
 namespace OpenLoco::Ui::ViewportInteraction
 {
+    viewport_pos screenToViewport(const Point& screenPosition, const Window& owner, const Viewport& viewport)
+    {
+        if (viewport.rasterWidth != viewport.width || viewport.rasterHeight != viewport.height)
+        {
+            if (const auto outputPosition = Input::getMouseLocationOutput(screenPosition); outputPosition.has_value())
+            {
+                const auto outputOrigin = Ui::uiToOutput(owner.position() + Point{ viewport.x, viewport.y });
+                return viewport.rasterToViewport(*outputPosition - outputOrigin);
+            }
+        }
+        return viewport.windowToViewport(screenPosition - owner.position());
+    }
+
     InteractionArg::InteractionArg(const Paint::PaintStruct& ps)
         : pos(ps.mapPos)
         , object(ps.entity)
@@ -457,7 +470,7 @@ namespace OpenLoco::Ui::ViewportInteraction
 
         uint32_t nearestDistance = std::numeric_limits<uint32_t>().max();
         Vehicles::VehicleBase* nearestVehicle = nullptr;
-        auto targetPosition = viewport->windowToViewport(Ui::Point(tempX, tempY) - window->position());
+        auto targetPosition = screenToViewport({ tempX, tempY }, *window, *viewport);
 
         for (auto* v : VehicleManager::VehicleList())
         {
@@ -1512,7 +1525,8 @@ namespace OpenLoco::Ui::ViewportInteraction
             }
 
             chosenV = vp;
-            auto vpPos = vp->windowToViewport(screenPos - w->position());
+            const auto windowPosition = screenPos - w->position();
+            auto vpPos = screenToViewport(screenPos, *w, *vp);
 
             const int32_t alignMask = vp->zoom > ZoomLevel::full ? ~(vp->zoom.applyTo(1) - 1) : ~0;
 
@@ -1540,7 +1554,7 @@ namespace OpenLoco::Ui::ViewportInteraction
             {
                 if (vp->zoom <= Config::get().stationNamesMinScale)
                 {
-                    auto stationInteraction = session.getStationNameInteractionInfo(flags);
+                    auto stationInteraction = session.getStationNameInteractionInfo(flags, *vp, windowPosition);
                     if (stationInteraction.type != InteractionItem::noInteraction)
                     {
                         interaction = stationInteraction;
@@ -1549,7 +1563,7 @@ namespace OpenLoco::Ui::ViewportInteraction
             }
             if (!vp->hasFlags(ViewportFlags::hideTownNames))
             {
-                auto townInteraction = session.getTownNameInteractionInfo(flags);
+                auto townInteraction = session.getTownNameInteractionInfo(flags, *vp, windowPosition);
                 if (townInteraction.type != InteractionItem::noInteraction)
                 {
                     interaction = townInteraction;
@@ -1598,7 +1612,7 @@ namespace OpenLoco::Ui::ViewportInteraction
         const auto minPosition = info.pos;                  // E40128/A
         const auto maxPosition = info.pos + Pos2{ 31, 31 }; // E4012C/E
         auto mapPos = info.pos + Pos2{ 16, 16 };
-        const auto initialVPPos = viewport->windowToViewport(screenCoords - vpOwner->position());
+        const auto initialVPPos = screenToViewport(screenCoords, *vpOwner, *viewport);
 
         for (int32_t i = 0; i < 5; i++)
         {
@@ -1637,7 +1651,7 @@ namespace OpenLoco::Ui::ViewportInteraction
         const auto minPosition = info.pos;                  // E40128/A
         const auto maxPosition = info.pos + Pos2{ 31, 31 }; // E4012C/E
         auto mapPos = info.pos + Pos2{ 16, 16 };
-        const auto initialVPPos = viewport->windowToViewport(screenCoords - vpOwner->position());
+        const auto initialVPPos = screenToViewport(screenCoords, *vpOwner, *viewport);
 
         for (int32_t i = 0; i < 5; i++)
         {

@@ -1915,4 +1915,25 @@ namespace OpenLoco::Ui::WindowManager
             windowDraw(drawingCtx, &w, rect);
         }
     }
+
+    void renderUi(Gfx::DrawingContext& drawingCtx, const Rect& rect, bool noBackgroundOnly)
+    {
+        for (auto& window : _windows)
+        {
+            if (window.type == WindowType::main || !window.isVisible())
+            {
+                continue;
+            }
+            if (noBackgroundOnly && !window.hasFlags(WindowFlags::noBackground))
+            {
+                continue;
+            }
+
+            const auto clipped = rect.intersection(Ui::Rect(window.x, window.y, window.width, window.height));
+            if (clipped.width() > 0 && clipped.height() > 0)
+            {
+                drawSingle(drawingCtx, &window, clipped.left(), clipped.top(), clipped.right(), clipped.bottom());
+            }
+        }
+    }
 }

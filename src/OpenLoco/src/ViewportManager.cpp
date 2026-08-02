@@ -76,12 +76,8 @@ namespace OpenLoco::Ui::ViewportManager
 
         vp->x = origin.x;
         vp->y = origin.y;
-        vp->width = size.width;
-        vp->height = size.height;
-
-        vp->viewWidth = zoom.applyTo(size.width);
-        vp->viewHeight = zoom.applyTo(size.height);
         vp->zoom = zoom;
+        vp->setDimensions(size, size);
         vp->flags = ViewportFlags::none;
 
         if (Config::get().gridlinesOnLandscape)
@@ -208,16 +204,23 @@ namespace OpenLoco::Ui::ViewportManager
                 auto intersection = viewport->getIntersection(rect);
 
                 // offset rect by (negative) viewport origin
-                int16_t left = intersection.left - viewport->viewX;
-                int16_t right = intersection.right - viewport->viewX;
-                int16_t top = intersection.top - viewport->viewY;
-                int16_t bottom = intersection.bottom - viewport->viewY;
+                int32_t left = intersection.left - viewport->viewX;
+                int32_t right = intersection.right - viewport->viewX;
+                int32_t top = intersection.top - viewport->viewY;
+                int32_t bottom = intersection.bottom - viewport->viewY;
 
                 // apply zoom
                 left = viewport->zoom.applyInversedTo(left);
-                right = viewport->zoom.applyInversedTo(right);
+                right = viewport->zoom.applyInversedToCeil(right);
                 top = viewport->zoom.applyInversedTo(top);
-                bottom = viewport->zoom.applyInversedTo(bottom);
+                bottom = viewport->zoom.applyInversedToCeil(bottom);
+
+                const auto uiTopLeft = viewport->rasterToUi({ left, top });
+                const auto uiBottomRight = viewport->rasterToUiCeil({ right, bottom });
+                left = uiTopLeft.x;
+                top = uiTopLeft.y;
+                right = uiBottomRight.x;
+                bottom = uiBottomRight.y;
 
                 // offset calculated area by viewport offset
                 left += viewport->x + window->x;
@@ -258,16 +261,23 @@ namespace OpenLoco::Ui::ViewportManager
                 auto intersection = viewport->getIntersection(rect);
 
                 // offset rect by (negative) viewport origin
-                int16_t left = intersection.left - viewport->viewX;
-                int16_t right = intersection.right - viewport->viewX;
-                int16_t top = intersection.top - viewport->viewY;
-                int16_t bottom = intersection.bottom - viewport->viewY;
+                int32_t left = intersection.left - viewport->viewX;
+                int32_t right = intersection.right - viewport->viewX;
+                int32_t top = intersection.top - viewport->viewY;
+                int32_t bottom = intersection.bottom - viewport->viewY;
 
                 // apply zoom
                 left = viewport->zoom.applyInversedTo(left);
-                right = viewport->zoom.applyInversedTo(right);
+                right = viewport->zoom.applyInversedToCeil(right);
                 top = viewport->zoom.applyInversedTo(top);
-                bottom = viewport->zoom.applyInversedTo(bottom);
+                bottom = viewport->zoom.applyInversedToCeil(bottom);
+
+                const auto uiTopLeft = viewport->rasterToUi({ left, top });
+                const auto uiBottomRight = viewport->rasterToUiCeil({ right, bottom });
+                left = uiTopLeft.x;
+                top = uiTopLeft.y;
+                right = uiBottomRight.x;
+                bottom = uiBottomRight.y;
 
                 // offset calculated area by viewport offset
                 left += viewport->x + window->x;

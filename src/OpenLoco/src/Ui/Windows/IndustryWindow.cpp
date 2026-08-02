@@ -233,10 +233,7 @@ namespace OpenLoco::Ui::Windows::Industry
                 auto& viewport = self.viewports[0];
                 if (newWidth != viewport->width || newHeight != viewport->height)
                 {
-                    viewport->width = newWidth;
-                    viewport->height = newHeight;
-                    viewport->viewWidth = viewport->zoom.applyTo(newWidth);
-                    viewport->viewHeight = viewport->zoom.applyTo(newHeight);
+                    viewport->setDimensions({ newWidth, newHeight }, { newWidth, newHeight });
                     self.savedView.clear();
                 }
             }

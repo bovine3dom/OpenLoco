@@ -101,7 +101,13 @@ namespace OpenLoco::Ui
     void disposeCursors();
     void setCursor(CursorId id);
     CursorId getCursor();
+    Point windowToUi(const Point& point);
+    Point windowToUi(float x, float y);
+    Point windowToOutput(float x, float y);
+    Point uiToWindow(const Point& point);
+    Point uiToOutput(const Point& point);
     Point getCursorPosScaled();
+    Point getCursorPosOutput();
     Point getCursorPos();
     void setCursorPosScaled(int32_t scaledX, int32_t scaledY);
     void setCursorPos(int32_t x, int32_t y);

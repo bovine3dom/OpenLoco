@@ -627,7 +627,6 @@ namespace OpenLoco::Paint
         ps->vpPos = { vpPos.x, vpPos.y };
         ps->bounds.mins = rotBoundBoxOffset + World::Pos3{ spritePos.x, spritePos.y, 0 };
         ps->bounds.maxs = rotBoundBoxOffset + rotBoundBoxSize + World::Pos3{ spritePos.x, spritePos.y, 0 };
-        ps->flags = PaintStructFlags::none;
         ps->attachedPS = nullptr;
         ps->children = nullptr;
         ps->type = _itemType;
@@ -1120,10 +1119,8 @@ namespace OpenLoco::Paint
             return;
         }
 
-        const auto zoom = _zoom;
-
         auto tr = Gfx::TextRenderer(drawingCtx);
-        tr.setCurrentFont(zoom <= ZoomLevel::full ? Gfx::Font::medium_bold : Gfx::Font::small);
+        tr.setCurrentFont(_zoom <= ZoomLevel::full ? Gfx::Font::medium_bold : Gfx::Font::small);
 
         char buffer[512]{};
 
@@ -1361,7 +1358,12 @@ namespace OpenLoco::Paint
     }
 
     // 0x0048DDE4
-    [[nodiscard]] InteractionArg PaintSession::getStationNameInteractionInfo(const InteractionItemFlags flags) const
+    static bool contains(const Ui::Rect& rect, Ui::Point point)
+    {
+        return point.x >= rect.left() && point.x < rect.right() && point.y >= rect.top() && point.y < rect.bottom();
+    }
+
+    [[nodiscard]] InteractionArg PaintSession::getStationNameInteractionInfo(const InteractionItemFlags flags, const Ui::Viewport& viewport, Ui::Point uiPosition) const
     {
         InteractionArg interaction{};
 
@@ -1370,8 +1372,6 @@ namespace OpenLoco::Paint
             return interaction;
         }
 
-        auto rect = _renderTarget->getUiRect();
-
         for (auto& station : StationManager::stations())
         {
             if ((station.flags & StationFlags::flag_5) != StationFlags::none)
@@ -1379,7 +1379,7 @@ namespace OpenLoco::Paint
                 continue;
             }
 
-            if (!station.labelFrame.contains(rect, getZoom()))
+            if (!contains(viewport.getUiLabelRect(station.labelFrame), uiPosition))
             {
                 continue;
             }
@@ -1393,7 +1393,7 @@ namespace OpenLoco::Paint
     }
 
     // 0x0049773D
-    [[nodiscard]] InteractionArg PaintSession::getTownNameInteractionInfo(const InteractionItemFlags flags) const
+    [[nodiscard]] InteractionArg PaintSession::getTownNameInteractionInfo(const InteractionItemFlags flags, const Ui::Viewport& viewport, Ui::Point uiPosition) const
     {
         InteractionArg interaction{};
 
@@ -1402,11 +1402,9 @@ namespace OpenLoco::Paint
             return interaction;
         }
 
-        auto rect = _renderTarget->getUiRect();
-
         for (auto& town : TownManager::towns())
         {
-            if (!town.labelFrame.contains(rect, getZoom()))
+            if (!contains(viewport.getUiLabelRect(town.labelFrame), uiPosition))
             {
                 continue;
             }

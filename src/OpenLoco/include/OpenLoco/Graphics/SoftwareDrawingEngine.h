@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <memory>
+#include <vector>
 
 struct SDL_Palette;
 struct SDL_Surface;
@@ -53,6 +54,7 @@ namespace OpenLoco::Gfx
         DrawingContext& getDrawingContext();
 
         const RenderTarget& getScreenRT();
+        const RenderTarget& getScreenshotRT();
 
         // Moves the pixels in the specified render target.
         void movePixels(
@@ -65,12 +67,19 @@ namespace OpenLoco::Gfx
             int16_t srcY);
 
         const Ui::ScreenInfo& getScreenInfo() const;
+        Ui::Size getOutputSize() const;
+        bool hasSeparateWorldResources() const;
+        bool shouldUseSeparateWorld() const;
 
         bool setVSync(bool state);
 
     private:
         void destroyScaledScreenResources();
+        void destroySeparateWorldResources();
         void destroyScreenResources();
+        void renderSeparateWorld();
+        void renderSeparateUi();
+        void presentSeparate();
         void renderDirtyRegions();
 
         SDL_Renderer* _renderer{};
@@ -81,9 +90,17 @@ namespace OpenLoco::Gfx
         SDL_Surface* _scaledScreenRGBASurface{};
         SDL_Surface* _scaledScreenSurface{};
         SDL_Surface* _mmpxIntermediateSurface{};
+        SDL_Surface* _worldSurface{};
+        SDL_Surface* _worldRGBASurface{};
+        SDL_Surface* _uiRGBASurface{};
 
         SDL_Texture* _screenTexture{};
         SDL_Texture* _scaledScreenTexture{};
+        SDL_Texture* _worldTexture{};
+        SDL_Texture* _uiTexture{};
+
+        std::vector<PaletteIndex_t> _uiBase;
+        std::vector<uint8_t> _uiCoverage;
 
         uint8_t _pixelScaleFactor = 1;
 
@@ -91,5 +108,7 @@ namespace OpenLoco::Gfx
         InvalidationGrid _invalidationGrid;
 
         bool _vsync = false;
+        int32_t _outputWidth{};
+        int32_t _outputHeight{};
     };
 }

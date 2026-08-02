@@ -4,7 +4,9 @@
 #include "Graphics/PixelScaling.h"
 #include "Graphics/RenderTarget.h"
 #include "Logging.h"
+#include "SceneManager.h"
 #include "Ui.h"
+#include "Ui/Window.h"
 #include "Ui/WindowManager.h"
 
 #include <SDL3/SDL.h>
@@ -25,8 +27,16 @@ namespace OpenLoco::Gfx
     // TODO: Move into the renderer.
     // 0x0050B884
     static RenderTarget _screenRT{};
+    static RenderTarget _worldRT{};
+    static RenderTarget _screenshotRT{};
+    static std::vector<PaletteIndex_t> _screenshotBuffer;
     // 0x0050B894
     static Ui::ScreenInfo _screenInfo;
+
+    static int32_t sampleNearest(int32_t position, int32_t sourceSize, int32_t destinationSize)
+    {
+        return static_cast<int32_t>((static_cast<int64_t>(position) * 2 + 1) * sourceSize / (static_cast<int64_t>(destinationSize) * 2));
+    }
 
     SoftwareDrawingEngine::SoftwareDrawingEngine()
     {
@@ -51,6 +61,8 @@ namespace OpenLoco::Gfx
 
         delete[] _screenRT.bits;
         _screenRT = {};
+        delete[] _worldRT.bits;
+        _worldRT = {};
     }
 
     void SoftwareDrawingEngine::destroyScaledScreenResources()
@@ -78,9 +90,41 @@ namespace OpenLoco::Gfx
         _pixelScaleFactor = 1;
     }
 
+    void SoftwareDrawingEngine::destroySeparateWorldResources()
+    {
+        if (_uiTexture != nullptr)
+        {
+            SDL_DestroyTexture(_uiTexture);
+            _uiTexture = nullptr;
+        }
+        if (_worldTexture != nullptr)
+        {
+            SDL_DestroyTexture(_worldTexture);
+            _worldTexture = nullptr;
+        }
+        if (_uiRGBASurface != nullptr)
+        {
+            SDL_DestroySurface(_uiRGBASurface);
+            _uiRGBASurface = nullptr;
+        }
+        if (_worldRGBASurface != nullptr)
+        {
+            SDL_DestroySurface(_worldRGBASurface);
+            _worldRGBASurface = nullptr;
+        }
+        if (_worldSurface != nullptr)
+        {
+            SDL_DestroySurface(_worldSurface);
+            _worldSurface = nullptr;
+        }
+        delete[] _worldRT.bits;
+        _worldRT = {};
+    }
+
     void SoftwareDrawingEngine::destroyScreenResources()
     {
         destroyScaledScreenResources();
+        destroySeparateWorldResources();
         if (_screenTexture != nullptr)
         {
             SDL_DestroyTexture(_screenTexture);
@@ -120,6 +164,9 @@ namespace OpenLoco::Gfx
 
     void SoftwareDrawingEngine::resize(const int32_t width, const int32_t height)
     {
+        _outputWidth = width;
+        _outputHeight = height;
+
         // Scale the width and height by configured scale factor
         const auto scaleFactor = Config::get().scaleFactor;
         const auto scaledWidth = std::max(1, static_cast<int32_t>(width / scaleFactor));
@@ -167,7 +214,36 @@ namespace OpenLoco::Gfx
             Logging::error("SDL_SetTextureScaleMode (_screenTexture) failed: {}", SDL_GetError());
         }
 
-        if (scaleFactor > 1.0f)
+        if (Config::get().nativeViewportRendering && scaleFactor > 1.0f)
+        {
+            _worldSurface = SDL_CreateSurface(width, height, SDL_PIXELFORMAT_INDEX8);
+            _worldRGBASurface = SDL_CreateSurface(width, height, outputFormat);
+            _uiRGBASurface = SDL_CreateSurface(scaledWidth, scaledHeight, outputFormat);
+            _worldTexture = SDL_CreateTexture(_renderer, outputFormat, SDL_TEXTUREACCESS_STREAMING, width, height);
+            _uiTexture = SDL_CreateTexture(_renderer, outputFormat, SDL_TEXTUREACCESS_STREAMING, scaledWidth, scaledHeight);
+            if (_worldSurface == nullptr || _worldRGBASurface == nullptr || _uiRGBASurface == nullptr || _worldTexture == nullptr || _uiTexture == nullptr)
+            {
+                Logging::error("Unable to create separate world rendering resources: {}", SDL_GetError());
+                destroySeparateWorldResources();
+            }
+            else
+            {
+                bool configured = true;
+                configured &= SDL_SetSurfacePalette(_worldSurface, _palette);
+                configured &= SDL_SetSurfaceBlendMode(_worldRGBASurface, SDL_BLENDMODE_NONE);
+                configured &= SDL_SetSurfaceBlendMode(_uiRGBASurface, SDL_BLENDMODE_NONE);
+                configured &= SDL_SetTextureScaleMode(_worldTexture, SDL_SCALEMODE_LINEAR);
+                configured &= SDL_SetTextureScaleMode(_uiTexture, SDL_SCALEMODE_NEAREST);
+                configured &= SDL_SetTextureBlendMode(_uiTexture, SDL_BLENDMODE_BLEND);
+                if (!configured)
+                {
+                    Logging::error("Unable to configure separate world rendering resources: {}", SDL_GetError());
+                    destroySeparateWorldResources();
+                }
+            }
+        }
+
+        if (scaleFactor > 1.0f && _worldSurface == nullptr)
         {
             const auto createScaledResources = [&]() {
                 auto scale = std::clamp(static_cast<int32_t>(std::ceil(scaleFactor)), 2, 4);
@@ -262,6 +338,30 @@ namespace OpenLoco::Gfx
         rt.height = scaledHeight;
         rt.pitch = pitch - scaledWidth;
 
+        if (_worldSurface != nullptr)
+        {
+            const auto worldPitch = _worldSurface->pitch;
+            delete[] _worldRT.bits;
+            _worldRT.bits = new uint8_t[static_cast<size_t>(worldPitch) * height];
+            _worldRT.x = 0;
+            _worldRT.y = 0;
+            _worldRT.width = width;
+            _worldRT.height = height;
+            _worldRT.pitch = worldPitch - width;
+            std::fill_n(_worldRT.bits, static_cast<size_t>(worldPitch) * height, PaletteIndex::black0);
+        }
+
+        if (_worldSurface != nullptr)
+        {
+            _uiBase.resize(static_cast<size_t>(pitch) * scaledHeight);
+            _uiCoverage.resize(static_cast<size_t>(pitch) * scaledHeight);
+        }
+        else
+        {
+            _uiBase.clear();
+            _uiCoverage.clear();
+        }
+
         _screenInfo.width = scaledWidth;
         _screenInfo.height = scaledHeight;
         _screenInfo.width_2 = scaledWidth;
@@ -340,6 +440,17 @@ namespace OpenLoco::Gfx
     // 0x004C5CFA
     void SoftwareDrawingEngine::render()
     {
+        if (shouldUseSeparateWorld())
+        {
+            if (!SceneManager::isProgressBarActive())
+            {
+                WindowManager::updateViewports();
+                renderSeparateWorld();
+            }
+            renderSeparateUi();
+            return;
+        }
+
         // Need to first render the current dirty regions before updating the viewports.
         // This is needed to ensure it will copy the correct pixels when the viewport will be moved.
         renderDirtyRegions();
@@ -354,6 +465,153 @@ namespace OpenLoco::Gfx
         if (Config::get().showFPS)
         {
             Gfx::drawFPS(_ctx);
+        }
+    }
+
+    bool SoftwareDrawingEngine::hasSeparateWorldResources() const
+    {
+        return Config::get().nativeViewportRendering
+            && _worldRT.bits != nullptr
+            && _worldSurface != nullptr
+            && _worldRGBASurface != nullptr
+            && _uiRGBASurface != nullptr
+            && _worldTexture != nullptr
+            && _uiTexture != nullptr;
+    }
+
+    bool SoftwareDrawingEngine::shouldUseSeparateWorld() const
+    {
+        return hasSeparateWorldResources()
+            && WindowManager::getMainWindow() != nullptr
+            && SceneManager::getCurrentScene() != SceneManager::SceneId::intro;
+    }
+
+    void SoftwareDrawingEngine::renderSeparateWorld()
+    {
+        auto* mainWindow = WindowManager::getMainWindow();
+        if (mainWindow == nullptr || mainWindow->viewports[0] == nullptr)
+        {
+            return;
+        }
+
+        SoftwareDrawingContext worldContext;
+        worldContext.pushRenderTarget(_worldRT);
+
+        auto viewport = *mainWindow->viewports[0];
+        viewport.x = 0;
+        viewport.y = 0;
+        viewport.setDimensions({ _worldRT.width, _worldRT.height }, { _worldRT.width, _worldRT.height });
+        viewport.render(worldContext, false);
+    }
+
+    void SoftwareDrawingEngine::renderSeparateUi()
+    {
+        const auto uiStride = _screenRT.width + _screenRT.pitch;
+        const auto isProgressBarActive = SceneManager::isProgressBarActive();
+        if (!isProgressBarActive)
+        {
+            const auto worldStride = _worldRT.width + _worldRT.pitch;
+            for (int32_t y = 0; y < _screenRT.height; ++y)
+            {
+                const auto worldY = sampleNearest(y, _worldRT.height, _screenRT.height);
+                for (int32_t x = 0; x < _screenRT.width; ++x)
+                {
+                    const auto worldX = sampleNearest(x, _worldRT.width, _screenRT.width);
+                    _uiBase[static_cast<size_t>(y) * uiStride + x] = _worldRT.bits[static_cast<size_t>(worldY) * worldStride + worldX];
+                }
+            }
+
+            std::copy(_uiBase.begin(), _uiBase.end(), _screenRT.bits);
+            std::fill(_uiCoverage.begin(), _uiCoverage.end(), 0);
+        }
+
+        const auto screenRect = Ui::Rect(0, 0, _screenRT.width, _screenRT.height);
+        _ctx.pushRenderTarget(_screenRT);
+        if (!isProgressBarActive)
+        {
+            if (auto* mainWindow = WindowManager::getMainWindow(); mainWindow != nullptr && mainWindow->viewports[0] != nullptr)
+            {
+                mainWindow->viewports[0]->renderUiOverlays(_ctx);
+            }
+        }
+        WindowManager::renderUi(_ctx, screenRect);
+        if (Config::get().showFPS)
+        {
+            Gfx::drawFPS(_ctx);
+        }
+        _ctx.popRenderTarget();
+
+        if (!isProgressBarActive)
+        {
+            std::fill(_uiCoverage.begin(), _uiCoverage.end(), 0xFF);
+            auto coverageTarget = _screenRT;
+            coverageTarget.bits = _uiCoverage.data();
+            _ctx.pushRenderTarget(coverageTarget);
+            if (auto* mainWindow = WindowManager::getMainWindow(); mainWindow != nullptr && mainWindow->viewports[0] != nullptr)
+            {
+                mainWindow->viewports[0]->renderUiOverlays(_ctx);
+            }
+            WindowManager::renderUi(_ctx, screenRect, true);
+            if (Config::get().showFPS)
+            {
+                Gfx::drawFPS(_ctx, false);
+            }
+            _ctx.popRenderTarget();
+
+            for (int32_t y = 0; y < _screenRT.height; ++y)
+            {
+                for (int32_t x = 0; x < _screenRT.width; ++x)
+                {
+                    const auto offset = static_cast<size_t>(y) * uiStride + x;
+                    _uiCoverage[offset] = _uiCoverage[offset] != 0xFF ? 0xFF : 0;
+                }
+            }
+        }
+
+        for (size_t i = 0; i < WindowManager::count(); ++i)
+        {
+            auto* window = WindowManager::get(i);
+            if (window->type == WindowType::main || !window->isVisible() || window->hasFlags(WindowFlags::noBackground))
+            {
+                continue;
+            }
+            if (isProgressBarActive && window->type != WindowType::progressBar)
+            {
+                continue;
+            }
+
+            const auto rect = screenRect.intersection(Ui::Rect(window->x, window->y, window->width, window->height));
+            if (rect.width() <= 0 || rect.height() <= 0)
+            {
+                continue;
+            }
+            for (int32_t y = rect.top(); y < rect.bottom(); ++y)
+            {
+                std::fill_n(_uiCoverage.data() + static_cast<size_t>(y) * uiStride + rect.left(), rect.width(), 0xFF);
+            }
+        }
+
+        const auto palette = Gfx::getRgbaPalette();
+        for (int32_t y = 0; y < _screenRT.height; ++y)
+        {
+            auto* output = static_cast<uint32_t*>(_uiRGBASurface->pixels) + static_cast<size_t>(y) * _uiRGBASurface->pitch / sizeof(uint32_t);
+            for (int32_t x = 0; x < _screenRT.width; ++x)
+            {
+                const auto offset = static_cast<size_t>(y) * uiStride + x;
+                if (_screenRT.bits[offset] != _uiBase[offset])
+                {
+                    _uiCoverage[offset] = 0xFF;
+                }
+
+                if (_uiCoverage[offset] == 0)
+                {
+                    output[x] = 0;
+                    continue;
+                }
+
+                const auto& colour = palette[_screenRT.bits[offset]];
+                output[x] = 0xFF000000U | static_cast<uint32_t>(colour.r) << 16 | static_cast<uint32_t>(colour.g) << 8 | colour.b;
+            }
         }
     }
 
@@ -391,6 +649,12 @@ namespace OpenLoco::Gfx
 
     void SoftwareDrawingEngine::present()
     {
+        if (shouldUseSeparateWorld())
+        {
+            presentSeparate();
+            return;
+        }
+
         if (_screenSurface == nullptr || _screenRGBASurface == nullptr || _screenTexture == nullptr)
         {
             return;
@@ -534,6 +798,26 @@ namespace OpenLoco::Gfx
         }
     }
 
+    void SoftwareDrawingEngine::presentSeparate()
+    {
+        const auto worldStride = _worldRT.width + _worldRT.pitch;
+        std::memcpy(_worldSurface->pixels, _worldRT.bits, static_cast<size_t>(worldStride) * _worldRT.height);
+        if (!SDL_BlitSurface(_worldSurface, nullptr, _worldRGBASurface, nullptr)
+            || !SDL_UpdateTexture(_worldTexture, nullptr, _worldRGBASurface->pixels, _worldRGBASurface->pitch)
+            || !SDL_UpdateTexture(_uiTexture, nullptr, _uiRGBASurface->pixels, _uiRGBASurface->pitch))
+        {
+            Logging::error("Unable to upload separate world rendering textures: {}", SDL_GetError());
+            return;
+        }
+
+        if (!SDL_RenderTexture(_renderer, _worldTexture, nullptr, nullptr)
+            || !SDL_RenderTexture(_renderer, _uiTexture, nullptr, nullptr)
+            || !SDL_RenderPresent(_renderer))
+        {
+            Logging::error("Unable to present separate world rendering textures: {}", SDL_GetError());
+        }
+    }
+
     DrawingContext& SoftwareDrawingEngine::getDrawingContext()
     {
         return _ctx;
@@ -542,6 +826,33 @@ namespace OpenLoco::Gfx
     const RenderTarget& SoftwareDrawingEngine::getScreenRT()
     {
         return _screenRT;
+    }
+
+    const RenderTarget& SoftwareDrawingEngine::getScreenshotRT()
+    {
+        if (!shouldUseSeparateWorld())
+        {
+            return _screenRT;
+        }
+
+        const auto worldStride = _worldRT.width + _worldRT.pitch;
+        const auto uiStride = _screenRT.width + _screenRT.pitch;
+        _screenshotBuffer.resize(static_cast<size_t>(_worldRT.width) * _worldRT.height);
+        for (int32_t y = 0; y < _worldRT.height; ++y)
+        {
+            const auto uiY = sampleNearest(y, _screenRT.height, _worldRT.height);
+            for (int32_t x = 0; x < _worldRT.width; ++x)
+            {
+                const auto uiX = sampleNearest(x, _screenRT.width, _worldRT.width);
+                const auto uiOffset = static_cast<size_t>(uiY) * uiStride + uiX;
+                _screenshotBuffer[static_cast<size_t>(y) * _worldRT.width + x] = _uiCoverage[uiOffset] != 0
+                    ? _screenRT.bits[uiOffset]
+                    : _worldRT.bits[static_cast<size_t>(y) * worldStride + x];
+            }
+        }
+
+        _screenshotRT = RenderTarget{ _screenshotBuffer.data(), 0, 0, _worldRT.width, _worldRT.height, 0 };
+        return _screenshotRT;
     }
 
     void SoftwareDrawingEngine::movePixels(
@@ -596,6 +907,11 @@ namespace OpenLoco::Gfx
     const Ui::ScreenInfo& SoftwareDrawingEngine::getScreenInfo() const
     {
         return _screenInfo;
+    }
+
+    Ui::Size SoftwareDrawingEngine::getOutputSize() const
+    {
+        return { _outputWidth, _outputHeight };
     }
 
     bool SoftwareDrawingEngine::setVSync(bool state)

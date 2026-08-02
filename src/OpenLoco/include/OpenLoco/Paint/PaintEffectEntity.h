@@ -3,6 +3,15 @@
 #include "Effects/Effect.h"
 #include "Paint.h"
 
+namespace OpenLoco::Gfx
+{
+    class DrawingContext;
+}
+namespace OpenLoco::Ui
+{
+    struct Viewport;
+}
+
 namespace OpenLoco::Paint
 {
 
@@ -14,4 +23,5 @@ namespace OpenLoco::Paint
      * @param base @<esi>
      */
     void paintEffectEntity(PaintSession& session, EffectEntity* base);
+    void drawMoneyEffects(Gfx::DrawingContext& drawingCtx, const Ui::Viewport& viewport);
 }

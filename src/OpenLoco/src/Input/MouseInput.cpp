@@ -68,6 +68,11 @@ namespace OpenLoco::Input
     static Ui::CursorId _lastCursorId; // 0x0052336C
     static Ui::Point _cursor;
     static Ui::Point _cursor2;
+    static Ui::Point _cursorOutput;
+    static Ui::Point _cursor2Output;
+    static Ui::Point _currentInputPosition;
+    static Ui::Point _currentInputOutputPosition;
+    static Ui::Point _dragLastOutput;
 
     static Ui::WindowType _pressedWindowType;       // 0x0052336F
     static Ui::WindowNumber_t _pressedWindowNumber; // 0x00523370
@@ -131,9 +136,10 @@ namespace OpenLoco::Input
         World::resetMapSelectionFlags();
     }
 
-    void moveMouse(int32_t x, int32_t y, int32_t relX, int32_t relY)
+    void moveMouse(int32_t x, int32_t y, int32_t relX, int32_t relY, Ui::Point outputPosition)
     {
         _cursor = { x, y };
+        _cursorOutput = outputPosition;
         _mouseDeltaX += relX;
         _mouseDeltaY += relY;
     }
@@ -144,6 +150,18 @@ namespace OpenLoco::Input
         _mousePosY += _mouseDeltaY;
         _mouseDeltaX = 0;
         _mouseDeltaY = 0;
+    }
+
+    void refreshMouseLocation()
+    {
+        _cursor = Ui::getCursorPosScaled();
+        _cursorOutput = Ui::getCursorPosOutput();
+        if (Tutorial::state() == Tutorial::State::playing)
+        {
+            return;
+        }
+        _cursor2 = _cursor;
+        _cursor2Output = _cursorOutput;
     }
 
     void mouseWheel(int wheel)
@@ -290,6 +308,7 @@ namespace OpenLoco::Input
             case Tutorial::State::initialising:
             {
                 _cursor2 = _cursor;
+                _cursor2Output = _cursorOutput;
                 break;
             }
 
@@ -297,6 +316,7 @@ namespace OpenLoco::Input
             {
                 _cursor2.x = Tutorial::nextInput();
                 _cursor2.y = Tutorial::nextInput();
+                _cursor2Output = Ui::uiToOutput(_cursor2);
                 Ui::setCursorPosScaled(_cursor2.x, _cursor2.y);
                 break;
             }
@@ -586,7 +606,11 @@ namespace OpenLoco::Input
                 {
                     // Fix #151: use relative drag from one frame to the next rather than
                     //           using the relative position from the message loop
-                    dragOffset = getNextDragOffset();
+                    dragOffset = getNextViewportDragOffset(*vp);
+                }
+                else
+                {
+                    dragOffset = vp->uiToRaster(dragOffset);
                 }
                 if (dragOffset.x != 0 || dragOffset.y != 0)
                 {
@@ -1408,6 +1432,7 @@ namespace OpenLoco::Input
 
                 _dragLast.x = x;
                 _dragLast.y = y;
+                _dragLastOutput = getMouseLocationOutput(_dragLast).value_or(Ui::getCursorPosOutput());
 
                 Ui::hideCursor();
                 startCursorDrag();
@@ -1656,6 +1681,15 @@ namespace OpenLoco::Input
         return _cursor2;
     }
 
+    std::optional<Ui::Point> getMouseLocationOutput(const Ui::Point& uiPosition)
+    {
+        if (uiPosition != _currentInputPosition)
+        {
+            return std::nullopt;
+        }
+        return _currentInputOutputPosition;
+    }
+
     Ui::Point getCursorPressedLocation()
     {
         return _cursorPressed;
@@ -1733,6 +1767,8 @@ namespace OpenLoco::Input
     {
         x = _cursor2.x;
         y = _cursor2.y;
+        _currentInputPosition = _cursor2;
+        _currentInputOutputPosition = _cursor2Output;
         return MouseButton::released;
     }
 
@@ -1742,6 +1778,8 @@ namespace OpenLoco::Input
         stopCursorDrag();
         resetFlag(Flags::rightMousePressed);
         Ui::setCursor(_lastCursorId);
+        _currentInputPosition = _dragLast;
+        _currentInputOutputPosition = _dragLastOutput;
 
         if (Tutorial::state() == Tutorial::State::playing)
         {
@@ -1783,6 +1821,8 @@ namespace OpenLoco::Input
                     button = MouseButton(Tutorial::nextInput());
                     x = Tutorial::nextInput();
                     y = Tutorial::nextInput();
+                    _currentInputPosition = { x, y };
+                    _currentInputOutputPosition = Ui::uiToOutput(_currentInputPosition);
                 }
                 else
                 {
@@ -1821,6 +1861,8 @@ namespace OpenLoco::Input
                 }
                 x = input->pos.x;
                 y = input->pos.y;
+                _currentInputPosition = input->pos;
+                _currentInputOutputPosition = input->outputPos;
             }
 
             // 0x004C6FE4

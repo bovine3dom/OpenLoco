@@ -13,6 +13,11 @@ namespace OpenLoco::Gfx
     class DrawingContext;
 }
 
+namespace OpenLoco
+{
+    struct LabelFrame;
+}
+
 namespace OpenLoco::Ui
 {
     struct SavedViewSimple;
@@ -81,14 +86,16 @@ namespace OpenLoco::Ui
 
     struct Viewport
     {
-        int32_t width;       // 0x00
-        int32_t height;      // 0x02
-        int32_t x;           // 0x04
-        int32_t y;           // 0x06
-        int32_t viewX;       // 0x08
-        int32_t viewY;       // 0x0A
-        int32_t viewWidth;   // 0x0C
-        int32_t viewHeight;  // 0x0E
+        int32_t width;      // 0x00
+        int32_t height;     // 0x02
+        int32_t x;          // 0x04
+        int32_t y;          // 0x06
+        int32_t viewX;      // 0x08
+        int32_t viewY;      // 0x0A
+        int32_t viewWidth;  // 0x0C
+        int32_t viewHeight; // 0x0E
+        int32_t rasterWidth;
+        int32_t rasterHeight;
         ZoomLevel zoom;      // 0x10
         uint8_t pad_11;      // 0x11
         ViewportFlags flags; // 0x12
@@ -106,6 +113,58 @@ namespace OpenLoco::Ui
         Ui::Rect getUiRect() const
         {
             return Ui::Rect::fromLTRB(x, y, x + width, y + height);
+        }
+
+        void setDimensions(Ui::Size uiSize, Ui::Size rasterSize)
+        {
+            width = uiSize.width;
+            height = uiSize.height;
+            rasterWidth = rasterSize.width;
+            rasterHeight = rasterSize.height;
+            viewWidth = zoom.applyTo(rasterWidth);
+            viewHeight = zoom.applyTo(rasterHeight);
+        }
+
+        constexpr Point uiToRaster(const Point& point) const
+        {
+            return {
+                width == 0 ? 0 : static_cast<int32_t>(static_cast<int64_t>(point.x) * rasterWidth / width),
+                height == 0 ? 0 : static_cast<int32_t>(static_cast<int64_t>(point.y) * rasterHeight / height),
+            };
+        }
+
+        constexpr Point rasterToUi(const Point& point) const
+        {
+            return {
+                rasterWidth == 0 ? 0 : static_cast<int32_t>(static_cast<int64_t>(point.x) * width / rasterWidth),
+                rasterHeight == 0 ? 0 : static_cast<int32_t>(static_cast<int64_t>(point.y) * height / rasterHeight),
+            };
+        }
+
+        constexpr Point rasterToUiNearest(const Point& point) const
+        {
+            const auto sample = [](int32_t position, int32_t sourceSize, int32_t destinationSize) {
+                const auto numerator = (static_cast<int64_t>(position) * 2 + 1) * destinationSize;
+                const auto denominator = static_cast<int64_t>(sourceSize) * 2;
+                const auto quotient = numerator / denominator;
+                return static_cast<int32_t>(quotient - (numerator % denominator < 0 ? 1 : 0));
+            };
+            return {
+                rasterWidth == 0 ? 0 : sample(point.x, rasterWidth, width),
+                rasterHeight == 0 ? 0 : sample(point.y, rasterHeight, height),
+            };
+        }
+
+        constexpr Point rasterToUiCeil(const Point& point) const
+        {
+            const auto divideCeil = [](int64_t numerator, int32_t denominator) {
+                const auto quotient = numerator / denominator;
+                return static_cast<int32_t>(quotient + (numerator % denominator > 0 ? 1 : 0));
+            };
+            return {
+                rasterWidth == 0 ? 0 : divideCeil(static_cast<int64_t>(point.x) * width, rasterWidth),
+                rasterHeight == 0 ? 0 : divideCeil(static_cast<int64_t>(point.y) * height, rasterHeight),
+            };
         }
 
         constexpr bool intersects(const ViewportRect& vpos)
@@ -164,6 +223,11 @@ namespace OpenLoco::Ui
             const auto vpPoint = WindowToViewport::applyTransform(pos, *this);
             return { vpPoint.x, vpPoint.y };
         }
+
+        viewport_pos rasterToViewport(const Point& pos) const
+        {
+            return { viewX + zoom.applyTo(pos.x), viewY + zoom.applyTo(pos.y) };
+        }
         /**
          * Maps a window relative rectangle to a 2D viewport rectangle.
          */
@@ -174,12 +238,14 @@ namespace OpenLoco::Ui
             return Rect::fromLTRB(leftTop.x, leftTop.y, rightBottom.x, rightBottom.y);
         }
 
-        void render(Gfx::DrawingContext& drawingCtx);
+        void render(Gfx::DrawingContext& drawingCtx, bool drawOverlays = true);
+        void renderUiOverlays(Gfx::DrawingContext& drawingCtx);
         viewport_pos centre2dCoordinates(const World::Pos3& loc);
         SavedViewSimple toSavedView() const;
 
         viewport_pos getCentre() const;
         Point getWindowCentre() const;
+        Rect getUiLabelRect(const LabelFrame& frame) const;
         World::Pos2 getCentreMapPosition() const;
         std::optional<World::Pos2> getCentreScreenMapPosition() const;
 
@@ -190,11 +256,11 @@ namespace OpenLoco::Ui
 
         constexpr bool isValid() const
         {
-            return width != 0 && height != 0;
+            return width != 0 && height != 0 && rasterWidth != 0 && rasterHeight != 0;
         }
 
     private:
-        void paint(Gfx::DrawingContext& drawingCtx, const Ui::Rect& rect);
+        void paint(Gfx::DrawingContext& drawingCtx, const Ui::Rect& rect, bool drawOverlays);
     };
 
     struct ViewportConfig
@@ -213,7 +279,8 @@ namespace OpenLoco::Ui
 
         [[nodiscard]] constexpr Point scaleTransform(const Point& uiPoint, const Viewport& vp)
         {
-            return Point{ vp.zoom.applyTo(uiPoint.x), vp.zoom.applyTo(uiPoint.y) };
+            const auto rasterPoint = vp.uiToRaster(uiPoint);
+            return Point{ vp.zoom.applyTo(rasterPoint.x), vp.zoom.applyTo(rasterPoint.y) };
         }
 
         [[nodiscard]] constexpr Point viewOffsetTransform(const Point& point, const Viewport& vp)
@@ -236,7 +303,8 @@ namespace OpenLoco::Ui
 
         [[nodiscard]] constexpr Point scaleTransform(const Point& uiPoint, const Viewport& vp)
         {
-            return Point{ vp.zoom.applyInversedTo(uiPoint.x), vp.zoom.applyInversedTo(uiPoint.y) };
+            const auto rasterPoint = Point{ vp.zoom.applyInversedTo(uiPoint.x), vp.zoom.applyInversedTo(uiPoint.y) };
+            return vp.rasterToUiNearest(rasterPoint);
         }
 
         [[nodiscard]] constexpr Point viewOffsetTransform(const Point& point, const Viewport& vp)

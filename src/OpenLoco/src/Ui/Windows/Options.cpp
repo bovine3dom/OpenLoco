@@ -261,7 +261,7 @@ namespace OpenLoco::Ui::Windows::Options
 
     namespace Display
     {
-        static constexpr Ui::Size kWindowSize = { 400, 167 };
+        static constexpr Ui::Size kWindowSize = { 400, 183 };
 
         enum widx
         {
@@ -282,6 +282,7 @@ namespace OpenLoco::Ui::Windows::Options
             frame_limit_label,
             frame_limit,
             frame_limit_btn,
+            native_viewport_rendering,
             show_fps,
         };
 
@@ -298,12 +299,13 @@ namespace OpenLoco::Ui::Windows::Options
             constexpr WidgetId kScalingModeBtn{ "scaling_mode_btn" };
             constexpr WidgetId kFrameLimit{ "frame_limit" };
             constexpr WidgetId kFrameLimitBtn{ "frame_limit_btn" };
+            constexpr WidgetId kNativeViewportRendering{ "native_viewport_rendering" };
             constexpr WidgetId kShowFps{ "show_fps" };
         }
 
         static constexpr auto _widgets = makeWidgets(
             Common::makeCommonWidgets(kWindowSize, StringIds::options_title_display),
-            Widgets::GroupBox({ 4, 49 }, { 392, 113 }, WindowColour::secondary, StringIds::frame_hardware),
+            Widgets::GroupBox({ 4, 49 }, { 392, 129 }, WindowColour::secondary, StringIds::frame_hardware),
 
             Widgets::Label({ 10, 63 }, { 215, 12 }, WindowColour::secondary, ContentAlign::left, StringIds::options_screen_mode),
             Widgets::dropdownWidgets(Widx::kScreenMode, Widx::kScreenModeBtn, { 235, 63 }, { 154, 12 }, WindowColour::secondary, StringIds::empty),
@@ -320,7 +322,8 @@ namespace OpenLoco::Ui::Windows::Options
             Widgets::Label({ 10, 127 }, { 215, 12 }, WindowColour::secondary, ContentAlign::left, StringIds::frameRateLimitLabel),
             Widgets::dropdownWidgets(Widx::kFrameLimit, Widx::kFrameLimitBtn, { 235, 127 }, { 154, 12 }, WindowColour::secondary, StringIds::empty),
 
-            Widgets::Checkbox(Widx::kShowFps, { 10, 143 }, { 380, 12 }, WindowColour::secondary, StringIds::option_show_fps_counter, StringIds::option_show_fps_counter_tooltip)
+            Widgets::Checkbox(Widx::kNativeViewportRendering, { 10, 143 }, { 380, 12 }, WindowColour::secondary, StringIds::nativeViewportRendering, StringIds::nativeViewportRenderingTooltip),
+            Widgets::Checkbox(Widx::kShowFps, { 10, 159 }, { 380, 12 }, WindowColour::secondary, StringIds::option_show_fps_counter, StringIds::option_show_fps_counter_tooltip)
 
         );
 
@@ -334,6 +337,15 @@ namespace OpenLoco::Ui::Windows::Options
 
             switch (id)
             {
+                case Widx::kNativeViewportRendering:
+                {
+                    auto& cfg = OpenLoco::Config::get();
+                    cfg.nativeViewportRendering = !cfg.nativeViewportRendering;
+                    OpenLoco::Config::write();
+                    Ui::triggerResize();
+                    Gfx::invalidateScreen();
+                    return;
+                }
                 case Widx::kShowFps:
                 {
                     auto& cfg = OpenLoco::Config::get();
@@ -636,6 +648,15 @@ namespace OpenLoco::Ui::Windows::Options
             if (Config::get().showFPS)
             {
                 self.activatedWidgets |= (1ULL << widx::show_fps);
+            }
+
+            if (Config::get().nativeViewportRendering)
+            {
+                self.activatedWidgets |= (1ULL << widx::native_viewport_rendering);
+            }
+            if (Gfx::getDrawingEngine().hasSeparateWorldResources())
+            {
+                self.disabledWidgets |= (1ULL << widx::scaling_mode) | (1ULL << widx::scaling_mode_btn);
             }
 
             if (Config::get().scaleFactor <= OpenLoco::Ui::ScaleFactor::min)

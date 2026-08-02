@@ -2,6 +2,7 @@
 
 #include <OpenLoco/Core/EnumFlags.hpp>
 #include <OpenLoco/Core/Numerics.hpp>
+#include <OpenLoco/Engine/Ui/Point.hpp>
 #include <OpenLoco/LabelFrame.h>
 #include <OpenLoco/Localisation/StringManager.h>
 #include <OpenLoco/Map/Tile.h>
@@ -191,4 +192,5 @@ namespace OpenLoco
     void sub_48D794(const Station& station);
 
     void drawStationName(Gfx::DrawingContext& drawingCtx, const Station& station, ZoomLevel zoom, bool isHovered);
+    void drawStationNameAt(Gfx::DrawingContext& drawingCtx, const Station& station, ZoomLevel zoom, bool isHovered, const Ui::Point& topLeft);
 }

@@ -111,6 +111,7 @@ namespace OpenLoco::Ui::WindowManager
     uint8_t getVehiclePreviewRotationFrameRoll();
 
     void render(Gfx::DrawingContext& ctx, const Rect& rect);
+    void renderUi(Gfx::DrawingContext& ctx, const Rect& rect, bool noBackgroundOnly = false);
 }
 
 namespace OpenLoco::Vehicles

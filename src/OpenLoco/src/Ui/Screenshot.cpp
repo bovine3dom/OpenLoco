@@ -186,20 +186,17 @@ namespace OpenLoco::Ui
     static std::string saveScreenshot()
     {
         auto& drawingEngine = Gfx::getDrawingEngine();
-        auto& rt = drawingEngine.getScreenRT();
+        auto& rt = drawingEngine.getScreenshotRT();
         return prepareSaveScreenshot(rt);
     }
 
     static Ui::Viewport createGiantViewport(const uint16_t resolutionWidth, const uint16_t resolutionHeight, const ZoomLevel zoomLevel)
     {
         Ui::Viewport viewport{};
-        viewport.width = resolutionWidth;
-        viewport.height = resolutionHeight;
         viewport.x = 0;
         viewport.y = 0;
-        viewport.viewWidth = zoomLevel.applyTo<int32_t>(viewport.width);
-        viewport.viewHeight = zoomLevel.applyTo<int32_t>(viewport.height);
         viewport.zoom = zoomLevel;
+        viewport.setDimensions({ resolutionWidth, resolutionHeight }, { resolutionWidth, resolutionHeight });
         viewport.pad_11 = 0;
         viewport.flags = ViewportFlags::none;
 

@@ -12,6 +12,7 @@
 #include "Map/Tile.h"
 #include "Map/TileManager.h"
 #include "Paint/Paint.h"
+#include "Paint/PaintEffectEntity.h"
 #include "SceneManager.h"
 #include "Ui/ViewportInteraction.h"
 #include "Ui/Window.h"
@@ -40,7 +41,7 @@ namespace OpenLoco::Ui
     }
 
     // 0x0045A0E7
-    void Viewport::render(Gfx::DrawingContext& drawingCtx)
+    void Viewport::render(Gfx::DrawingContext& drawingCtx, bool drawOverlays)
     {
         const auto& rt = drawingCtx.currentRenderTarget();
 
@@ -51,7 +52,7 @@ namespace OpenLoco::Ui
         {
             return;
         }
-        paint(drawingCtx, uiRect.intersection(viewRect));
+        paint(drawingCtx, uiRect.intersection(viewRect), drawOverlays);
     }
 
     // 0x0048DE97
@@ -120,8 +121,123 @@ namespace OpenLoco::Ui
         }
     }
 
+    Ui::Rect Viewport::getUiLabelRect(const LabelFrame& frame) const
+    {
+        const auto index = zoom.index();
+        const auto frameWidth = frame.right[index] - frame.left[index] + 1;
+        const auto frameHeight = frame.bottom[index] - frame.top[index] + 1;
+        const auto frameCentre = Ui::Point{
+            frame.left[index] + frameWidth / 2,
+            frame.top[index] + frameHeight / 2,
+        };
+        const auto viewOrigin = Ui::Point{
+            zoom.applyInversedTo(viewX),
+            zoom.applyInversedTo(viewY),
+        };
+        const auto uiCentre = rasterToUiNearest(frameCentre - viewOrigin) + Ui::Point{ x, y };
+        const auto topLeft = uiCentre - Ui::Point{ frameWidth / 2, frameHeight / 2 };
+        return Ui::Rect(topLeft.x, topLeft.y, frameWidth, frameHeight);
+    }
+
+    static std::optional<Gfx::RenderTarget> clipRenderTargetAbsolute(const Gfx::RenderTarget& source, const Ui::Rect& rect)
+    {
+        const auto clipped = source.getUiRect().intersection(rect);
+        if (clipped.width() <= 0 || clipped.height() <= 0)
+        {
+            return std::nullopt;
+        }
+
+        const auto stride = source.width + source.pitch;
+        return Gfx::RenderTarget{
+            source.bits + (clipped.top() - source.y) * stride + clipped.left() - source.x,
+            clipped.left(),
+            clipped.top(),
+            clipped.width(),
+            clipped.height(),
+            stride - clipped.width(),
+        };
+    }
+
+    void Viewport::renderUiOverlays(Gfx::DrawingContext& drawingCtx)
+    {
+        const auto viewportTarget = clipRenderTargetAbsolute(drawingCtx.currentRenderTarget(), getUiRect());
+        if (!viewportTarget.has_value())
+        {
+            return;
+        }
+
+        drawingCtx.pushRenderTarget(*viewportTarget);
+        const auto screenRect = viewportTarget->getUiRect();
+
+        if (!SceneManager::isTitleMode())
+        {
+            if (!hasFlags(ViewportFlags::hideStationNames) && zoom <= Config::get().stationNamesMinScale)
+            {
+                for (const auto& station : StationManager::stations())
+                {
+                    if ((station.flags & StationFlags::flag_5) != StationFlags::none)
+                    {
+                        continue;
+                    }
+
+                    const auto labelRect = getUiLabelRect(station.labelFrame);
+                    if (!screenRect.intersects(labelRect))
+                    {
+                        continue;
+                    }
+
+                    const bool isHovered = World::hasMapSelectionFlag(World::MapSelectionFlags::hoveringOverStation)
+                        && station.id() == Input::getHoveredStationId();
+                    drawStationNameAt(drawingCtx, station, zoom, isHovered, { labelRect.left(), labelRect.top() });
+                }
+            }
+
+            if (!hasFlags(ViewportFlags::hideTownNames))
+            {
+                for (auto& town : TownManager::towns())
+                {
+                    const auto labelRect = getUiLabelRect(town.labelFrame);
+                    if (screenRect.intersects(labelRect))
+                    {
+                        town.drawLabelAt(drawingCtx, zoom, { labelRect.left(), labelRect.top() });
+                    }
+                }
+            }
+        }
+
+        Paint::drawMoneyEffects(drawingCtx, *this);
+
+        if (World::hasMapSelectionFlag(World::MapSelectionFlags::unk_04))
+        {
+            auto tr = Gfx::TextRenderer(drawingCtx);
+            tr.setCurrentFont(Gfx::Font::medium_normal);
+            auto orderNum = 0;
+            for (auto& orderFrame : Vehicles::OrderManager::displayFrames())
+            {
+                auto orderRing = Vehicles::OrderRingView(orderFrame.orderOffset);
+                auto* order = orderRing.atIndex(0);
+                if (order == nullptr || !order->hasFlags(Vehicles::OrderFlags::HasNumber))
+                {
+                    continue;
+                }
+
+                orderNum++;
+                auto orderString = Vehicles::OrderManager::generateOrderUiStringAndLoc(orderFrame.orderOffset, orderNum).second;
+                if (orderString.empty())
+                {
+                    continue;
+                }
+
+                const auto labelRect = getUiLabelRect(orderFrame.frame);
+                const auto point = Ui::Point{ labelRect.left() + 1, labelRect.top() };
+                tr.drawString(point, AdvancedColour(Colour::white).outline(), orderString.data());
+            }
+        }
+        drawingCtx.popRenderTarget();
+    }
+
     // 0x0045A1A4
-    void Viewport::paint(Gfx::DrawingContext& drawingCtx, const Rect& rect)
+    void Viewport::paint(Gfx::DrawingContext& drawingCtx, const Rect& rect, bool drawOverlays)
     {
         const auto& rt = drawingCtx.currentRenderTarget();
 
@@ -196,7 +312,7 @@ namespace OpenLoco::Ui
             sess.drawStructs(columnDrawingCtx);
             // Climate code used to draw here.
 
-            if (!SceneManager::isTitleMode())
+            if (drawOverlays && !SceneManager::isTitleMode())
             {
                 if (!options.hasFlags(ViewportFlags::hideStationNames))
                 {
@@ -211,8 +327,11 @@ namespace OpenLoco::Ui
                 }
             }
 
-            sess.drawStringStructs(columnDrawingCtx);
-            drawRoutingNumbers(columnDrawingCtx, zoom);
+            if (drawOverlays)
+            {
+                sess.drawStringStructs(columnDrawingCtx);
+                drawRoutingNumbers(columnDrawingCtx, zoom);
+            }
         });
     }
 

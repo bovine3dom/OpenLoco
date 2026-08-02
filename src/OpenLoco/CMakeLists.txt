@@ -774,6 +774,7 @@ set(test_files
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/HQxTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/MMPXTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/TileManagerTests.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/ViewportTests.cpp"
 )
 
 loco_add_library(OpenLoco STATIC

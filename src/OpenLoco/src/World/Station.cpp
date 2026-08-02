@@ -909,14 +909,8 @@ namespace OpenLoco
     };
 
     // 0x0048DF4D, 0x0048E13B
-    void drawStationName(Gfx::DrawingContext& drawingCtx, const Station& station, ZoomLevel zoom, bool isHovered)
+    void drawStationNameAt(Gfx::DrawingContext& drawingCtx, const Station& station, ZoomLevel zoom, bool isHovered, const Ui::Point& topLeft)
     {
-        const Gfx::RenderTarget& rt = drawingCtx.currentRenderTarget();
-        if (!station.labelFrame.contains(rt.getUiRect(), zoom))
-        {
-            return;
-        }
-
         auto& borderImages = kZoomToStationBorder[zoom.index()];
 
         const auto companyColour = [&station]() {
@@ -931,10 +925,10 @@ namespace OpenLoco
         }();
         const auto colour = Colours::getTranslucent(companyColour, isHovered ? 0 : 1);
 
-        Ui::Point topLeft = { station.labelFrame.left[zoom.index()],
-                              station.labelFrame.top[zoom.index()] };
-        Ui::Point bottomRight = { station.labelFrame.right[zoom.index()],
-                                  station.labelFrame.bottom[zoom.index()] };
+        const Ui::Point bottomRight = {
+            topLeft.x + station.labelFrame.right[zoom.index()] - station.labelFrame.left[zoom.index()],
+            topLeft.y + station.labelFrame.bottom[zoom.index()] - station.labelFrame.top[zoom.index()],
+        };
 
         drawingCtx.drawImage(ZoomLevel::full, topLeft, ImageId(borderImages.left).withTranslucency(ExtColour::unk34));
         drawingCtx.drawImage(ZoomLevel::full, topLeft, ImageId(borderImages.left).withTranslucency(colour));
@@ -962,6 +956,20 @@ namespace OpenLoco
         tr.drawString(point, Colour::black, buffer);
     }
 
+    void drawStationName(Gfx::DrawingContext& drawingCtx, const Station& station, ZoomLevel zoom, bool isHovered)
+    {
+        const Gfx::RenderTarget& rt = drawingCtx.currentRenderTarget();
+        if (!station.labelFrame.contains(rt.getUiRect(), zoom))
+        {
+            return;
+        }
+
+        drawStationNameAt(drawingCtx, station, zoom, isHovered, {
+                                                                    station.labelFrame.left[zoom.index()],
+                                                                    station.labelFrame.top[zoom.index()],
+                                                                });
+    }
+
     // 0x0048DCA5
     void Station::updateLabel()
     {
@@ -979,9 +987,8 @@ namespace OpenLoco
 
         for (auto level = ZoomLevel::min; level <= ZoomLevel::max; ++level)
         {
-            Ui::Viewport virtualVp{};
-            virtualVp.zoom = ZoomLevel{ level };
-            const auto index = virtualVp.zoom.index();
+            const auto zoom = ZoomLevel{ level };
+            const auto index = zoom.index();
 
             const auto labelCenter = World::Pos3{ x, y, z };
             const auto vpPos = World::gameToScreen(labelCenter, WindowManager::getCurrentRotation());
@@ -990,12 +997,14 @@ namespace OpenLoco
             const auto width = Gfx::TextRenderer::getStringWidth(font, buffer) + kZoomToStationBorder[index].width * 2;
             const auto height = kZoomToStationBorder[index].height;
 
-            const auto [zoomWidth, zoomHeight] = WindowToViewport::scaleTransform(Ui::Point(width, height), virtualVp);
+            const auto zoomWidth = zoom.applyTo(width);
+            const auto zoomHeight = zoom.applyTo(height);
 
             const auto left = vpPos.x - zoomWidth / 2;
             const auto top = vpPos.y - zoomHeight / 2 - 32;
 
-            const auto [uiLeft, uiTop] = ViewportToWindow::scaleTransform(Ui::Point(left, top), virtualVp);
+            const auto uiLeft = zoom.applyInversedTo(left);
+            const auto uiTop = zoom.applyInversedTo(top);
 
             labelFrame.left[index] = uiLeft;
             labelFrame.right[index] = uiLeft + width;

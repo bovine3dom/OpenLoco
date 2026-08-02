@@ -123,6 +123,7 @@ namespace OpenLoco::Config
         const auto scaleFactor = config["scale_factor"].as<float>(1.0f);
         _config.scaleFactor = std::isfinite(scaleFactor) ? std::clamp(scaleFactor, 1.0f, 4.0f) : 1.0f;
         _config.scalingMode = config["scaling_mode"].as<ScalingMode>(ScalingMode::sharp);
+        _config.nativeViewportRendering = config["native_viewport_rendering"].as<bool>(true);
         _config.showFPS = config["showFPS"].as<bool>(false);
         _config.uncapFPS = config["uncapFPS"].as<bool>(false);
 
@@ -275,6 +276,7 @@ namespace OpenLoco::Config
         // Display
         node["scale_factor"] = _config.scaleFactor;
         node["scaling_mode"] = _config.scalingMode;
+        node["native_viewport_rendering"] = _config.nativeViewportRendering;
         node["showFPS"] = _config.showFPS;
         node["uncapFPS"] = _config.uncapFPS;
 

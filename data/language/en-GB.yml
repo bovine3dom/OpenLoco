@@ -2184,7 +2184,7 @@ strings:
   2129: Fullscreen
   2130: Fullscreen (borderless window)
   2131: Default sound device
-  2132: "{COLOUR WINDOW_2}Window scale factor:"
+  2132: "{COLOUR WINDOW_2}UI scale factor:"
   2133: "{COLOUR BLACK}+"
   2134: "{COLOUR BLACK}-"
   2135: "{COLOUR BLACK}{INT32_2DP}"
@@ -2517,3 +2517,5 @@ strings:
   2462: "Sharp bilinear"
   2463: "MMPX"
   2464: "HQx"
+  2465: "Render main viewport at native resolution"
+  2466: "Keep the main game world at display resolution while scaling the interface"

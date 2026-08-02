@@ -3,6 +3,7 @@
 #include "Company.h"
 #include <OpenLoco/Core/EnumFlags.hpp>
 #include <OpenLoco/Core/Prng.h>
+#include <OpenLoco/Engine/Ui/Point.hpp>
 #include <OpenLoco/LabelFrame.h>
 #include <OpenLoco/Map/Tile.h>
 #include <limits>
@@ -82,6 +83,7 @@ namespace OpenLoco
         TownId id() const;
         void tick();
         void drawLabel(Gfx::DrawingContext& drawingCtx, ZoomLevel zoom);
+        void drawLabelAt(Gfx::DrawingContext& drawingCtx, ZoomLevel zoom, const Ui::Point& topLeft);
         void updateLabel();
         void updateMonthly();
         void adjustCompanyRating(CompanyId cid, int amount);

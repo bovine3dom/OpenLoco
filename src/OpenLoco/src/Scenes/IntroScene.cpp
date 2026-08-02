@@ -1,5 +1,6 @@
 #include "Scenes/IntroScene.h"
 #include "Graphics/Gfx.h"
+#include "Gui.h"
 #include "Intro.h"
 #include "SceneManager.h"
 
@@ -8,6 +9,7 @@ namespace OpenLoco::Scenes::IntroScene
     void onEnter()
     {
         Intro::state(Intro::State::begin);
+        Gui::resize();
     }
 
     void onExit()

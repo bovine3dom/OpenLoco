@@ -435,10 +435,7 @@ namespace OpenLoco::Ui::Windows::CompanyWindow
                 auto& viewport = self.viewports[0];
                 if (proposedDims.width != viewport->width || proposedDims.height != viewport->height)
                 {
-                    viewport->width = proposedDims.width;
-                    viewport->height = proposedDims.height;
-                    viewport->viewWidth = viewport->zoom.applyTo(proposedDims.width);
-                    viewport->viewHeight = viewport->zoom.applyTo(proposedDims.height);
+                    viewport->setDimensions(proposedDims, proposedDims);
                     self.savedView.clear();
                 }
             }

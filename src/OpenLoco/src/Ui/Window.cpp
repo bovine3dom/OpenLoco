@@ -99,7 +99,7 @@ namespace OpenLoco::Ui
 
         if (vp->containsWindowPos(mouse - w->position()))
         {
-            viewport_pos vpos = vp->windowToViewport(mouse - w->position());
+            viewport_pos vpos = ViewportInteraction::screenToViewport(mouse, *w, *vp);
             World::Pos2 position = viewportCoordToMapCoord(vpos.x, vpos.y, z, WindowManager::getCurrentRotation());
             if (World::validCoords(position))
             {
@@ -199,6 +199,12 @@ namespace OpenLoco::Ui
             return;
         }
 
+        if (vp->rasterWidth != vp->width || vp->rasterHeight != vp->height)
+        {
+            Gfx::invalidateScreen();
+            return;
+        }
+
         if (vp->hasFlags(ViewportFlags::seeThroughTracks | ViewportFlags::seeThroughScenery | ViewportFlags::seeThroughRoads | ViewportFlags::seeThroughBuildings | ViewportFlags::seeThroughTrees | ViewportFlags::seeThroughBridges) || w->hasFlags(WindowFlags::viewportNoShiftPixels))
         {
             auto rect = Ui::Rect(w->x + vp->x, w->y + vp->y, vp->width, vp->height);
@@ -286,8 +292,8 @@ namespace OpenLoco::Ui
             }
             else
             {
-                int16_t midX = config->savedViewX + (viewport->viewWidth / 2);
-                int16_t midY = config->savedViewY + (viewport->viewHeight / 2);
+                int32_t midX = config->savedViewX + (viewport->viewWidth / 2);
+                int32_t midY = config->savedViewY + (viewport->viewHeight / 2);
 
                 World::Pos2 mapCoord = viewportCoordToMapCoord(midX, midY, 128, viewport->getRotation());
                 viewportSetUndergroundFlag(false, viewport);
@@ -657,9 +663,11 @@ namespace OpenLoco::Ui
 
         if (toCursor && Config::get().zoomToCursor)
         {
-            const auto mouseCoords = Ui::getCursorPosScaled() - Point(v->x, v->y);
-            const int32_t diffX = mouseCoords.x - (newZoomLevel.applyInversedTo(v->viewWidth) / 2);
-            const int32_t diffY = mouseCoords.y - (newZoomLevel.applyInversedTo(v->viewHeight) / 2);
+            const auto mouseCoords = v->rasterWidth != v->width || v->rasterHeight != v->height
+                ? Ui::getCursorPosOutput() - Ui::uiToOutput(position() + Point(v->x, v->y))
+                : v->uiToRaster(Ui::getCursorPosScaled() - Point(v->x, v->y));
+            const int32_t diffX = mouseCoords.x - v->rasterWidth / 2;
+            const int32_t diffY = mouseCoords.y - v->rasterHeight / 2;
             if (previousZoomLevel > newZoomLevel)
             {
                 vc->savedViewX += newZoomLevel.applyTo(diffX);

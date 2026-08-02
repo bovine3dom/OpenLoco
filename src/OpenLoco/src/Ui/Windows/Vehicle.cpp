@@ -740,10 +740,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
                 if (newWidth != viewport->width || newHeight != viewport->height)
                 {
                     self.invalidate();
-                    viewport->width = newWidth;
-                    viewport->height = newHeight;
-                    viewport->viewWidth = viewport->zoom.applyTo(newWidth);
-                    viewport->viewHeight = viewport->zoom.applyTo(newHeight);
+                    viewport->setDimensions({ newWidth, newHeight }, { newWidth, newHeight });
                     self.savedView.clear();
                 }
             }

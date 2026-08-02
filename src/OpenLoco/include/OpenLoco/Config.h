@@ -167,6 +167,7 @@ namespace OpenLoco::Config
 
         float scaleFactor = 1.0f;
         ScalingMode scalingMode = ScalingMode::sharp;
+        bool nativeViewportRendering = true;
         bool showFPS = false;
         bool uncapFPS = false;
 

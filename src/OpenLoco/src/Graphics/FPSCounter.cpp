@@ -34,12 +34,12 @@ namespace OpenLoco::Gfx
         return _currentFPS;
     }
 
-    void drawFPS(DrawingContext& drawingCtx)
+    void drawFPS(DrawingContext& drawingCtx, bool measure)
     {
         auto tr = Gfx::TextRenderer(drawingCtx);
 
         // Measure FPS
-        const float fps = measureFPS();
+        const float fps = measure ? measureFPS() : _currentFPS;
 
         // Format string
         char buffer[64];

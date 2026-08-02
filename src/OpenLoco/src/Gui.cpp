@@ -1,5 +1,8 @@
 #include "Gui.h"
+#include "Config.h"
 #include "Graphics/Colour.h"
+#include "Graphics/Gfx.h"
+#include "Graphics/SoftwareDrawingEngine.h"
 #include "Map/Tile.h"
 #include "SceneManager.h"
 #include "Tutorial.h"
@@ -64,10 +67,16 @@ namespace OpenLoco::Gui
             }
             if (window->viewports[0])
             {
-                window->viewports[0]->width = uiWidth;
-                window->viewports[0]->height = uiHeight;
-                window->viewports[0]->viewWidth = window->viewports[0]->zoom.applyTo(uiWidth);
-                window->viewports[0]->viewHeight = window->viewports[0]->zoom.applyTo(uiHeight);
+                auto& viewport = *window->viewports[0];
+                const auto centre = viewport.getCentre();
+                auto& drawingEngine = Gfx::getDrawingEngine();
+                const auto outputSize = drawingEngine.getOutputSize();
+                const auto rasterSize = drawingEngine.shouldUseSeparateWorld() ? outputSize : Ui::Size{ uiWidth, uiHeight };
+                viewport.setDimensions({ uiWidth, uiHeight }, rasterSize);
+                viewport.viewX = centre.x - viewport.viewWidth / 2;
+                viewport.viewY = centre.y - viewport.viewHeight / 2;
+                window->viewportConfigurations[0].savedViewX = viewport.viewX;
+                window->viewportConfigurations[0].savedViewY = viewport.viewY;
             }
         }
 
