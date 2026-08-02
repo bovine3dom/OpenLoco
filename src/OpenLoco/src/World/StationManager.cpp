@@ -22,6 +22,7 @@
 #include "World/CompanyManager.h"
 #include "World/IndustryManager.h"
 #include "World/TownManager.h"
+#include <OpenLoco/CargoDist/Simulation.h>
 
 #include <OpenLoco/Math/Vector.hpp>
 #include <bitset>
@@ -687,6 +688,8 @@ namespace OpenLoco::StationManager
         {
             return;
         }
+
+        CargoDist::removeStation(stationId);
 
         if ((station->flags & StationFlags::flag_5) == StationFlags::none)
         {

@@ -4,6 +4,10 @@ set(OLOCO_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Audio/Music.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Audio/VehicleAudio.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/CommandLine.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/CargoDist/CargoDist.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/CargoDist/Routing.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/CargoDist/Save.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/CargoDist/Simulation.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Config.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Date.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Economy/Economy.cpp"
@@ -44,6 +48,7 @@ set(OLOCO_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/GameCommands/GameCommands.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/GameCommands/General/LoadSaveQuit.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/GameCommands/General/RenameStation.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/GameCommands/General/SetCargoDistMode.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/GameCommands/General/SetGameSpeed.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/GameCommands/General/TogglePause.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/GameCommands/Industries/CreateIndustry.cpp"
@@ -382,6 +387,10 @@ set(OLOCO_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/World/TownManager.cpp")
 
 set(OLOCO_HEADERS
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/CargoDist/CargoDist.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/CargoDist/Routing.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/CargoDist/Save.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/CargoDist/Simulation.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/Audio/Audio.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/CommandLine.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/Config.h"
@@ -428,6 +437,7 @@ set(OLOCO_HEADERS
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/GameCommands/GameCommands.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/GameCommands/General/LoadSaveQuit.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/GameCommands/General/RenameStation.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/GameCommands/General/SetCargoDistMode.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/GameCommands/General/SetGameSpeed.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/GameCommands/General/TogglePause.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/GameCommands/Industries/CreateIndustry.h"
@@ -768,6 +778,11 @@ set(private_compile_definitions
 )
 
 set(test_files
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/CargoDistPacketTests.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/CargoDistCommandTests.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/CargoDistRoutingTests.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/CargoDistSaveTests.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/CargoDistSimulationTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/TileManagerTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/ViewportTests.cpp"
 )

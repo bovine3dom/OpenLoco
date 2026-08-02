@@ -88,7 +88,8 @@ namespace OpenLoco::Network
         static constexpr PacketKind kind = PacketKind::connectResponse;
         size_t size() const { return sizeof(ConnectResponsePacket); }
 
-        ConnectionResult result;
+        ConnectionResult result{};
+        uint16_t version{};
         char message[256]{};
     };
 

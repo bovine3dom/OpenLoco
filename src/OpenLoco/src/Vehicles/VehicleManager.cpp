@@ -26,6 +26,7 @@
 #include "Vehicles/VehicleTail.h"
 #include "World/Company.h"
 #include "World/CompanyManager.h"
+#include <OpenLoco/CargoDist/Simulation.h>
 
 namespace OpenLoco::VehicleManager
 {
@@ -344,6 +345,7 @@ namespace OpenLoco::VehicleManager
             // Must fetch the next before deleting the current!
             auto* nextDeletion = toDeleteComponent->nextVehicleComponent();
 
+            CargoDist::eraseVehicleCargoForComponent(toDeleteComponent->id);
             EntityManager::freeEntity(toDeleteComponent);
             toDeleteComponent = nextDeletion;
         }
@@ -417,6 +419,10 @@ namespace OpenLoco::VehicleManager
         MessageManager::removeAllSubjectRefs(enumValue(head.id), MessageItemArgumentType::vehicle);
         const auto companyId = head.owner;
         CompanyManager::get(companyId)->clearOwnerStatusForDeletedVehicle(head.id);
+        CargoDist::eraseVehicleCargoForComponent(train.tail->id);
+        CargoDist::eraseVehicleCargoForComponent(train.veh2->id);
+        CargoDist::eraseVehicleCargoForComponent(train.veh1->id);
+        CargoDist::eraseVehicleCargoForComponent(train.head->id);
         EntityManager::freeEntity(train.tail);
         EntityManager::freeEntity(train.veh2);
         EntityManager::freeEntity(train.veh1);

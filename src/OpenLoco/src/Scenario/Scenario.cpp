@@ -46,6 +46,7 @@
 #include "World/IndustryManager.h"
 #include "World/StationManager.h"
 #include "World/TownManager.h"
+#include <OpenLoco/CargoDist/CargoDist.h>
 
 #include <OpenLoco/Platform/Platform.h>
 #include <algorithm>
@@ -195,6 +196,7 @@ namespace OpenLoco::Scenario
     void reset()
     {
         WindowManager::closeConstructionWindows();
+        CargoDist::reset();
 
         GameCommands::setUpdatingCompanyId(CompanyId::neutral);
         WindowManager::setCurrentRotation(0);
@@ -354,6 +356,9 @@ namespace OpenLoco::Scenario
         Gfx::loadCurrency();
         CompanyManager::reset();
         CompanyManager::createPlayerCompany();
+        ObjectManager::forEachLoaded<CargoObject>([](auto cargo, const auto&) {
+            CargoDist::setMode(cargo, CargoDist::DistributionMode::asymmetric);
+        });
         initialiseDate(Scenario::getOptions().scenarioStartYear);
         initialiseSnowLine();
         sub_4748D4();

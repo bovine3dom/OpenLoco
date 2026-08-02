@@ -133,6 +133,7 @@ namespace OpenLoco::GameCommands
         setGameSpeed = 82,
         vehicleOrderReverse = 83,
         vehicleRepaint = 84,
+        setCargoDistMode = 85,
     };
 
     constexpr int32_t kDefaultRegValue = 0xCCCCCCCC;

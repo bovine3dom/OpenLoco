@@ -20,6 +20,7 @@
 #include "Vehicles/VehicleHead.h"
 #include "Vehicles/VehicleManager.h"
 #include "World/StationManager.h"
+#include <OpenLoco/CargoDist/CargoDist.h>
 #include <OpenLoco/Core/Exception.hpp>
 #include <OpenLoco/Diagnostics/Logging.h>
 #include <sfl/static_vector.hpp>
@@ -182,6 +183,7 @@ namespace OpenLoco::Vehicles::OrderManager
 
         // Recalculate order offsets for other vehicles
         reoffsetVehicleOrderTables(head->orderTableOffset + 1, insOrderLength);
+        CargoDist::markGraphDirty();
     }
 
     // 0x004705C0
@@ -215,6 +217,7 @@ namespace OpenLoco::Vehicles::OrderManager
 
         // Compensate other vehicles to use new table offsets
         reoffsetVehicleOrderTables(head->orderTableOffset + orderOffset + 1, -removeOrderSize);
+        CargoDist::markGraphDirty();
     }
 
     // 0x004702F7
@@ -245,6 +248,7 @@ namespace OpenLoco::Vehicles::OrderManager
         shiftOrdersLeft(offset, size);
 
         orderTableLength() -= head->sizeOfOrderTable;
+        CargoDist::markGraphDirty();
     }
 
     // 0x00470312
@@ -470,6 +474,7 @@ namespace OpenLoco::Vehicles::OrderManager
             std::memcpy(dest, &rawOrder, orderLength);
             dest += orderLength;
         }
+        CargoDist::markGraphDirty();
 
         // Figure out the new position of the order of interest
         auto newOOIOffset = dest - orderOfInterest - kOrderSizes[enumValue(ooiType)];
@@ -494,6 +499,7 @@ namespace OpenLoco::Vehicles::OrderManager
         const auto dest = reinterpret_cast<uint8_t*>(&a);
         std::memcpy(dest, &rawOrderB, lengthOrderB);
         std::memcpy(dest + lengthOrderB, &rawOrderA, lengthOrderA);
+        CargoDist::markGraphDirty();
 
         // Return the length with which to offset
         return lengthOrderB;

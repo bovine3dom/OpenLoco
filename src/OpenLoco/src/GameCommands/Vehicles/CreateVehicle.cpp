@@ -29,6 +29,7 @@
 #include "Vehicles/VehicleTail.h"
 #include "World/CompanyManager.h"
 #include "World/Station.h"
+#include <OpenLoco/CargoDist/Simulation.h>
 #include <numeric>
 #include <optional>
 #include <utility>
@@ -92,6 +93,7 @@ namespace OpenLoco::GameCommands
         auto* const base = EntityManager::createEntityVehicle();
         base->baseType = EntityBaseType::vehicle;
         auto* const vehicleBase = base->asBase<Vehicles::VehicleBase>();
+        CargoDist::eraseVehicleCargoForComponent(vehicleBase->id);
         vehicleBase->vehicleFlags = Vehicles::VehicleFlags::none;
         vehicleBase->setSubType(T::kVehicleThingType);
         return static_cast<T*>(vehicleBase);

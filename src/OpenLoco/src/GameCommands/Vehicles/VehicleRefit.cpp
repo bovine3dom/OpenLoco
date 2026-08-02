@@ -10,6 +10,7 @@
 #include "Vehicles/Vehicle.h"
 #include "Vehicles/VehicleBody.h"
 #include "Vehicles/VehicleHead.h"
+#include <OpenLoco/CargoDist/Simulation.h>
 #include <OpenLoco/Core/Numerics.hpp>
 
 namespace OpenLoco::GameCommands
@@ -59,6 +60,7 @@ namespace OpenLoco::GameCommands
             auto primaryCargoId = Numerics::bitScanForward(cargoTypes);
             uint16_t maxCargoUnits = Vehicles::getNumUnitsForCargo(maxPrimaryCargo, primaryCargoId, args.cargoType);
 
+            CargoDist::eraseVehicleCargoForComponent(car.body->id);
             car.body->primaryCargo.type = args.cargoType;
             car.body->primaryCargo.maxQty = std::min<uint8_t>(maxCargoUnits, 0xFF);
             car.body->primaryCargo.qty = 0;
@@ -81,6 +83,7 @@ namespace OpenLoco::GameCommands
             car.body->primaryCargo.acceptedTypes = acceptedTypes;
 
             head->updateTrainProperties();
+            CargoDist::markGraphDirty();
             Ui::WindowManager::invalidate(Ui::WindowType::vehicle, static_cast<Ui::WindowNumber_t>(head->id));
 
             return 0;

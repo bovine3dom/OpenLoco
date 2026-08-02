@@ -22,6 +22,7 @@
 #include "Vehicles/VehicleHead.h"
 #include "Vehicles/VehicleTail.h"
 #include "ViewportManager.h"
+#include <OpenLoco/CargoDist/Simulation.h>
 #include <OpenLoco/Core/Exception.hpp>
 
 namespace OpenLoco::Vehicles
@@ -754,6 +755,9 @@ namespace OpenLoco::Vehicles
     // 0x004AF16A
     void removeAllCargo(CarComponent& carComponent)
     {
+        CargoDist::eraseVehicleCargoForComponent(carComponent.front->id);
+        CargoDist::eraseVehicleCargoForComponent(carComponent.back->id);
+        CargoDist::eraseVehicleCargoForComponent(carComponent.body->id);
         carComponent.front->secondaryCargo.qty = 0;
         carComponent.back->secondaryCargo.qty = 0;
         carComponent.body->primaryCargo.qty = 0;
@@ -831,6 +835,13 @@ namespace OpenLoco::Vehicles
         newFirstComponent.front->totalCarWeight = oldFirstComponent.front->totalCarWeight;
         newFirstComponent.front->reliability = oldFirstComponent.front->reliability;
         newFirstComponent.front->timeoutToBreakdown = oldFirstComponent.front->timeoutToBreakdown;
+
+        CargoDist::moveVehicleCargo(
+            { oldFirstComponent.body->id, CargoDist::VehicleCargoSlot::primary },
+            { newFirstComponent.body->id, CargoDist::VehicleCargoSlot::primary });
+        CargoDist::moveVehicleCargo(
+            { oldFirstComponent.front->id, CargoDist::VehicleCargoSlot::secondary },
+            { newFirstComponent.front->id, CargoDist::VehicleCargoSlot::secondary });
 
         // vanilla does not reset every value
         oldFirstComponent.body->primaryCargo.acceptedTypes = 0;
