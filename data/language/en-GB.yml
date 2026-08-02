@@ -2521,3 +2521,6 @@ strings:
   2466: "Render main viewport at native resolution"
   2467: "Keep the main game world at display resolution while scaling the interface"
   2468: "Align toolbar buttons horizontally centred"
+  2469: "Block signal"
+  2470: "Path signal"
+  2471: "One-way path signal"

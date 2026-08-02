@@ -194,10 +194,12 @@ namespace OpenLoco
                         args.trackId = elProcessedTrack->trackId();
                         args.trackObjType = elProcessedTrack->trackObjectId();
                         args.type = 0xFFU;
+                        args.mode = World::SignalMode::block;
                         uint16_t sideFlags = 0U;
                         if (elSignal->getLeft().hasSignal() && !elSignal->isLeftGhost())
                         {
                             args.type = elSignal->getLeft().signalObjectId();
+                            args.mode = elProcessedTrack->leftSignalMode();
                             sideFlags |= 0x8000U;
                         }
                         if (elSignal->getRight().hasSignal() && !elSignal->isRightGhost())
@@ -205,7 +207,8 @@ namespace OpenLoco
                             // If there is a signal on both sides and the signal object
                             // type is different then we will need to make two separate
                             // signal args
-                            if (sideFlags != 0 && args.type != elSignal->getRight().signalObjectId())
+                            const auto rightMode = elProcessedTrack->rightSignalMode();
+                            if (sideFlags != 0 && (args.type != elSignal->getRight().signalObjectId() || args.mode != rightMode))
                             {
                                 GameCommands::SignalPlacementArgs args2 = args;
                                 args2.sides = sideFlags;
@@ -214,6 +217,7 @@ namespace OpenLoco
                                 sideFlags = 0U;
                             }
                             args.type = elSignal->getRight().signalObjectId();
+                            args.mode = rightMode;
                             sideFlags |= 0x4000U;
                         }
                         args.sides = sideFlags;

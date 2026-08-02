@@ -5,6 +5,18 @@
 
 namespace OpenLoco::World
 {
+    enum class SignalMode : uint8_t
+    {
+        block,
+        path,
+        oneWayPath,
+    };
+
+    constexpr SignalMode sanitiseSignalMode(const uint8_t mode)
+    {
+        return mode <= static_cast<uint8_t>(SignalMode::oneWayPath) ? static_cast<SignalMode>(mode) : SignalMode::block;
+    }
+
 #pragma pack(push, 1)
 
     struct TrackElement : public TileElement
@@ -80,6 +92,23 @@ namespace OpenLoco::World
         {
             _6 &= ~0xE0;
             _6 |= (bridgeObjectId & 0x7) << 5;
+        }
+        uint8_t signalModes() const { return _6 & 0xF; }
+        void setSignalModes(uint8_t modes)
+        {
+            _6 &= ~0xF;
+            _6 |= static_cast<uint8_t>(sanitiseSignalMode(modes & 0x3));
+            _6 |= static_cast<uint8_t>(sanitiseSignalMode((modes >> 2) & 0x3)) << 2;
+        }
+        SignalMode leftSignalMode() const { return static_cast<SignalMode>(signalModes() & 0x3); }
+        void setLeftSignalMode(const SignalMode mode)
+        {
+            setSignalModes((signalModes() & ~0x3) | static_cast<uint8_t>(mode));
+        }
+        SignalMode rightSignalMode() const { return static_cast<SignalMode>((signalModes() >> 2) & 0x3); }
+        void setRightSignalMode(const SignalMode mode)
+        {
+            setSignalModes((signalModes() & ~0xC) | (static_cast<uint8_t>(mode) << 2));
         }
         CompanyId owner() const { return CompanyId(_7 & 0xF); } // _7l
         void setOwner(CompanyId newOwner) { _7 = (_7 & 0xF0) | (enumValue(newOwner) & 0xF); }

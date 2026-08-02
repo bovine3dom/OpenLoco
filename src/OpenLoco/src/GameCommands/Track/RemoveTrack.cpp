@@ -3,6 +3,7 @@
 #include "Economy/Economy.h"
 #include "GameCommands/Track/RemoveSignal.h"
 #include "GameCommands/Track/RemoveTrainStation.h"
+#include "Localisation/StringIds.h"
 #include "Map/RoadElement.h"
 #include "Map/SignalElement.h"
 #include "Map/TileManager.h"
@@ -13,6 +14,7 @@
 #include "Objects/TrackExtraObject.h"
 #include "Objects/TrackObject.h"
 #include "Random.h"
+#include "Vehicles/PathSignals.h"
 #include "Vehicles/Vehicle.h"
 #include "ViewportManager.h"
 
@@ -133,6 +135,15 @@ namespace OpenLoco::GameCommands
             return kFailure;
         }
 
+        const auto& selectedPiece = World::TrackData::getTrackPiece(args.trackId)[args.index];
+        const auto trackStart = args.pos - World::Pos3{ Math::Vector::rotate(World::Pos2{ selectedPiece.x, selectedPiece.y }, args.rotation), selectedPiece.z };
+        const auto tad = (args.trackId << 3) | args.rotation;
+        if (Vehicles::PathSignals::isPathReserved(trackStart, tad))
+        {
+            setErrorText(StringIds::vehicle_approaching_or_in_the_way);
+            return kFailure;
+        }
+
         if (elTrack->hasSignal())
         {
             GameCommands::SignalRemovalArgs srArgs;
@@ -200,9 +211,6 @@ namespace OpenLoco::GameCommands
         }
 
         const auto trackPieces = World::TrackData::getTrackPiece(args.trackId);
-        auto& trackPiece = trackPieces[args.index];
-
-        const auto trackStart = args.pos - World::Pos3{ Math::Vector::rotate(World::Pos2{ trackPiece.x, trackPiece.y }, args.rotation), trackPiece.z };
 
         // NB: moved out of the loop below (was at 0x0049CC1B)
         const currency32_t pieceRemovalCost = trackRemoveCost(args, trackPieces[0], trackStart, flags);

@@ -1,5 +1,9 @@
 #include <OpenLoco/Engine/World.hpp>
+#include <OpenLoco/Entities/EntityManager.h>
+#include <OpenLoco/GameCommands/Track/CreateSignal.h>
+#include <OpenLoco/GameState.h>
 #include <OpenLoco/Map/RoadElement.h>
+#include <OpenLoco/Map/SignalElement.h>
 #include <OpenLoco/Map/StationElement.h>
 #include <OpenLoco/Map/SurfaceElement.h>
 #include <OpenLoco/Map/Tile.h>
@@ -7,6 +11,11 @@
 #include <OpenLoco/Map/TileManager.h>
 #include <OpenLoco/Map/TrackElement.h>
 #include <OpenLoco/Map/TreeElement.h>
+#include <OpenLoco/S5/S5TileElement.h>
+#include <OpenLoco/Vehicles/PathSignals.h>
+#include <OpenLoco/Vehicles/RoutingManager.h>
+#include <OpenLoco/Vehicles/Vehicle.h>
+#include <OpenLoco/Vehicles/VehicleHead.h>
 #include <OpenLoco/World/Station.h>
 #include <algorithm>
 #include <array>
@@ -57,6 +66,22 @@ namespace
                 out.push_back(bytes);
             }
             return out;
+        }
+    };
+
+    class PathSignalsTest : public ::testing::Test
+    {
+    protected:
+        void SetUp() override
+        {
+            OpenLoco::EntityManager::reset();
+            OpenLoco::Vehicles::RoutingManager::resetRoutingTable();
+        }
+
+        void TearDown() override
+        {
+            OpenLoco::EntityManager::reset();
+            OpenLoco::Vehicles::RoutingManager::resetRoutingTable();
         }
     };
 
@@ -778,6 +803,141 @@ TEST_F(TileManagerTest, InsertElementTypedTemplateReturnsTypedPointer)
     auto* tree = TileManager::insertElement<TreeElement>(toWorldSpace(kTestTile), 12, 0);
     ASSERT_NE(tree, nullptr);
     EXPECT_EQ(tree->type(), ElementType::tree);
+}
+
+TEST_F(TileManagerTest, TrackSignalModesPreserveOtherTrackDataAndSanitiseInvalidValues)
+{
+    auto* trackEntry = TileManager::insertElement<TrackElement>(toWorldSpace(kTestTile), 8, 0);
+    ASSERT_NE(trackEntry, nullptr);
+    auto& track = trackEntry->get<TrackElement>();
+    track.setHasLevelCrossing(true);
+    track.setBridgeObjectId(5);
+
+    track.setLeftSignalMode(SignalMode::path);
+    track.setRightSignalMode(SignalMode::oneWayPath);
+
+    EXPECT_EQ(track.leftSignalMode(), SignalMode::path);
+    EXPECT_EQ(track.rightSignalMode(), SignalMode::oneWayPath);
+    EXPECT_TRUE(track.hasLevelCrossing());
+    EXPECT_EQ(track.bridge(), 5);
+
+    track.setSignalModes(0xF);
+
+    EXPECT_EQ(track.leftSignalMode(), SignalMode::block);
+    EXPECT_EQ(track.rightSignalMode(), SignalMode::block);
+    EXPECT_TRUE(track.hasLevelCrossing());
+    EXPECT_EQ(track.bridge(), 5);
+}
+
+TEST_F(TileManagerTest, TrackSignalModesAreExportedToS5)
+{
+    auto* trackEntry = TileManager::insertElement<TrackElement>(toWorldSpace(kTestTile), 8, 0);
+    ASSERT_NE(trackEntry, nullptr);
+    auto& track = trackEntry->get<TrackElement>();
+    track.setLeftSignalMode(SignalMode::oneWayPath);
+    track.setRightSignalMode(SignalMode::path);
+
+    const auto saved = OpenLoco::S5::toSaveElement(OpenLoco::getGameState(), *trackEntry);
+    const auto* savedTrack = saved.as<OpenLoco::S5::TrackElement>();
+    ASSERT_NE(savedTrack, nullptr);
+    EXPECT_EQ(savedTrack->signalModes(), track.signalModes());
+}
+
+TEST_F(TileManagerTest, StandardPathSignalCanBePassedFromBehindButOneWayPathSignalCannot)
+{
+    auto* trackEntry = TileManager::insertElement<TrackElement>(toWorldSpace(kTestTile), 8, 0);
+    ASSERT_NE(trackEntry, nullptr);
+    auto& track = trackEntry->get<TrackElement>();
+    track.setTrackId(0);
+    track.setRotation(0);
+    track.setSequenceIndex(0);
+    track.setTrackObjectId(0);
+    track.setHasSignal(true);
+
+    auto* signalEntry = TileManager::insertElementAfterNoReorg<SignalElement>(trackEntry, toWorldSpace(kTestTile), 8, 0);
+    ASSERT_NE(signalEntry, nullptr);
+    auto& signal = signalEntry->get<SignalElement>();
+    signal.setRotation(0);
+    signal.getRight() = SignalElement::Side{};
+    signal.getRight().setHasSignal(true);
+
+    const OpenLoco::Vehicles::TrackAndDirection::_TrackAndDirection tad(0, 0);
+    const Pos3 trackStart{ toWorldSpace(kTestTile), 8 * kSmallZStep };
+
+    track.setRightSignalMode(SignalMode::path);
+    EXPECT_EQ(OpenLoco::Vehicles::getSignalState(trackStart, tad, 0, 0), OpenLoco::Vehicles::SignalStateFlags::none);
+    EXPECT_EQ(OpenLoco::Vehicles::getSignalMode(trackStart, tad, 0, 1U << 31), SignalMode::path);
+
+    track.setRightSignalMode(SignalMode::oneWayPath);
+    EXPECT_NE(OpenLoco::Vehicles::getSignalState(trackStart, tad, 0, 0) & OpenLoco::Vehicles::SignalStateFlags::blockedNoRoute, OpenLoco::Vehicles::SignalStateFlags::none);
+}
+
+TEST(SignalPlacementArgsTest, RoundTripsSignalModeThroughRegisters)
+{
+    OpenLoco::GameCommands::SignalPlacementArgs original{};
+    original.pos = { 320, 640, 24 };
+    original.rotation = 3;
+    original.trackId = 17;
+    original.index = 2;
+    original.type = 7;
+    original.mode = SignalMode::oneWayPath;
+    original.trackObjType = 4;
+    original.sides = 0xC000;
+
+    const OpenLoco::GameCommands::SignalPlacementArgs decoded(static_cast<OpenLoco::GameCommands::registers>(original));
+
+    EXPECT_EQ(decoded.pos, original.pos);
+    EXPECT_EQ(decoded.rotation, original.rotation);
+    EXPECT_EQ(decoded.trackId, original.trackId);
+    EXPECT_EQ(decoded.index, original.index);
+    EXPECT_EQ(decoded.type, original.type);
+    EXPECT_EQ(decoded.mode, original.mode);
+    EXPECT_EQ(decoded.trackObjType, original.trackObjType);
+    EXPECT_EQ(decoded.sides, original.sides);
+}
+
+TEST(SignalPlacementArgsTest, SanitisesUnknownSignalModeFromRegisters)
+{
+    OpenLoco::GameCommands::SignalPlacementArgs original{};
+    auto regs = static_cast<OpenLoco::GameCommands::registers>(original);
+    regs.edi = (regs.edi & ~(0x3U << 24)) | (0x3U << 24);
+
+    const OpenLoco::GameCommands::SignalPlacementArgs decoded(regs);
+
+    EXPECT_EQ(decoded.mode, SignalMode::block);
+}
+
+TEST_F(PathSignalsTest, ReportsOnlyFutureRoutingEntriesAsReserved)
+{
+    auto routingHandle = OpenLoco::Vehicles::RoutingManager::getAndAllocateFreeRoutingHandle();
+    ASSERT_TRUE(routingHandle.has_value());
+
+    auto* base = OpenLoco::EntityManager::createEntityVehicle();
+    ASSERT_NE(base, nullptr);
+    base->baseType = OpenLoco::EntityBaseType::vehicle;
+    auto* vehicle = base->asBase<OpenLoco::Vehicles::VehicleBase>();
+    vehicle->setSubType(OpenLoco::Vehicles::VehicleHead::kVehicleThingType);
+    auto* head = static_cast<OpenLoco::Vehicles::VehicleHead*>(vehicle);
+    OpenLoco::EntityManager::moveEntityToList(head, OpenLoco::EntityManager::EntityListType::vehicleHead);
+
+    constexpr Pos3 currentPos{ 320, 160, 32 };
+    constexpr uint16_t straightWest = 0;
+    head->mode = OpenLoco::TransportMode::rail;
+    head->tileX = currentPos.x;
+    head->tileY = currentPos.y;
+    head->tileBaseZ = currentPos.z / kSmallZStep;
+    head->routingHandle = *routingHandle;
+    OpenLoco::Vehicles::RoutingManager::setRouting(*routingHandle, straightWest);
+
+    auto nextHandle = *routingHandle;
+    nextHandle.setIndex(nextHandle.getIndex() + 1);
+    OpenLoco::Vehicles::RoutingManager::setRouting(nextHandle, straightWest);
+
+    EXPECT_FALSE(OpenLoco::Vehicles::PathSignals::isPathReserved(currentPos, straightWest));
+    EXPECT_TRUE(OpenLoco::Vehicles::PathSignals::isPathReserved({ currentPos.x - kTileSize, currentPos.y, currentPos.z }, straightWest));
+
+    OpenLoco::Vehicles::RoutingManager::freeRouting(nextHandle);
+    EXPECT_FALSE(OpenLoco::Vehicles::PathSignals::isPathReserved({ currentPos.x - kTileSize, currentPos.y, currentPos.z }, straightWest));
 }
 
 TEST_F(TileManagerTest, InsertElementAfterNoReorgTypedTemplateReturnsTypedPointer)

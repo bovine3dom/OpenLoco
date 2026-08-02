@@ -38,6 +38,7 @@
 #include "Ui/WindowManager.h"
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/Orders.h"
+#include "Vehicles/PathSignals.h"
 #include "Vehicles/RoutingManager.h"
 #include "Vehicles/Vehicle1.h"
 #include "Vehicles/Vehicle2.h"
@@ -3833,7 +3834,7 @@ namespace OpenLoco::Vehicles
                 {
                     if (hasSignal)
                     {
-                        setSignalState(pos, tad, trackObjId, 0);
+                        setSignalStateToDefault(pos, tad, trackObjId);
                     }
                     leaveLevelCrossing(pos, tad, 9);
                 }
@@ -4277,17 +4278,15 @@ namespace OpenLoco::Vehicles
     {
         // TRACK only
 
-        // Identical to ROAD
         {
-            auto routings = RoutingManager::RingView(head.routingHandle);
-            auto iter = routings.begin();
-            iter++;
-            iter++;
-            if (RoutingManager::getRouting(*iter) != RoutingManager::kAllocatedButFreeRouting)
-            {
-                return Sub4ACEE7Result{ 1, 0, StationId::null };
-            }
-            if (RoutingManager::getRouting(*++iter) != RoutingManager::kAllocatedButFreeRouting)
+            auto iter = RoutingManager::RingView(head.routingHandle).begin();
+            const auto first = RoutingManager::getRouting(*++iter);
+            const auto second = RoutingManager::getRouting(*++iter);
+            const auto third = RoutingManager::getRouting(*++iter);
+            const auto hasExtendedReservation = first != RoutingManager::kAllocatedButFreeRouting
+                && second != RoutingManager::kAllocatedButFreeRouting;
+            if (!hasExtendedReservation
+                && (second != RoutingManager::kAllocatedButFreeRouting || third != RoutingManager::kAllocatedButFreeRouting))
             {
                 return Sub4ACEE7Result{ 1, 0, StationId::null };
             }
@@ -4389,7 +4388,20 @@ namespace OpenLoco::Vehicles
 
         auto routings = RoutingManager::RingView(head.routingHandle);
         uint16_t connection = tc.connections[0];
-        if (tc.connections.size() > 1)
+        const auto reservedRouting = RoutingManager::getRouting(*++routings.begin());
+        if (reservedRouting != RoutingManager::kAllocatedButFreeRouting)
+        {
+            const auto reservedBasicTad = reservedRouting & World::Track::AdditionalTaDFlags::basicTaDMask;
+            const auto reservedConnection = std::ranges::find_if(tc.connections, [reservedBasicTad](const auto candidate) {
+                return (candidate & World::Track::AdditionalTaDFlags::basicTaDMask) == reservedBasicTad;
+            });
+            if (reservedConnection == tc.connections.end())
+            {
+                return Sub4ACEE7Result{ 2, 0, StationId::null };
+            }
+            connection = *reservedConnection;
+        }
+        else if (tc.connections.size() > 1)
         {
             if (head.var_52 == 1)
             {
@@ -4400,6 +4412,9 @@ namespace OpenLoco::Vehicles
                 Sub4AC3D3State state{};
                 connection = trackPathing(head, nextPos, tc, requiredMods, queryMods, false, state);
             }
+        }
+        if (tc.connections.size() > 1)
+        {
             connection |= (1U << 14);
 
             // 0x004AD16E
@@ -4447,12 +4462,34 @@ namespace OpenLoco::Vehicles
                 leaveLevelCrossing(nextPos, tad, 8);
             }
 
-            if (connection & World::Track::AdditionalTaDFlags::hasSignal)
+            TrackAndDirection::_TrackAndDirection tad{ 0, 0 };
+            tad._data = connection & World::Track::AdditionalTaDFlags::basicTaDMask;
+            auto requiresBlockSignalHandling = (connection & World::Track::AdditionalTaDFlags::hasSignal) != 0;
+            if (requiresBlockSignalHandling)
+            {
+                const auto signalMode = getSignalMode(nextPos, tad, head.trackType, 0);
+                const auto canPassFromBack = !signalMode.has_value()
+                    && getSignalMode(nextPos, tad, head.trackType, 1U << 31) == World::SignalMode::path
+                    && getSignalState(nextPos, tad, head.trackType, 0) == SignalStateFlags::none;
+                if (signalMode.has_value() && *signalMode != World::SignalMode::block)
+                {
+                    if (!PathSignals::tryReservePath(head, nextPos, connection))
+                    {
+                        setSignalState(nextPos, tad, head.trackType, 1);
+                        const auto waitFlags = static_cast<uint8_t>(*signalMode == World::SignalMode::oneWayPath ? enumValue(SignalStateFlags::occupiedOneWay) : 0);
+                        return Sub4ACEE7Result{ 3, waitFlags, StationId::null };
+                    }
+                    setSignalState(nextPos, tad, head.trackType, 0);
+                    requiresBlockSignalHandling = false;
+                }
+                else if (canPassFromBack)
+                {
+                    requiresBlockSignalHandling = false;
+                }
+            }
+            if (requiresBlockSignalHandling)
             {
                 // 0x004AD3A3
-
-                TrackAndDirection::_TrackAndDirection tad{ 0, 0 };
-                tad._data = connection & World::Track::AdditionalTaDFlags::basicTaDMask;
                 const auto keySignalStateFlags = isPlaceDown ? (SignalStateFlags::occupied)
                                                              : (SignalStateFlags::occupied | SignalStateFlags::occupiedOneWay | SignalStateFlags::blockedNoRoute);
                 const auto signalState = getSignalState(nextPos, tad, head.trackType, 0U) & keySignalStateFlags;
@@ -6050,7 +6087,7 @@ namespace OpenLoco::Vehicles
             {
                 if (hasSignal)
                 {
-                    setSignalState(pos, tad, trackObjId, 0);
+                    setSignalStateToDefault(pos, tad, trackObjId);
                 }
                 leaveLevelCrossing(pos, tad, 9);
             }
@@ -6307,7 +6344,7 @@ namespace OpenLoco::Vehicles
                 tad._data = routing & World::Track::AdditionalTaDFlags::basicTaDMask;
                 if (routing & World::Track::AdditionalTaDFlags::hasSignal)
                 {
-                    setSignalState(routingPos, tad, train.tail->trackType, 0);
+                    setSignalStateToDefault(routingPos, tad, train.tail->trackType);
                 }
                 routingPos += World::TrackData::getUnkTrack(tad._data).pos;
             }

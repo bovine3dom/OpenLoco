@@ -267,25 +267,37 @@ namespace OpenLoco::Vehicles
         }
 
         auto* elSignal = res->first;
+        auto* elTrack = res->second;
 
         // edx
-        auto& signalSide = (flags & (1ULL << 31)) ? elSignal->getRight() : elSignal->getLeft();
+        const auto isRight = (flags & (1ULL << 31)) != 0;
+        auto& signalSide = isRight ? elSignal->getRight() : elSignal->getLeft();
+        const auto& oppositeSide = isRight ? elSignal->getLeft() : elSignal->getRight();
+        const auto signalMode = isRight ? elTrack->rightSignalMode() : elTrack->leftSignalMode();
+        const auto oppositeMode = isRight ? elTrack->leftSignalMode() : elTrack->rightSignalMode();
+        const auto signalIsGhost = isRight ? elSignal->isRightGhost() : elSignal->isLeftGhost();
+        const auto oppositeIsGhost = isRight ? elSignal->isLeftGhost() : elSignal->isRightGhost();
+        const auto canPassFromBack = !signalSide.hasSignal()
+            && oppositeSide.hasSignal()
+            && oppositeMode == World::SignalMode::path
+            && !oppositeIsGhost;
         auto ret = SignalStateFlags::none;
-        if (signalSide.isOccupied())
+        if (signalSide.isOccupied() && (signalMode == World::SignalMode::block || signalIsGhost))
         {
             ret |= SignalStateFlags::occupied;
         }
-        if (!signalSide.hasSignal())
+        if (!signalSide.hasSignal() && !canPassFromBack)
         {
             ret |= SignalStateFlags::blockedNoRoute;
         }
-        if (flags & (1ULL << 31))
+        if (signalSide.hasSignal()
+            && (signalMode != World::SignalMode::path || signalIsGhost)
+            && (!oppositeSide.hasSignal() || oppositeIsGhost))
         {
-            if (!elSignal->getLeft().hasSignal() || elSignal->isLeftGhost())
-            {
-                ret |= SignalStateFlags::occupiedOneWay;
-            }
-
+            ret |= SignalStateFlags::occupiedOneWay;
+        }
+        if (isRight)
+        {
             if (elSignal->isRightGhost() && elSignal->getLeft().hasSignal())
             {
                 ret |= SignalStateFlags::blockedNoRoute;
@@ -293,17 +305,53 @@ namespace OpenLoco::Vehicles
         }
         else
         {
-            if (!elSignal->getRight().hasSignal() || elSignal->isRightGhost())
-            {
-                ret |= SignalStateFlags::occupiedOneWay;
-            }
-
             if (elSignal->isLeftGhost() && elSignal->getRight().hasSignal())
             {
                 ret |= SignalStateFlags::blockedNoRoute;
             }
         }
         return ret;
+    }
+
+    std::optional<World::SignalMode> getSignalMode(const World::Pos3& loc, const TrackAndDirection::_TrackAndDirection trackAndDirection, const uint8_t trackType, uint32_t flags)
+    {
+        auto trackStart = loc;
+        if (trackAndDirection.isReversed())
+        {
+            const auto& trackSize = World::TrackData::getUnkTrack(trackAndDirection._data);
+            trackStart += trackSize.pos;
+            if (trackSize.rotationEnd < 12)
+            {
+                trackStart -= World::Pos3{ World::kRotationOffset[trackSize.rotationEnd], 0 };
+            }
+            flags ^= (1ULL << 31);
+        }
+
+        const auto& trackPiece = World::TrackData::getTrackPiece(trackAndDirection.id())[0];
+        auto signalLoc = trackStart + World::Pos3{ Math::Vector::rotate(World::Pos2{ trackPiece.x, trackPiece.y }, trackAndDirection.cardinalDirection()), trackPiece.z };
+        const auto res = findSignalOnTrack(signalLoc, trackAndDirection, trackType, trackPiece.index);
+        if (!res)
+        {
+            return std::nullopt;
+        }
+
+        const auto isRight = (flags & (1ULL << 31)) != 0;
+        const auto* signal = res->first;
+        if (isRight)
+        {
+            return signal->getRight().hasSignal() && !signal->isRightGhost()
+                ? std::optional{ res->second->rightSignalMode() }
+                : std::nullopt;
+        }
+        return signal->getLeft().hasSignal() && !signal->isLeftGhost()
+            ? std::optional{ res->second->leftSignalMode() }
+            : std::nullopt;
+    }
+
+    void setSignalStateToDefault(const World::Pos3& loc, const TrackAndDirection::_TrackAndDirection trackAndDirection, const uint8_t trackType)
+    {
+        const auto mode = getSignalMode(loc, trackAndDirection, trackType, 0);
+        setSignalState(loc, trackAndDirection, trackType, mode.has_value() && *mode != World::SignalMode::block ? 1 : 0);
     }
 
     // 0x0048963F
@@ -423,6 +471,19 @@ namespace OpenLoco::Vehicles
     // 0x004A2AF0
     // Passes occupied state via _routingTransformData
     // Returns true for signal block end
+    static bool isSignalBlockEnd(const LocationOfInterest& interest)
+    {
+        if (!(interest.trackAndDirection & World::Track::AdditionalTaDFlags::hasSignal))
+        {
+            return false;
+        }
+        if (getSignalMode(interest.loc, interest.tad(), interest.trackType, 0).has_value())
+        {
+            return true;
+        }
+        return getSignalMode(interest.loc, interest.tad(), interest.trackType, 1U << 31) != World::SignalMode::path;
+    }
+
     static bool findOccupationByBlock(const LocationOfInterest& interest, uint16_t& routingTransformData)
     {
         auto nextLoc = interest.loc;
@@ -469,7 +530,7 @@ namespace OpenLoco::Vehicles
                 }
             }
         }
-        return interest.trackAndDirection & World::Track::AdditionalTaDFlags::hasSignal;
+        return isSignalBlockEnd(interest);
     }
 
     // 0x004A2CE7
@@ -478,6 +539,11 @@ namespace OpenLoco::Vehicles
         for (const auto& interest : results.reachableLocs)
         {
             if (!(interest.trackAndDirection & World::Track::AdditionalTaDFlags::hasSignal))
+            {
+                continue;
+            }
+            const auto mode = getSignalMode(interest.loc, interest.tad(), interest.trackType, 1U << 31);
+            if (mode.has_value() && *mode != World::SignalMode::block)
             {
                 continue;
             }
@@ -909,6 +975,12 @@ namespace OpenLoco::Vehicles
         if (!(interest.trackAndDirection & World::Track::AdditionalTaDFlags::hasSignal))
         {
             return false;
+        }
+
+        const auto mode = getSignalMode(interest.loc, interest.tad(), interest.trackType, 1U << 31);
+        if (mode.has_value() && *mode != World::SignalMode::block)
+        {
+            return true;
         }
 
         setSignalState(interest.loc, interest.tad(), interest.trackType, (1ULL << 31) | (8));

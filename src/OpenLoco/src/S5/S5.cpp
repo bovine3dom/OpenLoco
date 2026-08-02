@@ -223,6 +223,7 @@ namespace OpenLoco::S5
                     dstElem.setSequenceIndex(d.sequenceIndex());
                     dstElem.setTrackObjectId(d.trackObjectId());
                     dstElem.setHasLevelCrossing(d.hasLevelCrossing());
+                    dstElem.setSignalModes(d.signalModes());
                     dstElem.setBridgeObjectId(d.bridge());
                     dstElem.setOwner(static_cast<CompanyId>(d.owner()));
                     for (uint8_t m = 0; m < 4; ++m)

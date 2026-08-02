@@ -29,11 +29,28 @@ using namespace OpenLoco::World::TileManager;
 
 namespace OpenLoco::Ui::Windows::Construction::Signal
 {
+    static World::SignalMode _signalMode = World::SignalMode::block;
+    static World::SignalMode _signalGhostMode = World::SignalMode::block;
+
     static constexpr auto widgets = makeWidgets(
-        Common::makeCommonWidgets(138, 167, StringIds::stringid_2),
+        Common::makeCommonWidgets(138, 188, StringIds::stringid_2),
         Widgets::dropdownWidgets(Widx::kSignal, Widx::kSignalDropdown, { 3, 45 }, { 132, 12 }, WindowColour::secondary, Widget::kContentNull, StringIds::tooltip_select_signal_type),
-        Widgets::ImageButton(Widx::kBothDirections, { 27, 110 }, { 40, 40 }, WindowColour::secondary, Widget::kContentNull, StringIds::tooltip_signal_both_directions),
-        Widgets::ImageButton(Widx::kSingleDirection, { 71, 110 }, { 40, 40 }, WindowColour::secondary, Widget::kContentNull, StringIds::tooltip_signal_single_direction));
+        Widgets::dropdownWidgets(Widx::kSignalMode, Widx::kSignalModeDropdown, { 3, 105 }, { 132, 12 }, WindowColour::secondary, StringIds::signal_mode_block, StringIds::tooltip_select_signal_type),
+        Widgets::ImageButton(Widx::kBothDirections, { 27, 122 }, { 40, 40 }, WindowColour::secondary, Widget::kContentNull, StringIds::tooltip_signal_both_directions),
+        Widgets::ImageButton(Widx::kSingleDirection, { 71, 122 }, { 40, 40 }, WindowColour::secondary, Widget::kContentNull, StringIds::tooltip_signal_single_direction));
+
+    static constexpr StringId getSignalModeString(const World::SignalMode mode)
+    {
+        switch (mode)
+        {
+            case World::SignalMode::path:
+                return StringIds::signal_mode_path;
+            case World::SignalMode::oneWayPath:
+                return StringIds::signal_mode_one_way_path;
+            default:
+                return StringIds::signal_mode_block;
+        }
+    }
 
     std::span<const Widget> getWidgets()
     {
@@ -97,6 +114,14 @@ namespace OpenLoco::Ui::Windows::Construction::Signal
                 break;
             }
 
+            case Widx::kSignalModeDropdown:
+                Dropdown::showBelow(&self, widgetIndex, 3, 0);
+                Dropdown::add(0, StringIds::signal_mode_block);
+                Dropdown::add(1, StringIds::signal_mode_path);
+                Dropdown::add(2, StringIds::signal_mode_one_way_path);
+                Dropdown::setHighlightedItem(static_cast<size_t>(_signalMode));
+                break;
+
             case Widx::kBothDirections:
             {
                 cState.isSignalBothDirections = 1;
@@ -118,6 +143,15 @@ namespace OpenLoco::Ui::Windows::Construction::Signal
     // 0x0049E67C
     static void onDropdown(Window& self, [[maybe_unused]] WidgetIndex_t widgetIndex, const WidgetId id, int16_t itemIndex)
     {
+        if (id == Widx::kSignalModeDropdown)
+        {
+            if (itemIndex != -1)
+            {
+                _signalMode = static_cast<World::SignalMode>(itemIndex);
+                self.invalidate();
+            }
+            return;
+        }
         if (id != Widx::kSignalDropdown)
         {
             return;
@@ -172,6 +206,7 @@ namespace OpenLoco::Ui::Windows::Construction::Signal
         args.trackId = elTrack->trackId();
         args.index = elTrack->sequenceIndex();
         args.trackObjType = elTrack->trackObjectId();
+        args.mode = _signalMode;
         if (isBothDirectons)
         {
             args.sides = 0xC000;
@@ -197,6 +232,7 @@ namespace OpenLoco::Ui::Windows::Construction::Signal
             cState.signalGhostTileIndex = args.index;
             cState.signalGhostSides = args.sides;
             cState.signalGhostTrackObjId = args.trackObjType;
+            _signalGhostMode = args.mode;
         }
         return res;
     }
@@ -252,7 +288,8 @@ namespace OpenLoco::Ui::Windows::Construction::Signal
                 && cState.signalGhostTrackId == placementArgs->trackId
                 && cState.signalGhostTileIndex == placementArgs->index
                 && cState.signalGhostSides == placementArgs->sides
-                && cState.signalGhostTrackObjId == placementArgs->trackObjType)
+                && cState.signalGhostTrackObjId == placementArgs->trackObjType
+                && _signalGhostMode == placementArgs->mode)
             {
                 return;
             }
@@ -316,6 +353,7 @@ namespace OpenLoco::Ui::Windows::Construction::Signal
         auto trainSignalObject = ObjectManager::get<TrainSignalObject>(cState.lastSelectedSignal);
 
         self.widgets[widx::signal].text = trainSignalObject->name;
+        self.widgets[widx::signal_mode].text = getSignalModeString(_signalMode);
 
         Common::repositionTabs(&self);
     }
@@ -369,6 +407,7 @@ namespace OpenLoco::Ui::Windows::Construction::Signal
 
     void tabReset(Window& self)
     {
+        _signalMode = World::SignalMode::block;
         self.callOnMouseDown(Signal::widx::both_directions, self.widgets[Signal::widx::both_directions].id);
     }
 

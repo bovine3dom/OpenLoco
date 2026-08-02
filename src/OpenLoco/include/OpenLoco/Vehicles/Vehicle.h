@@ -10,6 +10,12 @@
 #include <OpenLoco/Audio/AudioHandle.h>
 #include <OpenLoco/Core/EnumFlags.hpp>
 #include <OpenLoco/Core/Exception.hpp>
+#include <optional>
+
+namespace OpenLoco::World
+{
+    enum class SignalMode : uint8_t;
+}
 
 namespace OpenLoco::Vehicles
 {
@@ -212,7 +218,9 @@ namespace OpenLoco::Vehicles
     };
 
     void setSignalState(const World::Pos3& loc, const TrackAndDirection::_TrackAndDirection trackAndDirection, const uint8_t trackType, uint32_t flags);
+    void setSignalStateToDefault(const World::Pos3& loc, const TrackAndDirection::_TrackAndDirection trackAndDirection, uint8_t trackType);
     SignalStateFlags getSignalState(const World::Pos3& loc, const TrackAndDirection::_TrackAndDirection trackAndDirection, const uint8_t trackType, uint32_t flags);
+    std::optional<World::SignalMode> getSignalMode(const World::Pos3& loc, const TrackAndDirection::_TrackAndDirection trackAndDirection, const uint8_t trackType, uint32_t flags);
     void sub_4A2AD7(const World::Pos3& loc, const TrackAndDirection::_TrackAndDirection trackAndDirection, const CompanyId company, const uint8_t trackType);
     void setReverseSignalOccupiedInBlock(const World::Pos3& loc, const TrackAndDirection::_TrackAndDirection trackAndDirection, const CompanyId company, const uint8_t trackType);
     bool isBlockOccupied(const World::Pos3& loc, const TrackAndDirection::_TrackAndDirection trackAndDirection, const CompanyId company, const uint8_t trackType);

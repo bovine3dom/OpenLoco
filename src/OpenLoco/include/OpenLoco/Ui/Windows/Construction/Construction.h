@@ -332,6 +332,8 @@ namespace OpenLoco::Ui::Windows::Construction
         {
             signal = 8,
             signal_dropdown,
+            signal_mode,
+            signal_mode_dropdown,
             both_directions,
             single_direction,
         };
@@ -340,6 +342,8 @@ namespace OpenLoco::Ui::Windows::Construction
         {
             constexpr WidgetId kSignal{ "signal" };
             constexpr WidgetId kSignalDropdown{ "signal_dropdown" };
+            constexpr WidgetId kSignalMode{ "signal_mode" };
+            constexpr WidgetId kSignalModeDropdown{ "signal_mode_dropdown" };
             constexpr WidgetId kBothDirections{ "both_directions" };
             constexpr WidgetId kSingleDirection{ "single_direction" };
         }

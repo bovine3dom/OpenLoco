@@ -170,6 +170,8 @@ namespace OpenLoco::S5
         void setTrackObjectId(uint8_t v) { _5 = (_5 & ~0xF0) | ((v & 0xF) << 4); }
         bool hasLevelCrossing() const { return _6 & 0x10; }
         void setHasLevelCrossing(bool v) { _6 = (_6 & ~0x10) | (v ? 0x10 : 0); }
+        uint8_t signalModes() const { return _6 & 0xF; }
+        void setSignalModes(uint8_t v) { _6 = (_6 & ~0xF) | (v & 0xF); }
         uint8_t bridge() const { return _6 >> 5; }
         void setBridge(uint8_t v) { _6 = (_6 & ~0xE0) | ((v & 0x7) << 5); }
         uint8_t owner() const { return _7 & 0xF; }

@@ -5,6 +5,7 @@
 #include "Map/TileManager.h"
 #include "Map/Track/Track.h"
 #include "Map/Track/TrackData.h"
+#include "Map/TrackElement.h"
 #include "Vehicles/RoutingManager.h"
 #include "ViewportManager.h"
 
@@ -99,7 +100,7 @@ namespace OpenLoco::Vehicles
         {
             if (ref & (1 << 15))
             {
-                setSignalState(_oldTilePos, trackAndDir.track, trackType, 0);
+                setSignalStateToDefault(_oldTilePos, trackAndDir.track, trackType);
             }
 
             const auto& trackSize = World::TrackData::getUnkTrack(ref & World::Track::AdditionalTaDFlags::basicTaDMask);
@@ -164,7 +165,7 @@ namespace OpenLoco::Vehicles
 
                 if (routing & Track::AdditionalTaDFlags::hasSignal)
                 {
-                    setSignalState(pos, tad, tail.trackType, 0);
+                    setSignalStateToDefault(pos, tad, tail.trackType);
                 }
 
                 leaveLevelCrossing(pos, tad, 9);

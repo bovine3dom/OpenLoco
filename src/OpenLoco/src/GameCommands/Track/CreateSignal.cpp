@@ -11,6 +11,7 @@
 #include "Map/TrackElement.h"
 #include "Objects/ObjectManager.h"
 #include "Objects/TrainSignalObject.h"
+#include "Vehicles/PathSignals.h"
 #include "Vehicles/Vehicle.h"
 #include "ViewportManager.h"
 
@@ -170,6 +171,10 @@ namespace OpenLoco::GameCommands
         {
             return kFailure;
         }
+        if (args.mode > World::SignalMode::oneWayPath)
+        {
+            return kFailure;
+        }
 
         auto [initialTrackEntry, elTrack] = getElTrackAt(args, args.pos, args.index);
 
@@ -193,6 +198,13 @@ namespace OpenLoco::GameCommands
         auto& trackPiece = trackPieces[args.index];
 
         const auto trackStart = args.pos - World::Pos3{ Math::Vector::rotate(World::Pos2{ trackPiece.x, trackPiece.y }, args.rotation), trackPiece.z };
+
+        const auto tad = (args.trackId << 3) | args.rotation;
+        if (Vehicles::PathSignals::isPathReserved(trackStart, tad))
+        {
+            setErrorText(StringIds::vehicle_approaching_or_in_the_way);
+            return kFailure;
+        }
 
         if (!validateTrackIsSignalCompatible(args, trackPieces, trackStart))
         {
@@ -273,6 +285,12 @@ namespace OpenLoco::GameCommands
                         left.setSignalObjectId(args.type);
                         left.setFrame(0);
                         left.setAllLights(0);
+                        left.setUnk4(args.mode == World::SignalMode::block ? 0 : 1);
+                        if (args.mode != World::SignalMode::block)
+                        {
+                            left.setIsOccupied(false);
+                        }
+                        pieceElTrack->setLeftSignalMode(args.mode);
                     }
                 }
                 if (sides & (1U << 14))
@@ -285,6 +303,12 @@ namespace OpenLoco::GameCommands
                         right.setSignalObjectId(args.type);
                         right.setFrame(0);
                         right.setAllLights(0);
+                        right.setUnk4(args.mode == World::SignalMode::block ? 0 : 1);
+                        if (args.mode != World::SignalMode::block)
+                        {
+                            right.setIsOccupied(false);
+                        }
+                        pieceElTrack->setRightSignalMode(args.mode);
                     }
                 }
                 if (!(flags & Flags::ghost))

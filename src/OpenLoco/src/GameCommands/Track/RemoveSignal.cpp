@@ -1,11 +1,13 @@
 #include "GameCommands/Track/RemoveSignal.h"
 #include "Economy/Economy.h"
+#include "Localisation/StringIds.h"
 #include "Map/SignalElement.h"
 #include "Map/TileManager.h"
 #include "Map/Track/TrackData.h"
 #include "Map/TrackElement.h"
 #include "Objects/ObjectManager.h"
 #include "Objects/TrainSignalObject.h"
+#include "Vehicles/PathSignals.h"
 #include "Vehicles/Vehicle.h"
 #include "ViewportManager.h"
 
@@ -109,6 +111,13 @@ namespace OpenLoco::GameCommands
 
         const auto trackStart = args.pos - World::Pos3{ Math::Vector::rotate(World::Pos2{ trackPiece.x, trackPiece.y }, args.rotation), trackPiece.z };
 
+        const auto tad = (args.trackId << 3) | args.rotation;
+        if (Vehicles::PathSignals::isPathReserved(trackStart, tad))
+        {
+            setErrorText(StringIds::vehicle_approaching_or_in_the_way);
+            return kFailure;
+        }
+
         currency32_t cost = signalRemoveCost(args, trackPieces[0], trackStart);
 
         if (static_cast<uint32_t>(cost) == kFailure)
@@ -151,6 +160,7 @@ namespace OpenLoco::GameCommands
                     left.setAllLights(0);
                     left.setFrame(0);
                     elSignal->setLeftGhost(false);
+                    pieceElTrack->setLeftSignalMode(World::SignalMode::block);
                 }
             }
             if (args.flags & (1U << 14))
@@ -162,6 +172,7 @@ namespace OpenLoco::GameCommands
                     right.setAllLights(0);
                     right.setFrame(0);
                     elSignal->setRightGhost(false);
+                    pieceElTrack->setRightSignalMode(World::SignalMode::block);
                 }
             }
             Ui::ViewportManager::invalidate(trackLoc, elSignal->baseHeight(), elSignal->baseHeight() + 32, ZoomLevel::half);

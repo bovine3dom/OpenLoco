@@ -2182,6 +2182,9 @@ namespace OpenLoco::StringIds
     constexpr StringId nativeViewportRendering = 2466;
     constexpr StringId nativeViewportRenderingTooltip = 2467;
     constexpr StringId toolbar_buttons_centred = 2468;
+    constexpr StringId signal_mode_block = 2469;
+    constexpr StringId signal_mode_path = 2470;
+    constexpr StringId signal_mode_one_way_path = 2471;
 
     constexpr StringId temporary_object_load_str_0 = 8192;
     constexpr StringId temporary_object_load_str_1 = 8193;
