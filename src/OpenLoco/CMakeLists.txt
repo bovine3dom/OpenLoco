@@ -106,9 +106,7 @@ set(OLOCO_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Graphics/DrawSprite.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Graphics/FPSCounter.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Graphics/Gfx.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/Graphics/HQx.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Graphics/InvalidationGrid.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/Graphics/MMPX.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Graphics/PaletteMap.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Graphics/RenderTarget.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Graphics/SoftwareDrawingContext.cpp"
@@ -502,7 +500,6 @@ set(OLOCO_HEADERS
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/Graphics/ImageIds.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/Graphics/InvalidationGrid.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/Graphics/PaletteMap.h"
-    "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/Graphics/PixelScaling.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/Graphics/RenderTarget.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/Graphics/SoftwareDrawingContext.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/Graphics/SoftwareDrawingEngine.h"
@@ -771,8 +768,6 @@ set(private_compile_definitions
 )
 
 set(test_files
-    "${CMAKE_CURRENT_SOURCE_DIR}/tests/HQxTests.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/tests/MMPXTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/TileManagerTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/ViewportTests.cpp"
 )

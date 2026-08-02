@@ -1,7 +1,6 @@
 #include "Graphics/SoftwareDrawingEngine.h"
 #include "Config.h"
 #include "Graphics/FPSCounter.h"
-#include "Graphics/PixelScaling.h"
 #include "Graphics/RenderTarget.h"
 #include "Logging.h"
 #include "SceneManager.h"
@@ -14,7 +13,6 @@
 #include <cmath>
 #include <cstdlib>
 #include <limits>
-#include <span>
 
 using namespace OpenLoco::Gfx;
 using namespace OpenLoco::Ui;
@@ -71,21 +69,6 @@ namespace OpenLoco::Gfx
         {
             SDL_DestroyTexture(_scaledScreenTexture);
             _scaledScreenTexture = nullptr;
-        }
-        if (_scaledScreenRGBASurface != nullptr)
-        {
-            SDL_DestroySurface(_scaledScreenRGBASurface);
-            _scaledScreenRGBASurface = nullptr;
-        }
-        if (_scaledScreenSurface != nullptr)
-        {
-            SDL_DestroySurface(_scaledScreenSurface);
-            _scaledScreenSurface = nullptr;
-        }
-        if (_mmpxIntermediateSurface != nullptr)
-        {
-            SDL_DestroySurface(_mmpxIntermediateSurface);
-            _mmpxIntermediateSurface = nullptr;
         }
         _pixelScaleFactor = 1;
     }
@@ -243,86 +226,30 @@ namespace OpenLoco::Gfx
             }
         }
 
-        if (scaleFactor > 1.0f && _worldSurface == nullptr)
+        if (scaleFactor > 1.0f)
         {
-            const auto createScaledResources = [&]() {
-                auto scale = std::clamp(static_cast<int32_t>(std::ceil(scaleFactor)), 2, 4);
-                const auto scalingMode = Config::get().scalingMode;
-                if (scalingMode == Config::ScalingMode::mmpx && scale > 2)
-                {
-                    scale = 4;
-                }
-                if (scaledWidth > std::numeric_limits<int32_t>::max() / scale || scaledHeight > std::numeric_limits<int32_t>::max() / scale)
-                {
-                    Logging::error("Scaled screen dimensions are too large");
-                    return false;
-                }
-
-                _pixelScaleFactor = static_cast<uint8_t>(scale);
-                const auto textureAccess = scalingMode == Config::ScalingMode::sharp ? SDL_TEXTUREACCESS_TARGET : SDL_TEXTUREACCESS_STREAMING;
+            const auto scale = std::clamp(static_cast<int32_t>(std::ceil(scaleFactor)), 2, 4);
+            if (scaledWidth > std::numeric_limits<int32_t>::max() / scale || scaledHeight > std::numeric_limits<int32_t>::max() / scale)
+            {
+                Logging::error("Scaled screen dimensions are too large");
+            }
+            else
+            {
                 const auto outputWidth = scaledWidth * scale;
                 const auto outputHeight = scaledHeight * scale;
-                _scaledScreenTexture = SDL_CreateTexture(_renderer, outputFormat, textureAccess, outputWidth, outputHeight);
+                _scaledScreenTexture = SDL_CreateTexture(_renderer, outputFormat, SDL_TEXTUREACCESS_TARGET, outputWidth, outputHeight);
                 if (_scaledScreenTexture == nullptr)
                 {
                     Logging::error("SDL_CreateTexture (_scaledScreenTexture) failed: {}", SDL_GetError());
-                    return false;
                 }
-
-                if (!SDL_SetTextureScaleMode(_scaledScreenTexture, SDL_SCALEMODE_LINEAR))
+                else
                 {
-                    Logging::error("SDL_SetTextureScaleMode (_scaledScreenTexture) failed: {}", SDL_GetError());
-                }
-
-                if (scalingMode == Config::ScalingMode::sharp)
-                {
-                    return true;
-                }
-
-                _scaledScreenRGBASurface = SDL_CreateSurface(outputWidth, outputHeight, outputFormat);
-                if (_scaledScreenRGBASurface == nullptr)
-                {
-                    Logging::error("SDL_CreateSurface (_scaledScreenRGBASurface) failed: {}", SDL_GetError());
-                    return false;
-                }
-
-                if (scalingMode != Config::ScalingMode::mmpx)
-                {
-                    return true;
-                }
-
-                _scaledScreenSurface = SDL_CreateSurface(outputWidth, outputHeight, SDL_PIXELFORMAT_INDEX8);
-                if (_scaledScreenSurface == nullptr)
-                {
-                    Logging::error("SDL_CreateSurface (_scaledScreenSurface) failed: {}", SDL_GetError());
-                    return false;
-                }
-                if (!SDL_SetSurfacePalette(_scaledScreenSurface, _palette))
-                {
-                    Logging::error("SDL_SetSurfacePalette (_scaledScreenSurface) failed: {}", SDL_GetError());
-                }
-
-                if (scale == 4)
-                {
-                    _mmpxIntermediateSurface = SDL_CreateSurface(scaledWidth * 2, scaledHeight * 2, SDL_PIXELFORMAT_INDEX8);
-                    if (_mmpxIntermediateSurface == nullptr)
+                    _pixelScaleFactor = static_cast<uint8_t>(scale);
+                    if (!SDL_SetTextureScaleMode(_scaledScreenTexture, SDL_SCALEMODE_LINEAR))
                     {
-                        Logging::error("SDL_CreateSurface (_mmpxIntermediateSurface) failed: {}", SDL_GetError());
-                        return false;
-                    }
-                    if (!SDL_SetSurfacePalette(_mmpxIntermediateSurface, _palette))
-                    {
-                        Logging::error("SDL_SetSurfacePalette (_mmpxIntermediateSurface) failed: {}", SDL_GetError());
+                        Logging::error("SDL_SetTextureScaleMode (_scaledScreenTexture) failed: {}", SDL_GetError());
                     }
                 }
-
-                return true;
-            };
-
-            if (!createScaledResources())
-            {
-                Logging::warn("Falling back to direct screen scaling");
-                destroyScaledScreenResources();
             }
         }
 
@@ -697,92 +624,27 @@ namespace OpenLoco::Gfx
         }
 
         auto* displayTexture = _screenTexture;
-        const auto scalingMode = Config::get().scalingMode;
         if (_scaledScreenTexture != nullptr && _pixelScaleFactor > 1)
         {
-            if (scalingMode == Config::ScalingMode::sharp)
+            // Integer nearest-neighbour prescale followed by linear downsampling.
+            if (!SDL_SetRenderTarget(_renderer, _scaledScreenTexture))
             {
-                // Integer nearest-neighbour prescale followed by linear downsampling.
-                if (!SDL_SetRenderTarget(_renderer, _scaledScreenTexture))
-                {
-                    Logging::error("SDL_SetRenderTarget (_scaledScreenTexture) failed: {}", SDL_GetError());
-                    return;
-                }
-                if (!SDL_RenderTexture(_renderer, _screenTexture, nullptr, nullptr))
-                {
-                    Logging::error("SDL_RenderTexture (_screenTexture) failed: {}", SDL_GetError());
-                    SDL_SetRenderTarget(_renderer, nullptr);
-                    return;
-                }
-
-                if (!SDL_SetRenderTarget(_renderer, nullptr))
-                {
-                    Logging::error("SDL_SetRenderTarget (nullptr) failed: {}", SDL_GetError());
-                    return;
-                }
-                displayTexture = _scaledScreenTexture;
+                Logging::error("SDL_SetRenderTarget (_scaledScreenTexture) failed: {}", SDL_GetError());
+                return;
             }
-            else if (_scaledScreenRGBASurface != nullptr)
+            if (!SDL_RenderTexture(_renderer, _screenTexture, nullptr, nullptr))
             {
-                const auto sourcePixels = std::span(
-                    static_cast<const PaletteIndex_t*>(_screenSurface->pixels),
-                    static_cast<size_t>(_screenSurface->pitch) * _screenSurface->h);
-                const auto palette = Gfx::getRgbaPalette();
-                bool scaled = false;
-
-                if (scalingMode == Config::ScalingMode::mmpx && _scaledScreenSurface != nullptr)
-                {
-                    auto destinationPixels = std::span(
-                        static_cast<PaletteIndex_t*>(_scaledScreenSurface->pixels),
-                        static_cast<size_t>(_scaledScreenSurface->pitch) * _scaledScreenSurface->h);
-                    if (_pixelScaleFactor == 2)
-                    {
-                        scaled = scaleMmpx2x(sourcePixels, _screenSurface->w, _screenSurface->h, _screenSurface->pitch, destinationPixels, _scaledScreenSurface->pitch, palette);
-                    }
-                    else if (_pixelScaleFactor == 4 && _mmpxIntermediateSurface != nullptr)
-                    {
-                        auto intermediatePixels = std::span(
-                            static_cast<PaletteIndex_t*>(_mmpxIntermediateSurface->pixels),
-                            static_cast<size_t>(_mmpxIntermediateSurface->pitch) * _mmpxIntermediateSurface->h);
-                        scaled = scaleMmpx2x(sourcePixels, _screenSurface->w, _screenSurface->h, _screenSurface->pitch, intermediatePixels, _mmpxIntermediateSurface->pitch, palette)
-                            && scaleMmpx2x(intermediatePixels, _mmpxIntermediateSurface->w, _mmpxIntermediateSurface->h, _mmpxIntermediateSurface->pitch, destinationPixels, _scaledScreenSurface->pitch, palette);
-                    }
-
-                    if (scaled && !SDL_BlitSurface(_scaledScreenSurface, nullptr, _scaledScreenRGBASurface, nullptr))
-                    {
-                        Logging::error("SDL_BlitSurface (_scaledScreenSurface) failed: {}", SDL_GetError());
-                        scaled = false;
-                    }
-                }
-                else if (scalingMode == Config::ScalingMode::hqx && _scaledScreenRGBASurface->pitch % sizeof(uint32_t) == 0)
-                {
-                    auto destinationPixels = std::span(
-                        static_cast<uint32_t*>(_scaledScreenRGBASurface->pixels),
-                        static_cast<size_t>(_scaledScreenRGBASurface->pitch) / sizeof(uint32_t) * _scaledScreenRGBASurface->h);
-                    scaled = scaleHqx(
-                        sourcePixels,
-                        _screenSurface->w,
-                        _screenSurface->h,
-                        _screenSurface->pitch,
-                        destinationPixels,
-                        _scaledScreenRGBASurface->pitch / sizeof(uint32_t),
-                        palette,
-                        _pixelScaleFactor);
-                }
-
-                if (!scaled)
-                {
-                    Logging::error("Unable to scale the screen using the selected scaling mode");
-                }
-                else if (!SDL_UpdateTexture(_scaledScreenTexture, nullptr, _scaledScreenRGBASurface->pixels, _scaledScreenRGBASurface->pitch))
-                {
-                    Logging::error("SDL_UpdateTexture (_scaledScreenTexture) failed: {}", SDL_GetError());
-                }
-                else
-                {
-                    displayTexture = _scaledScreenTexture;
-                }
+                Logging::error("SDL_RenderTexture (_screenTexture) failed: {}", SDL_GetError());
+                SDL_SetRenderTarget(_renderer, nullptr);
+                return;
             }
+
+            if (!SDL_SetRenderTarget(_renderer, nullptr))
+            {
+                Logging::error("SDL_SetRenderTarget (nullptr) failed: {}", SDL_GetError());
+                return;
+            }
+            displayTexture = _scaledScreenTexture;
         }
 
         if (!SDL_RenderTexture(_renderer, displayTexture, nullptr, nullptr))

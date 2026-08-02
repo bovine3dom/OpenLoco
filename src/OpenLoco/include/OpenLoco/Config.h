@@ -45,13 +45,6 @@ namespace OpenLoco::Config
         transparent,
     };
 
-    enum class ScalingMode : uint8_t
-    {
-        sharp,
-        mmpx,
-        hqx,
-    };
-
     struct Resolution
     {
         int32_t width{};
@@ -166,7 +159,6 @@ namespace OpenLoco::Config
         bool usePreferredCurrencyAlways = false;
 
         float scaleFactor = 1.0f;
-        ScalingMode scalingMode = ScalingMode::sharp;
         bool nativeViewportRendering = true;
         bool showFPS = false;
         bool uncapFPS = false;

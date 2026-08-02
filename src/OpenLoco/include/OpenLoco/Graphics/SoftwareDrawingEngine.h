@@ -87,9 +87,6 @@ namespace OpenLoco::Gfx
         SDL_Palette* _palette{};
         SDL_Surface* _screenSurface{};
         SDL_Surface* _screenRGBASurface{};
-        SDL_Surface* _scaledScreenRGBASurface{};
-        SDL_Surface* _scaledScreenSurface{};
-        SDL_Surface* _mmpxIntermediateSurface{};
         SDL_Surface* _worldSurface{};
         SDL_Surface* _worldRGBASurface{};
         SDL_Surface* _uiRGBASurface{};

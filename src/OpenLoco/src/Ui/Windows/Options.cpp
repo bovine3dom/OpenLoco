@@ -261,7 +261,7 @@ namespace OpenLoco::Ui::Windows::Options
 
     namespace Display
     {
-        static constexpr Ui::Size kWindowSize = { 400, 183 };
+        static constexpr Ui::Size kWindowSize = { 400, 167 };
 
         enum widx
         {
@@ -276,9 +276,6 @@ namespace OpenLoco::Ui::Windows::Options
             display_scale,
             display_scale_down_btn,
             display_scale_up_btn,
-            scaling_mode_label,
-            scaling_mode,
-            scaling_mode_btn,
             frame_limit_label,
             frame_limit,
             frame_limit_btn,
@@ -295,8 +292,6 @@ namespace OpenLoco::Ui::Windows::Options
             constexpr WidgetId kDisplayScale{ "display_scale" };
             constexpr WidgetId kDisplayScaleDownBtn{ "display_scale_down_btn" };
             constexpr WidgetId kDisplayScaleUpBtn{ "display_scale_up_btn" };
-            constexpr WidgetId kScalingMode{ "scaling_mode" };
-            constexpr WidgetId kScalingModeBtn{ "scaling_mode_btn" };
             constexpr WidgetId kFrameLimit{ "frame_limit" };
             constexpr WidgetId kFrameLimitBtn{ "frame_limit_btn" };
             constexpr WidgetId kNativeViewportRendering{ "native_viewport_rendering" };
@@ -305,7 +300,7 @@ namespace OpenLoco::Ui::Windows::Options
 
         static constexpr auto _widgets = makeWidgets(
             Common::makeCommonWidgets(kWindowSize, StringIds::options_title_display),
-            Widgets::GroupBox({ 4, 49 }, { 392, 129 }, WindowColour::secondary, StringIds::frame_hardware),
+            Widgets::GroupBox({ 4, 49 }, { 392, 113 }, WindowColour::secondary, StringIds::frame_hardware),
 
             Widgets::Label({ 10, 63 }, { 215, 12 }, WindowColour::secondary, ContentAlign::left, StringIds::options_screen_mode),
             Widgets::dropdownWidgets(Widx::kScreenMode, Widx::kScreenModeBtn, { 235, 63 }, { 154, 12 }, WindowColour::secondary, StringIds::empty),
@@ -316,14 +311,11 @@ namespace OpenLoco::Ui::Windows::Options
             Widgets::Label({ 10, 95 }, { 215, 12 }, WindowColour::secondary, ContentAlign::left, StringIds::window_scale_factor),
             Widgets::stepperWidgets(Widx::kDisplayScale, Widx::kDisplayScaleDownBtn, Widx::kDisplayScaleUpBtn, { 235, 95 }, { 154, 12 }, WindowColour::secondary, StringIds::scale_formatted),
 
-            Widgets::Label({ 10, 111 }, { 215, 12 }, WindowColour::secondary, ContentAlign::left, StringIds::scalingMode),
-            Widgets::dropdownWidgets(Widx::kScalingMode, Widx::kScalingModeBtn, { 235, 111 }, { 154, 12 }, WindowColour::secondary, StringIds::empty),
+            Widgets::Label({ 10, 111 }, { 215, 12 }, WindowColour::secondary, ContentAlign::left, StringIds::frameRateLimitLabel),
+            Widgets::dropdownWidgets(Widx::kFrameLimit, Widx::kFrameLimitBtn, { 235, 111 }, { 154, 12 }, WindowColour::secondary, StringIds::empty),
 
-            Widgets::Label({ 10, 127 }, { 215, 12 }, WindowColour::secondary, ContentAlign::left, StringIds::frameRateLimitLabel),
-            Widgets::dropdownWidgets(Widx::kFrameLimit, Widx::kFrameLimitBtn, { 235, 127 }, { 154, 12 }, WindowColour::secondary, StringIds::empty),
-
-            Widgets::Checkbox(Widx::kNativeViewportRendering, { 10, 143 }, { 380, 12 }, WindowColour::secondary, StringIds::nativeViewportRendering, StringIds::nativeViewportRenderingTooltip),
-            Widgets::Checkbox(Widx::kShowFps, { 10, 159 }, { 380, 12 }, WindowColour::secondary, StringIds::option_show_fps_counter, StringIds::option_show_fps_counter_tooltip)
+            Widgets::Checkbox(Widx::kNativeViewportRendering, { 10, 127 }, { 380, 12 }, WindowColour::secondary, StringIds::nativeViewportRendering, StringIds::nativeViewportRenderingTooltip),
+            Widgets::Checkbox(Widx::kShowFps, { 10, 143 }, { 380, 12 }, WindowColour::secondary, StringIds::option_show_fps_counter, StringIds::option_show_fps_counter_tooltip)
 
         );
 
@@ -436,39 +428,6 @@ namespace OpenLoco::Ui::Windows::Options
             Ui::setDisplayMode(Config::ScreenMode::fullscreen, { resolutions[index].width, resolutions[index].height });
         }
 
-#pragma mark - Scaling mode dropdown
-
-        static void scalingModeMouseDown(const Window& self)
-        {
-            auto& dropdown = self.widgets[widx::scaling_mode];
-            Dropdown::show(self.x + dropdown.left, self.y + dropdown.top, dropdown.width() - 4, dropdown.height(), self.getColour(WindowColour::secondary), 3, 0x80);
-
-            Dropdown::add(0, StringIds::dropdown_stringid, StringIds::scalingModeSharp);
-            Dropdown::add(1, StringIds::dropdown_stringid, StringIds::scalingModeMmpx);
-            Dropdown::add(2, StringIds::dropdown_stringid, StringIds::scalingModeHqx);
-            Dropdown::setItemSelected(enumValue(Config::get().scalingMode));
-        }
-
-        static void scalingModeDropdown(int16_t itemIndex)
-        {
-            if (itemIndex < 0 || itemIndex > enumValue(Config::ScalingMode::hqx))
-            {
-                return;
-            }
-
-            auto& config = Config::get();
-            const auto scalingMode = static_cast<Config::ScalingMode>(itemIndex);
-            if (config.scalingMode == scalingMode)
-            {
-                return;
-            }
-
-            config.scalingMode = scalingMode;
-            Config::write();
-            Ui::triggerResize();
-            Gfx::invalidateScreen();
-        }
-
 #pragma mark - Frame limit dropdown
 
         static void frameLimitMouseDown(const Window& self, [[maybe_unused]] WidgetIndex_t wi)
@@ -545,9 +504,6 @@ namespace OpenLoco::Ui::Windows::Options
                 case Widx::kDisplayScaleUpBtn:
                     displayScaleMouseDown(self, wi, OpenLoco::Ui::ScaleFactor::step);
                     break;
-                case Widx::kScalingModeBtn:
-                    scalingModeMouseDown(self);
-                    break;
                 case Widx::kFrameLimitBtn:
                     frameLimitMouseDown(self, wi);
                     break;
@@ -564,9 +520,6 @@ namespace OpenLoco::Ui::Windows::Options
                     break;
                 case Widx::kDisplayResolutionBtn:
                     resolutionDropdown(self, item_index);
-                    break;
-                case Widx::kScalingModeBtn:
-                    scalingModeDropdown(item_index);
                     break;
                 case Widx::kFrameLimitBtn:
                     frameLimitDropdown(self, item_index);
@@ -618,19 +571,6 @@ namespace OpenLoco::Ui::Windows::Options
                 args.push<int32_t>(Config::get().scaleFactor * 100);
             }
 
-            switch (Config::get().scalingMode)
-            {
-                case Config::ScalingMode::sharp:
-                    self.widgets[widx::scaling_mode].text = StringIds::scalingModeSharp;
-                    break;
-                case Config::ScalingMode::mmpx:
-                    self.widgets[widx::scaling_mode].text = StringIds::scalingModeMmpx;
-                    break;
-                case Config::ScalingMode::hqx:
-                    self.widgets[widx::scaling_mode].text = StringIds::scalingModeHqx;
-                    break;
-            }
-
             StringId frameLimitStringId = StringIds::frameRateLimitInternal;
             if (Config::get().uncapFPS)
             {
@@ -654,11 +594,6 @@ namespace OpenLoco::Ui::Windows::Options
             {
                 self.activatedWidgets |= (1ULL << widx::native_viewport_rendering);
             }
-            if (Gfx::getDrawingEngine().hasSeparateWorldResources())
-            {
-                self.disabledWidgets |= (1ULL << widx::scaling_mode) | (1ULL << widx::scaling_mode_btn);
-            }
-
             if (Config::get().scaleFactor <= OpenLoco::Ui::ScaleFactor::min)
             {
                 self.disabledWidgets |= (1ULL << widx::display_scale_down_btn);
