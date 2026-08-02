@@ -9,13 +9,19 @@
 #include <OpenLoco/Map/Tile.h>
 #include <OpenLoco/Map/TileElement.h>
 #include <OpenLoco/Map/TileManager.h>
+#include <OpenLoco/Map/Track/Track.h>
+#include <OpenLoco/Map/Track/TrackData.h>
 #include <OpenLoco/Map/TrackElement.h>
 #include <OpenLoco/Map/TreeElement.h>
 #include <OpenLoco/S5/S5TileElement.h>
+#include <OpenLoco/Vehicles/OrderManager.h>
 #include <OpenLoco/Vehicles/PathSignals.h>
 #include <OpenLoco/Vehicles/RoutingManager.h>
 #include <OpenLoco/Vehicles/Vehicle.h>
+#include <OpenLoco/Vehicles/Vehicle1.h>
+#include <OpenLoco/Vehicles/Vehicle2.h>
 #include <OpenLoco/Vehicles/VehicleHead.h>
+#include <OpenLoco/Vehicles/VehicleTail.h>
 #include <OpenLoco/World/Station.h>
 #include <algorithm>
 #include <array>
@@ -72,16 +78,139 @@ namespace
     class PathSignalsTest : public ::testing::Test
     {
     protected:
+        static constexpr Pos3 kFirstPos{ 320, 320, 32 };
+        static constexpr uint16_t kStraightWest = 0;
+        static constexpr uint16_t kTurnNorth = 2 << 3;
+
+        static void SetUpTestSuite()
+        {
+            TileManager::allocateMapElements();
+        }
+
         void SetUp() override
         {
+            TileManager::initialise();
             OpenLoco::EntityManager::reset();
+            OpenLoco::Vehicles::OrderManager::reset();
             OpenLoco::Vehicles::RoutingManager::resetRoutingTable();
         }
 
         void TearDown() override
         {
             OpenLoco::EntityManager::reset();
+            OpenLoco::Vehicles::OrderManager::reset();
             OpenLoco::Vehicles::RoutingManager::resetRoutingTable();
+        }
+
+        template<typename T>
+        static T* createVehicleComponent()
+        {
+            auto* base = OpenLoco::EntityManager::createEntityVehicle();
+            if (base == nullptr)
+            {
+                return nullptr;
+            }
+            base->baseType = OpenLoco::EntityBaseType::vehicle;
+            auto* vehicle = base->asBase<OpenLoco::Vehicles::VehicleBase>();
+            vehicle->setSubType(T::kVehicleThingType);
+            return static_cast<T*>(vehicle);
+        }
+
+        static OpenLoco::Vehicles::VehicleHead* createTrain(const Pos3& pos, const uint16_t routing)
+        {
+            using namespace OpenLoco::Vehicles;
+
+            const auto routingHandle = RoutingManager::getAndAllocateFreeRoutingHandle();
+            if (!routingHandle.has_value())
+            {
+                return nullptr;
+            }
+
+            auto* head = createVehicleComponent<VehicleHead>();
+            auto* veh1 = createVehicleComponent<Vehicle1>();
+            auto* veh2 = createVehicleComponent<Vehicle2>();
+            auto* tail = createVehicleComponent<VehicleTail>();
+            if (head == nullptr || veh1 == nullptr || veh2 == nullptr || tail == nullptr)
+            {
+                return nullptr;
+            }
+
+            OpenLoco::EntityManager::moveEntityToList(head, OpenLoco::EntityManager::EntityListType::vehicleHead);
+            head->setNextCar(veh1->id);
+            veh1->setNextCar(veh2->id);
+            veh2->setNextCar(tail->id);
+            tail->setNextCar(OpenLoco::EntityId::null);
+
+            for (auto* component : std::array<OpenLoco::Vehicles::VehicleBase*, 4>{ head, veh1, veh2, tail })
+            {
+                component->owner = OpenLoco::CompanyId(0);
+                component->head = head->id;
+                component->mode = OpenLoco::TransportMode::rail;
+                component->trackType = 0;
+                component->tileX = pos.x;
+                component->tileY = pos.y;
+                component->tileBaseZ = pos.z / kSmallZStep;
+                component->trackAndDirection = OpenLoco::Vehicles::TrackAndDirection(routing >> 3, routing & 0x7);
+                component->routingHandle = *routingHandle;
+            }
+            OpenLoco::Vehicles::RoutingManager::setRouting(*routingHandle, routing);
+            OpenLoco::Vehicles::OrderManager::allocateOrders(*head);
+            return head;
+        }
+
+        static void addTrack(const Pos3& start, const uint8_t trackId, const uint8_t rotation, const bool hasSignal = false)
+        {
+            const auto pieces = TrackData::getTrackPiece(trackId);
+            for (const auto& piece : pieces)
+            {
+                const auto offset = OpenLoco::Math::Vector::rotate(Pos2{ piece.x, piece.y }, rotation);
+                const auto pos = start + Pos3{ offset, piece.z };
+                const auto quarterTile = piece.subTileClearance.rotate(rotation);
+                auto* trackEntry = TileManager::insertElement<TrackElement>(pos, pos.z / kSmallZStep, quarterTile.getBaseQuarterOccupied());
+                ASSERT_NE(trackEntry, nullptr);
+                auto& track = trackEntry->get<TrackElement>();
+                track.setClearZ(track.baseZ() + 8);
+                track.setRotation(rotation);
+                track.setTrackObjectId(0);
+                track.setSequenceIndex(piece.index);
+                track.setTrackId(trackId);
+                track.setOwner(OpenLoco::CompanyId(0));
+                track.setFlag6(piece.index == pieces.size() - 1);
+                if (!hasSignal)
+                {
+                    continue;
+                }
+
+                auto* signalEntry = TileManager::insertElementAfterNoReorg<SignalElement>(trackEntry, pos, track.baseZ(), quarterTile.getBaseQuarterOccupied());
+                ASSERT_NE(signalEntry, nullptr);
+                auto& signal = signalEntry->get<SignalElement>();
+                signal.setClearZ(track.clearZ());
+                signal.setRotation(rotation);
+                signal.getLeft() = SignalElement::Side{};
+                signal.getLeft().setHasSignal(true);
+                track.setHasSignal(true);
+                track.setLeftSignalMode(SignalMode::block);
+            }
+        }
+
+        static void addTwoRouteJunction(const Pos3& firstPos = kFirstPos)
+        {
+            addTrack(firstPos, 0, 0);
+            addTrack(firstPos + Pos3{ -32, 0, 0 }, 0, 0);
+            addTrack(firstPos + Pos3{ -64, 0, 0 }, 0, 0);
+            addTrack(firstPos + Pos3{ -96, 0, 0 }, 0, 0, true);
+
+            addTrack(firstPos + Pos3{ -32, 0, 0 }, 2, 0);
+            addTrack(firstPos + Pos3{ -32, -32, 0 }, 0, 3);
+            addTrack(firstPos + Pos3{ -32, -64, 0 }, 0, 3);
+            addTrack(firstPos + Pos3{ -32, -96, 0 }, 0, 3, true);
+        }
+
+        static uint16_t getSecondReservedRouting(const OpenLoco::Vehicles::VehicleHead& head)
+        {
+            auto handle = head.routingHandle;
+            handle.setIndex(handle.getIndex() + 2);
+            return OpenLoco::Vehicles::RoutingManager::getRouting(handle) & OpenLoco::World::Track::AdditionalTaDFlags::basicTaDMask;
         }
     };
 
@@ -909,27 +1038,12 @@ TEST(SignalPlacementArgsTest, SanitisesUnknownSignalModeFromRegisters)
 
 TEST_F(PathSignalsTest, ReportsOnlyFutureRoutingEntriesAsReserved)
 {
-    auto routingHandle = OpenLoco::Vehicles::RoutingManager::getAndAllocateFreeRoutingHandle();
-    ASSERT_TRUE(routingHandle.has_value());
-
-    auto* base = OpenLoco::EntityManager::createEntityVehicle();
-    ASSERT_NE(base, nullptr);
-    base->baseType = OpenLoco::EntityBaseType::vehicle;
-    auto* vehicle = base->asBase<OpenLoco::Vehicles::VehicleBase>();
-    vehicle->setSubType(OpenLoco::Vehicles::VehicleHead::kVehicleThingType);
-    auto* head = static_cast<OpenLoco::Vehicles::VehicleHead*>(vehicle);
-    OpenLoco::EntityManager::moveEntityToList(head, OpenLoco::EntityManager::EntityListType::vehicleHead);
-
     constexpr Pos3 currentPos{ 320, 160, 32 };
     constexpr uint16_t straightWest = 0;
-    head->mode = OpenLoco::TransportMode::rail;
-    head->tileX = currentPos.x;
-    head->tileY = currentPos.y;
-    head->tileBaseZ = currentPos.z / kSmallZStep;
-    head->routingHandle = *routingHandle;
-    OpenLoco::Vehicles::RoutingManager::setRouting(*routingHandle, straightWest);
+    auto* head = createTrain(currentPos, straightWest);
+    ASSERT_NE(head, nullptr);
 
-    auto nextHandle = *routingHandle;
+    auto nextHandle = head->routingHandle;
     nextHandle.setIndex(nextHandle.getIndex() + 1);
     OpenLoco::Vehicles::RoutingManager::setRouting(nextHandle, straightWest);
 
@@ -938,6 +1052,82 @@ TEST_F(PathSignalsTest, ReportsOnlyFutureRoutingEntriesAsReserved)
 
     OpenLoco::Vehicles::RoutingManager::freeRouting(nextHandle);
     EXPECT_FALSE(OpenLoco::Vehicles::PathSignals::isPathReserved({ currentPos.x - kTileSize, currentPos.y, currentPos.z }, straightWest));
+}
+
+TEST_F(PathSignalsTest, ChoosesLongerRouteWhenShortRouteBeyondSignalIsOccupied)
+{
+    addTwoRouteJunction();
+    addTrack({ 192, 320, 32 }, 0, 0);
+
+    auto* reservingTrain = createTrain({ 352, 320, 32 }, kStraightWest);
+    ASSERT_NE(reservingTrain, nullptr);
+    ASSERT_NE(createTrain({ 192, 320, 32 }, kStraightWest), nullptr);
+
+    ASSERT_TRUE(OpenLoco::Vehicles::PathSignals::tryReservePath(*reservingTrain, kFirstPos, kStraightWest));
+
+    EXPECT_EQ(getSecondReservedRouting(*reservingTrain), kTurnNorth);
+}
+
+TEST_F(PathSignalsTest, DetectsCongestionBeyondPrevious64PieceLookahead)
+{
+    constexpr Pos3 firstPos{ 6400, 6400, 32 };
+    constexpr auto continuationLength = 80;
+    addTwoRouteJunction(firstPos);
+    for (auto i = 0; i < continuationLength; ++i)
+    {
+        addTrack(firstPos + Pos3{ -128 - i * kTileSize, 0, 0 }, 0, 0);
+    }
+
+    auto* reservingTrain = createTrain(firstPos + Pos3{ kTileSize, 0, 0 }, kStraightWest);
+    ASSERT_NE(reservingTrain, nullptr);
+    const auto blockedPos = firstPos + Pos3{ -128 - (continuationLength - 1) * kTileSize, 0, 0 };
+    ASSERT_NE(createTrain(blockedPos, kStraightWest), nullptr);
+
+    ASSERT_TRUE(OpenLoco::Vehicles::PathSignals::tryReservePath(*reservingTrain, firstPos, kStraightWest));
+
+    EXPECT_EQ(getSecondReservedRouting(*reservingTrain), kTurnNorth);
+}
+
+TEST_F(PathSignalsTest, ChoosesLongerRouteWhenShortRouteBeyondSignalIsReserved)
+{
+    constexpr uint16_t straightNorth = 3;
+
+    addTwoRouteJunction();
+    auto* reservingTrain = createTrain({ 352, 320, 32 }, kStraightWest);
+    ASSERT_NE(reservingTrain, nullptr);
+    auto* blockingTrain = createTrain({ 224, 352, 32 }, straightNorth);
+    ASSERT_NE(blockingTrain, nullptr);
+
+    auto blockingReservation = blockingTrain->routingHandle;
+    blockingReservation.setIndex(blockingReservation.getIndex() + 1);
+    OpenLoco::Vehicles::RoutingManager::setRouting(blockingReservation, straightNorth);
+
+    ASSERT_TRUE(OpenLoco::Vehicles::PathSignals::tryReservePath(*reservingTrain, kFirstPos, kStraightWest));
+
+    EXPECT_EQ(getSecondReservedRouting(*reservingTrain), kTurnNorth);
+}
+
+TEST_F(PathSignalsTest, ExcludesRouteWithConflictInsideImmediateReservation)
+{
+    addTwoRouteJunction();
+    auto* reservingTrain = createTrain({ 352, 320, 32 }, kStraightWest);
+    ASSERT_NE(reservingTrain, nullptr);
+    ASSERT_NE(createTrain({ 256, 320, 32 }, kStraightWest), nullptr);
+
+    ASSERT_TRUE(OpenLoco::Vehicles::PathSignals::tryReservePath(*reservingTrain, kFirstPos, kStraightWest));
+
+    EXPECT_EQ(getSecondReservedRouting(*reservingTrain), kTurnNorth);
+}
+
+TEST_F(PathSignalsTest, ChoosesShorterRouteWhenBothRoutesAreClear)
+{
+    addTwoRouteJunction();
+    auto* reservingTrain = createTrain({ 352, 320, 32 }, kStraightWest);
+    ASSERT_NE(reservingTrain, nullptr);
+
+    ASSERT_TRUE(OpenLoco::Vehicles::PathSignals::tryReservePath(*reservingTrain, kFirstPos, kStraightWest));
+
+    EXPECT_EQ(getSecondReservedRouting(*reservingTrain), kStraightWest);
 }
 
 TEST_F(TileManagerTest, InsertElementAfterNoReorgTypedTemplateReturnsTypedPointer)

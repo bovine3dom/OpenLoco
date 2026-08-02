@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <limits>
 #include <optional>
+#include <queue>
 #include <tuple>
 #include <unordered_map>
 #include <vector>
@@ -25,6 +26,11 @@ namespace OpenLoco::Vehicles::PathSignals
     using namespace World;
 
     static constexpr size_t kMaxSearchNodes = 4096;
+    static constexpr size_t kMaxReservationCandidates = 16;
+    static constexpr size_t kMaxLookaheadNodes = 512;
+    static constexpr uint16_t kMaxLookaheadDepth = 256;
+    // Prefer a clear detour of up to roughly sixteen straight track pieces.
+    static constexpr uint32_t kClaimedRoutingPenalty = 512;
     static constexpr uint16_t kNoParent = std::numeric_limits<uint16_t>::max();
 
     struct Resource
@@ -59,6 +65,23 @@ namespace OpenLoco::Vehicles::PathSignals
         bool reachedTarget;
         uint32_t distance;
         uint32_t weighting;
+        std::optional<std::pair<Pos3, uint16_t>> continuation;
+    };
+
+    struct LookaheadNode
+    {
+        Pos3 pos;
+        uint16_t routing;
+        uint16_t depth;
+        uint32_t weighting;
+        bool reachedTarget;
+    };
+
+    struct RouteScore
+    {
+        bool reachedTarget;
+        uint32_t distance;
+        uint32_t weighting;
     };
 
     static uint64_t getResourceKey(const Pos3& pos)
@@ -82,7 +105,8 @@ namespace OpenLoco::Vehicles::PathSignals
         return pos;
     }
 
-    static void appendResources(std::vector<Resource>& resources, const Pos3& pos, const uint16_t routing)
+    template<typename TFunc>
+    static bool forEachResource(const Pos3& pos, const uint16_t routing, TFunc&& func)
     {
         TrackAndDirection::_TrackAndDirection tad{ 0, 0 };
         tad._data = routing & Track::AdditionalTaDFlags::basicTaDMask;
@@ -96,8 +120,20 @@ namespace OpenLoco::Vehicles::PathSignals
             {
                 quarters = 0xF;
             }
-            resources.push_back({ piecePos, quarters });
+            if (!func(Resource{ piecePos, quarters }))
+            {
+                return false;
+            }
         }
+        return true;
+    }
+
+    static void appendResources(std::vector<Resource>& resources, const Pos3& pos, const uint16_t routing)
+    {
+        forEachResource(pos, routing, [&resources](const auto& resource) {
+            resources.push_back(resource);
+            return true;
+        });
     }
 
     static std::unordered_map<uint64_t, uint8_t> getClaimedResources()
@@ -156,11 +192,11 @@ namespace OpenLoco::Vehicles::PathSignals
         return target;
     }
 
-    static bool reachesWaypoint(const SearchNode& node, const Target& target)
+    static bool reachesWaypoint(const Pos3& pos, const uint16_t routing, const Target& target)
     {
-        const auto tad = node.routing & Track::AdditionalTaDFlags::basicTaDMask;
-        return (node.pos == target.pos && tad == target.tad)
-            || (node.pos == target.reversePos && tad == target.reverseTad);
+        const auto tad = routing & Track::AdditionalTaDFlags::basicTaDMask;
+        return (pos == target.pos && tad == target.tad)
+            || (pos == target.reversePos && tad == target.reverseTad);
     }
 
     static uint32_t getDistanceToTarget(const Pos3& pos, const Target& target)
@@ -215,6 +251,39 @@ namespace OpenLoco::Vehicles::PathSignals
         return false;
     }
 
+    static bool isClaimed(const Pos3& pos, const uint16_t routing, const std::unordered_map<uint64_t, uint8_t>& claimed)
+    {
+        auto hasClaim = false;
+        forEachResource(pos, routing, [&claimed, &hasClaim](const auto& resource) {
+            const auto existing = claimed.find(getResourceKey(resource.pos));
+            hasClaim = existing != claimed.end() && (existing->second & resource.quarters) != 0;
+            return !hasClaim;
+        });
+        return hasClaim;
+    }
+
+    static uint32_t addWeighting(const uint32_t lhs, const uint32_t rhs)
+    {
+        return static_cast<uint32_t>(std::min<uint64_t>(static_cast<uint64_t>(lhs) + rhs, std::numeric_limits<uint32_t>::max()));
+    }
+
+    static uint32_t getRoutingWeighting(const Pos3& pos, const uint16_t routing, const uint8_t trackType, const bool includeTrackWeighting, const std::unordered_map<uint64_t, uint8_t>& claimed)
+    {
+        TrackAndDirection::_TrackAndDirection tad{ 0, 0 };
+        tad._data = routing & Track::AdditionalTaDFlags::basicTaDMask;
+        auto weighting = includeTrackWeighting ? static_cast<uint32_t>(TrackData::getTrackMiscData(tad.id()).unkWeighting) : 0;
+        if (isClaimed(pos, routing, claimed))
+        {
+            return addWeighting(weighting, kClaimedRoutingPenalty);
+        }
+        if ((routing & Track::AdditionalTaDFlags::hasSignal) != 0
+            && (getSignalState(pos, tad, trackType, 0) & SignalStateFlags::occupied) != SignalStateFlags::none)
+        {
+            weighting = addWeighting(weighting, kClaimedRoutingPenalty);
+        }
+        return weighting;
+    }
+
     bool isPathReserved(const Pos3& pos, const uint16_t routing)
     {
         std::vector<Resource> targetResources;
@@ -265,8 +334,10 @@ namespace OpenLoco::Vehicles::PathSignals
         {
             return candidate.reachedTarget;
         }
-        return std::tie(candidate.distance, candidate.weighting, candidate.routings)
-            < std::tie(current.distance, current.weighting, current.routings);
+        const auto candidateCost = addWeighting(candidate.weighting, candidate.distance);
+        const auto currentCost = addWeighting(current.weighting, current.distance);
+        return std::tie(candidateCost, candidate.distance, candidate.weighting, candidate.routings)
+            < std::tie(currentCost, current.distance, current.weighting, current.routings);
     }
 
     static bool containsAncestor(const std::vector<SearchNode>& nodes, uint16_t parent, const Pos3& pos, const uint16_t routing)
@@ -282,6 +353,139 @@ namespace OpenLoco::Vehicles::PathSignals
             parent = node.parent;
         }
         return false;
+    }
+
+    static RouteScore getLookaheadScore(
+        const Pos3& firstPos,
+        const uint16_t firstRouting,
+        const VehicleHead& head,
+        const uint8_t requiredMods,
+        const uint8_t queryMods,
+        const Target& target,
+        const std::unordered_map<uint64_t, uint8_t>& claimed)
+    {
+        struct PendingNode
+        {
+            uint32_t estimatedCost;
+            uint16_t index;
+        };
+        const auto comparePending = [](const PendingNode& lhs, const PendingNode& rhs) {
+            return std::tie(lhs.estimatedCost, lhs.index) > std::tie(rhs.estimatedCost, rhs.index);
+        };
+
+        const auto seedReachedTarget = target.hasTarget && target.stationId == StationId::null && reachesWaypoint(firstPos, firstRouting, target);
+        const auto seedWeighting = getRoutingWeighting(firstPos, firstRouting, head.trackType, target.hasTarget, claimed);
+        const auto seedDistance = seedReachedTarget ? 0 : getDistanceToTarget(firstPos, target);
+        std::vector<LookaheadNode> nodes;
+        nodes.reserve(kMaxLookaheadNodes);
+        nodes.push_back({ firstPos, firstRouting, 1, seedWeighting, seedReachedTarget });
+        std::priority_queue<PendingNode, std::vector<PendingNode>, decltype(comparePending)> pending(comparePending);
+        pending.push({ addWeighting(seedWeighting, seedDistance), 0 });
+
+        std::unordered_map<uint64_t, uint32_t> bestWeightingByRoute;
+        const auto getRouteKey = [](const Pos3& pos, const uint16_t routing) {
+            return getResourceKey(pos) | (static_cast<uint64_t>(routing & Track::AdditionalTaDFlags::basicTaDMask) << 48);
+        };
+        bestWeightingByRoute[getRouteKey(firstPos, firstRouting)] = seedWeighting;
+
+        std::optional<RouteScore> bestReached;
+        std::optional<RouteScore> bestFallback;
+        uint16_t bestFallbackDepth = 0;
+        const auto isBetterScore = [](const RouteScore& candidate, const RouteScore& current) {
+            const auto candidateCost = addWeighting(candidate.weighting, candidate.distance);
+            const auto currentCost = addWeighting(current.weighting, current.distance);
+            return std::tie(candidateCost, candidate.distance, candidate.weighting)
+                < std::tie(currentCost, current.distance, current.weighting);
+        };
+        const auto considerScore = [&](const RouteScore& score, const uint16_t depth) {
+            if (score.reachedTarget)
+            {
+                if (!bestReached.has_value() || isBetterScore(score, *bestReached))
+                {
+                    bestReached = score;
+                }
+                return;
+            }
+            if (depth > bestFallbackDepth)
+            {
+                bestFallback.reset();
+                bestFallbackDepth = depth;
+            }
+            if (depth == bestFallbackDepth && (!bestFallback.has_value() || isBetterScore(score, *bestFallback)))
+            {
+                bestFallback = score;
+            }
+        };
+
+        while (!pending.empty())
+        {
+            const auto pendingNode = pending.top();
+            pending.pop();
+            const auto node = nodes[pendingNode.index];
+            const auto routeKey = getRouteKey(node.pos, node.routing);
+            if (bestWeightingByRoute[routeKey] != node.weighting)
+            {
+                continue;
+            }
+
+            TrackAndDirection::_TrackAndDirection tad{ 0, 0 };
+            tad._data = node.routing & Track::AdditionalTaDFlags::basicTaDMask;
+            const auto [nextPos, nextRotation] = Track::getTrackConnectionEnd(node.pos, tad._data);
+            const auto connections = Track::getTrackConnections(nextPos, nextRotation, head.owner, head.trackType, requiredMods, queryMods);
+            const auto reachedTarget = node.reachedTarget || (target.stationId != StationId::null && connections.stationId == target.stationId);
+            const auto distance = reachedTarget ? 0 : getDistanceToTarget(nextPos, target);
+
+            if (reachedTarget || connections.connections.empty() || node.depth >= kMaxLookaheadDepth)
+            {
+                considerScore({ reachedTarget, distance, node.weighting }, node.depth);
+                continue;
+            }
+            considerScore({ false, distance, node.weighting }, node.depth);
+            if (nodes.size() >= kMaxLookaheadNodes)
+            {
+                continue;
+            }
+
+            for (const auto routing : connections.connections)
+            {
+                TrackAndDirection::_TrackAndDirection nextTad{ 0, 0 };
+                nextTad._data = routing & Track::AdditionalTaDFlags::basicTaDMask;
+                const auto nextSignalMode = getSignalMode(nextPos, nextTad, head.trackType, 0);
+                if (!nextSignalMode.has_value() && getSignalState(nextPos, nextTad, head.trackType, 0) != SignalStateFlags::none)
+                {
+                    continue;
+                }
+
+                const auto childWeighting = addWeighting(node.weighting, getRoutingWeighting(nextPos, routing, head.trackType, target.hasTarget, claimed));
+                const auto childKey = getRouteKey(nextPos, routing);
+                const auto previousWeighting = bestWeightingByRoute.find(childKey);
+                if (previousWeighting != bestWeightingByRoute.end() && previousWeighting->second <= childWeighting)
+                {
+                    continue;
+                }
+                bestWeightingByRoute[childKey] = childWeighting;
+
+                auto childReachedTarget = reachedTarget;
+                if (target.hasTarget && target.stationId == StationId::null && reachesWaypoint(nextPos, routing, target))
+                {
+                    childReachedTarget = true;
+                }
+                const auto childDistance = childReachedTarget ? 0 : getDistanceToTarget(nextPos, target);
+                nodes.push_back({ nextPos, routing, static_cast<uint16_t>(node.depth + 1), childWeighting, childReachedTarget });
+                const auto childIndex = static_cast<uint16_t>(nodes.size() - 1);
+                pending.push({ addWeighting(childWeighting, childDistance), childIndex });
+                if (nodes.size() == kMaxLookaheadNodes)
+                {
+                    break;
+                }
+            }
+        }
+
+        if (bestReached.has_value())
+        {
+            return *bestReached;
+        }
+        return bestFallback.value_or(RouteScore{ seedReachedTarget, seedDistance, seedWeighting });
     }
 
     static size_t getAvailableRoutingSlots(const VehicleHead& head)
@@ -319,19 +523,16 @@ namespace OpenLoco::Vehicles::PathSignals
         nodes.reserve(kMaxSearchNodes);
         nodes.push_back({ firstPos, firstRouting, kNoParent, 1, 0, false });
         std::vector<uint16_t> pending{ 0 };
-        std::optional<Candidate> best;
+        std::vector<Candidate> candidates;
 
-        const auto considerCandidate = [&](const uint16_t tailIndex, const Pos3& endpoint, const bool reachedTarget, const uint32_t weighting) {
+        const auto considerCandidate = [&](const uint16_t tailIndex, const Pos3& endpoint, const bool reachedTarget, const uint32_t weighting, std::optional<std::pair<Pos3, uint16_t>> continuation) {
             auto path = getPath(nodes, tailIndex);
             if (path.empty() || path.size() > maxPathLength || hasConflict(path, firstPos, claimed))
             {
                 return;
             }
-            Candidate candidate{ std::move(path), reachedTarget, getDistanceToTarget(endpoint, target), weighting };
-            if (!best.has_value() || isBetterCandidate(candidate, *best))
-            {
-                best = std::move(candidate);
-            }
+            const auto distance = reachedTarget ? 0 : getDistanceToTarget(endpoint, target);
+            candidates.push_back({ std::move(path), reachedTarget, distance, weighting, continuation });
         };
 
         while (!pending.empty())
@@ -344,11 +545,11 @@ namespace OpenLoco::Vehicles::PathSignals
             tad._data = node.routing & Track::AdditionalTaDFlags::basicTaDMask;
             if (index != 0 && getSignalMode(node.pos, tad, head.trackType, 0).has_value())
             {
-                considerCandidate(node.parent, node.pos, node.reachedTarget, nodes[node.parent].weighting);
+                considerCandidate(node.parent, node.pos, node.reachedTarget, nodes[node.parent].weighting, std::pair{ node.pos, node.routing });
                 continue;
             }
 
-            if (target.hasTarget && target.stationId == StationId::null && reachesWaypoint(node, target))
+            if (target.hasTarget && target.stationId == StationId::null && reachesWaypoint(node.pos, node.routing, target))
             {
                 node.reachedTarget = true;
             }
@@ -360,7 +561,7 @@ namespace OpenLoco::Vehicles::PathSignals
             const auto reachedTarget = node.reachedTarget || (target.stationId != StationId::null && connections.stationId == target.stationId);
             if (connections.connections.empty())
             {
-                considerCandidate(index, nextPos, reachedTarget, node.weighting);
+                considerCandidate(index, nextPos, reachedTarget, node.weighting, std::nullopt);
                 continue;
             }
             if (node.depth >= maxPathLength || nodes.size() >= kMaxSearchNodes)
@@ -388,13 +589,32 @@ namespace OpenLoco::Vehicles::PathSignals
             }
         }
 
-        if (!best.has_value())
+        if (candidates.empty())
         {
             return false;
         }
 
+        std::ranges::sort(candidates, isBetterCandidate);
+        if (candidates.size() > kMaxReservationCandidates)
+        {
+            candidates.resize(kMaxReservationCandidates);
+        }
+
+        for (auto& candidate : candidates)
+        {
+            if (!candidate.reachedTarget && candidate.continuation.has_value())
+            {
+                const auto& [continuationPos, continuationRouting] = *candidate.continuation;
+                const auto score = getLookaheadScore(continuationPos, continuationRouting, head, requiredMods, queryMods, target, claimed);
+                candidate.reachedTarget = score.reachedTarget;
+                candidate.distance = score.distance;
+                candidate.weighting = addWeighting(candidate.weighting, score.weighting);
+            }
+        }
+        const auto& best = *std::ranges::min_element(candidates, isBetterCandidate);
+
         auto handle = head.routingHandle;
-        for (size_t i = 0; i < best->routings.size(); ++i)
+        for (size_t i = 0; i < best.routings.size(); ++i)
         {
             handle.setIndex((handle.getIndex() + 1) & (Limits::kMaxRoutingsPerVehicle - 1));
             if (RoutingManager::getRouting(handle) != RoutingManager::kAllocatedButFreeRouting)
@@ -403,7 +623,7 @@ namespace OpenLoco::Vehicles::PathSignals
             }
         }
         handle = head.routingHandle;
-        for (const auto routing : best->routings)
+        for (const auto routing : best.routings)
         {
             handle.setIndex((handle.getIndex() + 1) & (Limits::kMaxRoutingsPerVehicle - 1));
             RoutingManager::setRouting(handle, routing);
