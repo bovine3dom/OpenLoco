@@ -1167,18 +1167,14 @@ namespace OpenLoco::Ui::Windows::Construction::Station
 
         Common::repositionTabs(&self);
 
-        // Following information is only calculated when a ghost has been placed
-        if (!Common::hasGhostVisibilityFlag(GhostVisibilityFlags::station))
-        {
-            return;
-        }
-
-        // Scan number of cargo types accepted and produced
-        auto numAcceptedCargoTypes = std::max(1, std::popcount(cState.constructingStationAcceptedCargoTypes));
-        auto numProducedCargoTypes = std::max(1, std::popcount(cState.constructingStationProducedCargoTypes));
-
         auto& baseFrame = kWidgets[Common::widx::frame];
-        auto newHeight = baseFrame.height() + 1 + (numAcceptedCargoTypes + numProducedCargoTypes) * 11;
+        auto newHeight = baseFrame.height();
+        if (Common::hasGhostVisibilityFlag(GhostVisibilityFlags::station))
+        {
+            const auto numAcceptedCargoTypes = std::max(1, std::popcount(cState.constructingStationAcceptedCargoTypes));
+            const auto numProducedCargoTypes = std::max(1, std::popcount(cState.constructingStationProducedCargoTypes));
+            newHeight += 1 + (numAcceptedCargoTypes + numProducedCargoTypes) * 11;
+        }
         auto newSize = Size{ baseFrame.width(), newHeight };
         self.setSizeBounds(newSize, newSize);
 

@@ -757,6 +757,15 @@ namespace OpenLoco::Ui::Windows::Construction
         };
         // clang-format on
 
+        static void setSizeFromWidgets(Window& self)
+        {
+            const Size size{ self.widgets[widx::frame].right + 1, self.widgets[widx::frame].bottom + 1 };
+            if (!self.setSizeBounds(size, size))
+            {
+                self.callOnResize();
+            }
+        }
+
         void prepareDraw(Window* self)
         {
             // Activate the current tab
@@ -777,7 +786,7 @@ namespace OpenLoco::Ui::Windows::Construction
 
             setDisabledWidgets(&self);
 
-            self.setSize({ self.widgets[widx::frame].right + 1, self.widgets[widx::frame].bottom + 1 });
+            setSizeFromWidgets(self);
         }
 
         void setNextAndPreviousTrackTile(const TrackElement& elTrack, const World::Pos2& pos)
@@ -900,10 +909,7 @@ namespace OpenLoco::Ui::Windows::Construction
 
             self.invalidate();
 
-            self.width = self.widgets[widx::frame].right + 1;
-            self.height = self.widgets[widx::frame].bottom + 1;
-
-            self.callOnResize();
+            setSizeFromWidgets(self);
             self.callPrepareDraw();
             self.initScrollWidgets();
             self.invalidate();
