@@ -1,3 +1,16 @@
+a dumb collection of barely tested patches for openloco to scratch my own itches. [go look upstream instead](https://github.com/OpenLoco/OpenLoco)
+
+so far:
+
+- cargo distribution inspired by JGR/OpenTTD. it kinda 'just works' like i expect it to
+- UI scale separate from world scale
+
+
+
+
+---
+
+
 # OpenLoco
 An open source re-implementation of Chris Sawyer's Locomotion. A construction and management simulation video game that simulates running a transport company.
 
@@ -123,7 +136,7 @@ cmake --build --preset posix-release
 ```
 
 Note: If building x86-32 installing some packages can be problematic. To work around this, you can use [our Docker images](https://github.com/OpenLoco/openloco-docker-build) for compilation.
-    
+
 Note: Due to issues with distro yaml-cpp packages, its source release is downloaded during CMake generation.
 
 ### MacOS
