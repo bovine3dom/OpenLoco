@@ -30,6 +30,7 @@ namespace OpenLoco::Vehicles
         isLeavingDock = 1U << 1,
         hasReachedDock = 1U << 16,
         hasReachedADestination = 1U << 17,
+        pathfindingFailed = 1U << 18,
     };
     OPENLOCO_ENABLE_ENUM_OPERATORS(WaterMotionFlags);
 

@@ -367,6 +367,7 @@ set(OLOCO_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Vehicles/VehicleHead.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Vehicles/VehicleManager.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Vehicles/VehicleTail.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/Vehicles/WaterPathfinding.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Viewport.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ViewportManager.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/World/CompanyAi/CompanyAi.cpp"
@@ -717,6 +718,7 @@ set(OLOCO_HEADERS
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/Vehicles/VehicleTail.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/Vehicles/VehicleDraw.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/Vehicles/VehicleManager.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/Vehicles/WaterPathfinding.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/Viewport.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/ViewportManager.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/World/CompanyAi/CompanyAi.h"
@@ -769,6 +771,7 @@ set(private_compile_definitions
 
 set(test_files
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/TileManagerTests.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/WaterPathfindingTests.cpp"
 )
 
 loco_add_library(OpenLoco STATIC
