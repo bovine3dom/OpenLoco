@@ -356,6 +356,9 @@ namespace OpenLoco::Scenario
         Gfx::loadCurrency();
         CompanyManager::reset();
         CompanyManager::createPlayerCompany();
+        ObjectManager::forEachLoaded<CargoObject>([](auto cargo, const auto&) {
+            CargoDist::setMode(cargo, CargoDist::DistributionMode::asymmetric);
+        });
         initialiseDate(Scenario::getOptions().scenarioStartYear);
         initialiseSnowLine();
         sub_4748D4();
