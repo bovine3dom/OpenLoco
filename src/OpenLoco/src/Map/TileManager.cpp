@@ -59,6 +59,12 @@ namespace OpenLoco::World::TileManager
     static const TileElementEntry* _F00158 = nullptr;
     static uint32_t _periodicDefragStartTile;
     static bool _disablePeriodicDefrag;
+    static uint32_t _mapRevision;
+
+    uint32_t getMapRevision()
+    {
+        return _mapRevision;
+    }
 
     template<>
     Store<SurfaceElement>& getStore<SurfaceElement>()
@@ -301,6 +307,7 @@ namespace OpenLoco::World::TileManager
 
             markEntryAsFree(cur);
         }
+        ++_mapRevision;
     }
 
     void setRemoveElementPointerChecker(TileElementEntry& entry)
@@ -444,6 +451,7 @@ namespace OpenLoco::World::TileManager
             } while (!dest++->isLast());
         }
         tileState().entriesEnd = std::distance(&tileState().entries[0], dest);
+        ++_mapRevision;
 
         return newEntry;
     }
@@ -823,6 +831,7 @@ namespace OpenLoco::World::TileManager
         }
 
         tileState().entriesEnd = static_cast<ptrdiff_t>(i);
+        ++_mapRevision;
     }
 
     // 0x0046148F
@@ -1656,6 +1665,7 @@ namespace OpenLoco::World::TileManager
         surface->setBaseZ(targetBaseZ);
         surface->setClearZ(targetBaseZ);
         surface->setSlope(slopeFlags);
+        ++_mapRevision;
 
         landObj = ObjectManager::get<LandObject>(surface->terrain());
         if (landObj->hasFlags(LandObjectFlags::hasReplacementLandHeader) && !SceneManager::isEditorMode())
@@ -1750,6 +1760,7 @@ namespace OpenLoco::World::TileManager
             }
             surface->setType6Flag(false);
             surface->setVariation(0);
+            ++_mapRevision;
 
             mapInvalidateTileFull(pos);
         }

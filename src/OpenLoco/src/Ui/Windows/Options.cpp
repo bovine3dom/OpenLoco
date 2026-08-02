@@ -1928,6 +1928,7 @@ namespace OpenLoco::Ui::Windows::Options
             zoom_to_cursor,
             invert_right_mouse_view_pan,
             toolbar_auto_menu,
+            toolbar_buttons_centred,
             customize_keys
         };
 
@@ -1937,10 +1938,11 @@ namespace OpenLoco::Ui::Windows::Options
             constexpr WidgetId kZoomToCursor{ "zoom_to_cursor" };
             constexpr WidgetId kInvertRightMouseViewPan{ "invert_right_mouse_view_pan" };
             constexpr WidgetId kToolbarMenuAuto{ "toolbar_auto_menu" };
+            constexpr WidgetId kToolbarButtonsCentred{ "toolbar_buttons_centred" };
             constexpr WidgetId kCustomizeKeys{ "customize_keys" };
         }
 
-        static constexpr Ui::Size kWindowSize = { 366, 129 };
+        static constexpr Ui::Size kWindowSize = { 366, 144 };
 
         static constexpr auto _widgets = makeWidgets(
             Common::makeCommonWidgets(kWindowSize, StringIds::options_title_controls),
@@ -1948,7 +1950,8 @@ namespace OpenLoco::Ui::Windows::Options
             Widgets::Checkbox(Widx::kZoomToCursor, { 10, 64 }, { 346, 12 }, WindowColour::secondary, StringIds::zoom_to_cursor, StringIds::zoom_to_cursor_tip),
             Widgets::Checkbox(Widx::kInvertRightMouseViewPan, { 10, 79 }, { 346, 12 }, WindowColour::secondary, StringIds::invert_right_mouse_dragging, StringIds::tooltip_invert_right_mouse_dragging),
             Widgets::Checkbox(Widx::kToolbarMenuAuto, { 10, 94 }, { 346, 12 }, WindowColour::secondary, StringIds::toolbar_auto_menu),
-            Widgets::Button(Widx::kCustomizeKeys, { 26, 109 }, { 160, 12 }, WindowColour::secondary, StringIds::customise_keys, StringIds::customise_keys_tip)
+            Widgets::Checkbox(Widx::kToolbarButtonsCentred, { 10, 109 }, { 346, 12 }, WindowColour::secondary, StringIds::toolbar_buttons_centred),
+            Widgets::Button(Widx::kCustomizeKeys, { 26, 124 }, { 160, 12 }, WindowColour::secondary, StringIds::customise_keys, StringIds::customise_keys_tip)
 
         );
 
@@ -1956,6 +1959,7 @@ namespace OpenLoco::Ui::Windows::Options
         static void zoomToCursorMouseUp(Window& self);
         static void invertRightMouseViewPan(Window& self);
         static void toolbarAutoMenuMouseUp(Window& self);
+        static void toolbarButtonsCentredMouseUp(Window& self);
         static void openKeyboardShortcuts();
 
         static void prepareDraw(Window& self)
@@ -1980,6 +1984,10 @@ namespace OpenLoco::Ui::Windows::Options
             if (Config::get().toolbarAutoMenu)
             {
                 self.activatedWidgets |= (1ULL << widx::toolbar_auto_menu);
+            }
+            if (Config::get().toolbarButtonsCentred)
+            {
+                self.activatedWidgets |= (1ULL << widx::toolbar_buttons_centred);
             }
         }
 
@@ -2018,6 +2026,10 @@ namespace OpenLoco::Ui::Windows::Options
                 case Widx::kToolbarMenuAuto:
                     toolbarAutoMenuMouseUp(self);
                     break;
+
+                case Widx::kToolbarButtonsCentred:
+                    toolbarButtonsCentredMouseUp(self);
+                    break;
             }
         }
 
@@ -2055,6 +2067,16 @@ namespace OpenLoco::Ui::Windows::Options
             cfg.toolbarAutoMenu = !cfg.toolbarAutoMenu;
             Config::write();
 
+            self.invalidate();
+        }
+
+        static void toolbarButtonsCentredMouseUp(Window& self)
+        {
+            auto& cfg = OpenLoco::Config::get();
+            cfg.toolbarButtonsCentred = !cfg.toolbarButtonsCentred;
+            Config::write();
+
+            WindowManager::invalidate(WindowType::topToolbar);
             self.invalidate();
         }
 

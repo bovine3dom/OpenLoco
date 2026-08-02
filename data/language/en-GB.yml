@@ -2520,3 +2520,4 @@ strings:
   2465: "Mixed"
   2466: "Render main viewport at native resolution"
   2467: "Keep the main game world at display resolution while scaling the interface"
+  2468: "Align toolbar buttons horizontally centred"
