@@ -3,6 +3,8 @@
 #include "Environment.h"
 #include <Message.h>
 #include <OpenLoco/Core/FileSystem.hpp>
+#include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <locale>
 #include <yaml-cpp/yaml.h>
@@ -118,7 +120,9 @@ namespace OpenLoco::Config
         _config.usePreferredCurrencyAlways = config["usePreferredCurrencyAlways"].as<bool>(false);
 
         // Display
-        _config.scaleFactor = config["scale_factor"].as<float>(1.0f);
+        const auto scaleFactor = config["scale_factor"].as<float>(1.0f);
+        _config.scaleFactor = std::isfinite(scaleFactor) ? std::clamp(scaleFactor, 1.0f, 4.0f) : 1.0f;
+        _config.scalingMode = config["scaling_mode"].as<ScalingMode>(ScalingMode::sharp);
         _config.showFPS = config["showFPS"].as<bool>(false);
         _config.uncapFPS = config["uncapFPS"].as<bool>(false);
 
@@ -270,6 +274,7 @@ namespace OpenLoco::Config
 
         // Display
         node["scale_factor"] = _config.scaleFactor;
+        node["scaling_mode"] = _config.scalingMode;
         node["showFPS"] = _config.showFPS;
         node["uncapFPS"] = _config.uncapFPS;
 

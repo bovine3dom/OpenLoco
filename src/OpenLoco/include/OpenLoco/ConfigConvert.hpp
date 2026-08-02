@@ -239,6 +239,18 @@ namespace YAML
     {
         static const convert_pair_vector<WindowFrameStyle>& getEntries() { return kWindowFrameStyleEntries; }
     };
+
+    // ScalingMode
+    const convert_pair_vector<ScalingMode> kScalingModeEntries = {
+        enum_def(ScalingMode, sharp),
+        enum_def(ScalingMode, mmpx),
+        enum_def(ScalingMode, hqx),
+    };
+    template<>
+    struct convert<ScalingMode> : convert_enum_base<ScalingMode>
+    {
+        static const convert_pair_vector<ScalingMode>& getEntries() { return kScalingModeEntries; }
+    };
 }
 
 #undef enum_def

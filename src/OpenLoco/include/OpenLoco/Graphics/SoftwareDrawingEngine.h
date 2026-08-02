@@ -69,6 +69,8 @@ namespace OpenLoco::Gfx
         bool setVSync(bool state);
 
     private:
+        void destroyScaledScreenResources();
+        void destroyScreenResources();
         void renderDirtyRegions();
 
         SDL_Renderer* _renderer{};
@@ -76,11 +78,14 @@ namespace OpenLoco::Gfx
         SDL_Palette* _palette{};
         SDL_Surface* _screenSurface{};
         SDL_Surface* _screenRGBASurface{};
+        SDL_Surface* _scaledScreenRGBASurface{};
+        SDL_Surface* _scaledScreenSurface{};
+        SDL_Surface* _mmpxIntermediateSurface{};
 
         SDL_Texture* _screenTexture{};
         SDL_Texture* _scaledScreenTexture{};
 
-        SDL_Texture* _screenRGBATexture{};
+        uint8_t _pixelScaleFactor = 1;
 
         SoftwareDrawingContext _ctx;
         InvalidationGrid _invalidationGrid;
