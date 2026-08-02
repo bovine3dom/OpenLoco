@@ -43,6 +43,11 @@ namespace
         EXPECT_EQ(lhs.nextRecalculationDay, rhs.nextRecalculationDay);
         EXPECT_EQ(lhs.graphDirty, rhs.graphDirty);
         EXPECT_EQ(lhs.supply, rhs.supply);
+        ASSERT_EQ(lhs.stationAttraction.size(), rhs.stationAttraction.size());
+        for (const auto& [key, attraction] : lhs.stationAttraction)
+        {
+            EXPECT_EQ(attraction, rhs.stationAttraction.at(key));
+        }
         ASSERT_EQ(lhs.stationCargo.size(), rhs.stationCargo.size());
         for (const auto& [key, packets] : lhs.stationCargo)
         {
@@ -84,6 +89,7 @@ namespace
             { station(3), 75, -25 },
             { station(4), 25, 25 },
         };
+        state.stationAttraction[{ station(2), 0 }] = 120;
         state.serviceEdges[{ 0, station(1), station(2) }] = { 40, 10 };
         return state;
     }
@@ -123,6 +129,22 @@ TEST(CargoDistSave, RoundTripsCanonicalState)
 
     expectStatesEqual(original, decoded);
     EXPECT_TRUE(decoded.serviceEdges.empty());
+}
+
+TEST(CargoDistSave, DecodesVersionOneWithoutStationAttraction)
+{
+    auto encoded = encodeState(State{});
+    encoded[8] = std::byte{ 1 };
+    encoded.resize(encoded.size() - sizeof(uint32_t));
+    const auto payloadSize = static_cast<uint32_t>(encoded.size() - 16);
+    for (size_t i = 0; i < sizeof(payloadSize); ++i)
+    {
+        encoded[12 + i] = static_cast<std::byte>((payloadSize >> (i * 8)) & 0xFF);
+    }
+
+    const auto decoded = decodeState(encoded);
+
+    EXPECT_TRUE(decoded.stationAttraction.empty());
 }
 
 TEST(CargoDistSave, EncodingIsDeterministic)
@@ -175,7 +197,7 @@ TEST(CargoDistSave, RejectsTruncatedData)
 TEST(CargoDistSave, RejectsUnknownVersion)
 {
     auto encoded = encodeState(populatedState());
-    encoded[8] = std::byte{ 2 };
+    encoded[8] = std::byte{ 3 };
 
     EXPECT_THROW(decodeState(encoded), std::runtime_error);
 }
@@ -190,8 +212,10 @@ TEST(CargoDistSave, RejectsInvalidMode)
 
 TEST(CargoDistSave, RejectsInvalidFlowCursor)
 {
-    auto encoded = encodeState(populatedState());
-    std::fill(encoded.end() - sizeof(int64_t), encoded.end(), std::byte{ 0x7F });
+    auto state = populatedState();
+    state.stationAttraction.clear();
+    auto encoded = encodeState(state);
+    std::fill(encoded.end() - sizeof(uint32_t) - sizeof(int64_t), encoded.end() - sizeof(uint32_t), std::byte{ 0x7F });
 
     EXPECT_THROW(decodeState(encoded), std::runtime_error);
 }

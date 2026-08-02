@@ -16,9 +16,9 @@ namespace
         return static_cast<StationId>(value);
     }
 
-    RoutingNode node(uint16_t id, int16_t x, int16_t y, uint32_t supply = 0, bool accepts = false)
+    RoutingNode node(uint16_t id, int16_t x, int16_t y, uint32_t supply = 0, bool accepts = false, uint32_t attraction = 1)
     {
-        return { station(id), x, y, supply, accepts };
+        return { station(id), x, y, supply, accepts, attraction };
     }
 
     RoutingEdge edge(uint16_t from, uint16_t to, uint32_t capacity = 100, uint32_t travelTime = 1)
@@ -179,6 +179,61 @@ TEST(CargoDistRouting, DistanceEffectPrefersCloserSink)
 
     EXPECT_GT(nearAmount, farAmount);
     EXPECT_EQ(nearAmount + farAmount, 100U);
+}
+
+TEST(CargoDistRouting, AttractionWeightsEquidistantSinks)
+{
+    const RoutingGraph graph{
+        { node(1, 0, 0, 100), node(2, -10, 0, 0, true, 10), node(3, 10, 0, 0, true, 90) },
+        { edge(1, 2, 1000), edge(1, 3, 1000) },
+        false,
+        {},
+    };
+
+    const auto flows = calculateAsymmetricFlows(graph);
+
+    EXPECT_EQ(amountAt(flows, 2, 1, 2), 10U);
+    EXPECT_EQ(amountAt(flows, 3, 1, 3), 90U);
+}
+
+TEST(CargoDistRouting, DistanceModeratesDestinationAttraction)
+{
+    const RoutingGraph graph{
+        { node(1, 0, 0, 1000), node(2, 10, 0, 0, true, 10), node(3, 100, 0, 0, true, 100) },
+        { edge(1, 2, 1000), edge(1, 3, 1000) },
+        false,
+        {},
+    };
+    RoutingSettings noDistance{};
+    noDistance.distanceEffect = 0;
+
+    const auto distanceFlows = calculateAsymmetricFlows(graph);
+    const auto noDistanceFlows = calculateAsymmetricFlows(graph, noDistance);
+    const auto nearAmount = amountAt(distanceFlows, 2, 1, 2);
+    const auto farAmount = amountAt(distanceFlows, 3, 1, 3);
+
+    EXPECT_GT(farAmount, nearAmount);
+    EXPECT_LT(farAmount, amountAt(noDistanceFlows, 3, 1, 3));
+    EXPECT_EQ(nearAmount + farAmount, 1000U);
+}
+
+TEST(CargoDistRouting, HigherAttractionDestinationKeepsFlowThroughIntermediateStop)
+{
+    const RoutingGraph graph{
+        { node(1, 0, 0, 110), node(2, 10, 0, 0, true, 10), node(3, 20, 0, 0, true, 100) },
+        { edge(1, 2, 1000), edge(2, 3, 1000) },
+        false,
+        {},
+    };
+    RoutingSettings settings{};
+    settings.distanceEffect = 0;
+
+    const auto flows = calculateAsymmetricFlows(graph, settings);
+
+    EXPECT_EQ(amountAt(flows, 1, 1, 2), 110U);
+    EXPECT_EQ(amountAt(flows, 2, 1, 2), 10U);
+    EXPECT_EQ(amountAt(flows, 2, 1, 3), 100U);
+    EXPECT_EQ(amountAt(flows, 3, 1, 3), 100U);
 }
 
 TEST(CargoDistRouting, CongestionSplitsFlowAcrossParallelRoutes)

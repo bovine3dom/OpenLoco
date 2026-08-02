@@ -14,6 +14,7 @@ namespace OpenLoco::CargoDist
         int16_t y;
         uint32_t supply;
         bool accepts;
+        uint32_t attraction = 1;
     };
 
     struct RoutingEdge

@@ -131,6 +131,7 @@ namespace OpenLoco::CargoDist
         std::map<StationCargoKey, PacketList> stationCargo;
         std::map<VehicleCargoKey, PacketList> vehicleCargo;
         std::map<std::pair<uint8_t, StationId>, uint32_t> supply;
+        std::map<StationCargoKey, uint32_t> stationAttraction;
         std::map<ServiceEdgeKey, ServiceEdgeStats> serviceEdges;
         std::map<FlowKey, std::vector<FlowOption>> flows;
         uint32_t nextRecalculationDay{};

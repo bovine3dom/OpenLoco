@@ -23,7 +23,7 @@ namespace OpenLoco::CargoDist
             std::byte{ 'T' },
             std::byte{ 0 },
         };
-        constexpr uint16_t kVersion = 1;
+        constexpr uint16_t kVersion = 2;
         constexpr uint16_t kHeaderSize = 16;
         constexpr uint32_t kMaxStationLists = S5::Limits::kMaxStations * S5::Limits::kMaxCargoObjects;
         constexpr uint32_t kMaxVehicleLists = S5::Limits::kMaxEntities * 2;
@@ -299,6 +299,20 @@ namespace OpenLoco::CargoDist
             }
         }
 
+        payload.write(countMatching(state.stationAttraction, [](const auto& item) { return item.second != 0; }));
+        for (const auto& [key, attraction] : state.stationAttraction)
+        {
+            if (attraction == 0)
+            {
+                continue;
+            }
+            require(key.cargo < state.settings.modes.size() && isValidStation(key.station), "Invalid CargoDist station attraction key");
+            payload.write(stationValue(key.station));
+            payload.write(key.cargo);
+            payload.write<uint8_t>(0);
+            payload.write(attraction);
+        }
+
         require(payload.data().size() <= kMaxSaveDataSize - kHeaderSize, "CargoDist save data is too large");
         Encoder result;
         result.writeBytes(std::span{ kMagic });
@@ -314,7 +328,8 @@ namespace OpenLoco::CargoDist
         require(data.size() <= kMaxSaveDataSize, "CargoDist save data is too large");
         Decoder decoder(data);
         require(std::ranges::equal(decoder.readBytes(kMagic.size()), kMagic), "Invalid CargoDist save magic");
-        require(decoder.read<uint16_t>() == kVersion, "Unsupported CargoDist save version");
+        const auto version = decoder.read<uint16_t>();
+        require(version == 1 || version == kVersion, "Unsupported CargoDist save version");
         require(decoder.read<uint16_t>() == kHeaderSize, "Invalid CargoDist save header");
         require(decoder.read<uint32_t>() == decoder.remaining(), "Invalid CargoDist save payload size");
 
@@ -399,6 +414,22 @@ namespace OpenLoco::CargoDist
             }
             validateFlowOptions(options);
             require(state.flows.emplace(key, std::move(options)).second, "Duplicate CargoDist flow key");
+        }
+
+        if (version >= 2)
+        {
+            const auto attractionCount = decoder.read<uint32_t>();
+            require(attractionCount <= kMaxStationLists, "Too many CargoDist station attraction entries");
+            for (uint32_t i = 0; i < attractionCount; ++i)
+            {
+                StationCargoKey key;
+                key.station = StationId(decoder.read<uint16_t>());
+                key.cargo = decoder.read<uint8_t>();
+                decoder.read<uint8_t>();
+                const auto attraction = decoder.read<uint32_t>();
+                require(isValidStation(key.station) && key.cargo < state.settings.modes.size() && attraction != 0, "Invalid CargoDist station attraction entry");
+                require(state.stationAttraction.emplace(key, attraction).second, "Duplicate CargoDist station attraction key");
+            }
         }
 
         require(decoder.empty(), "Trailing CargoDist save data");

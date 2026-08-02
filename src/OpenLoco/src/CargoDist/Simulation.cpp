@@ -362,18 +362,36 @@ namespace OpenLoco::CargoDist
             graph.timeSensitive = true;
             const auto& state = getStateConst();
             const auto demands = getRoutingDemands(cargo);
+            const auto* cargoObject = ObjectManager::get<CargoObject>(cargo);
+            auto useCatchmentAttraction = cargoObject != nullptr && cargoObject->cargoCategory == CargoCategory::passengers;
+            if (useCatchmentAttraction)
+            {
+                for (const auto& station : StationManager::stations())
+                {
+                    if (!station.empty() && station.cargoStats[cargo].isAccepted() && !state.stationAttraction.contains({ station.id(), cargo }))
+                    {
+                        useCatchmentAttraction = false;
+                        break;
+                    }
+                }
+            }
             for (const auto& station : StationManager::stations())
             {
                 if (station.empty())
                 {
                     continue;
                 }
+                const auto accepts = station.cargoStats[cargo].isAccepted();
+                const auto attraction = useCatchmentAttraction && accepts
+                    ? state.stationAttraction.at({ station.id(), cargo })
+                    : 1;
                 graph.nodes.push_back({
                     station.id(),
                     station.x,
                     station.y,
                     0,
-                    station.cargoStats[cargo].isAccepted(),
+                    accepts,
+                    attraction,
                 });
             }
             for (const auto& [key, amount] : demands)
@@ -474,6 +492,33 @@ namespace OpenLoco::CargoDist
         {
             nativeCargo.townFrom = packets->representativeOrigin();
             nativeCargo.numDays = packets->averageAge();
+        }
+    }
+
+    void setStationAttraction(StationId station, uint8_t cargo, uint32_t attraction)
+    {
+        auto& state = getState();
+        const StationCargoKey key{ station, cargo };
+        auto found = state.stationAttraction.find(key);
+        if (found != state.stationAttraction.end() && found->second == attraction)
+        {
+            return;
+        }
+        if (attraction == 0)
+        {
+            if (found == state.stationAttraction.end())
+            {
+                return;
+            }
+            state.stationAttraction.erase(found);
+        }
+        else
+        {
+            state.stationAttraction.insert_or_assign(key, attraction);
+        }
+        if (isEnabled(cargo))
+        {
+            markGraphDirty();
         }
     }
 
@@ -730,6 +775,13 @@ namespace OpenLoco::CargoDist
                 return isActiveStation(packet.origin) && (packet.nextHop == StationId::null || isActiveStation(packet.nextHop));
             });
         };
+        for (const auto& [key, attraction] : state.stationAttraction)
+        {
+            if (key.cargo >= state.settings.modes.size() || !isActiveStation(key.station) || attraction == 0)
+            {
+                throw std::runtime_error("Invalid CargoDist station attraction state");
+            }
+        }
         for (const auto& [key, packets] : state.stationCargo)
         {
             if (!isEnabled(key.cargo) || !isActiveStation(key.station) || !validatePackets(packets))
@@ -873,6 +925,7 @@ namespace OpenLoco::CargoDist
         std::erase_if(state.stationCargo, [](const auto& item) { return item.second.empty(); });
         std::erase_if(state.vehicleCargo, [](const auto& item) { return item.second.empty(); });
         std::erase_if(state.supply, [station](const auto& item) { return item.first.second == station; });
+        std::erase_if(state.stationAttraction, [station](const auto& item) { return item.first.station == station; });
         std::erase_if(state.serviceEdges, [station](const auto& item) { return item.first.from == station || item.first.to == station; });
         for (auto it = state.flows.begin(); it != state.flows.end();)
         {

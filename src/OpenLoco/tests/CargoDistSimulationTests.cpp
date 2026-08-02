@@ -236,3 +236,22 @@ TEST(CargoDistSimulation, RemovingStationKeepsFlowCursorsSerializable)
     EXPECT_EQ(options.front().current, 0);
     EXPECT_NO_THROW(encodeState(getStateConst()));
 }
+
+TEST(CargoDistSimulation, StationAttractionMarksEnabledGraphDirty)
+{
+    reset();
+    getState().settings.modes[0] = DistributionMode::asymmetric;
+
+    setStationAttraction(station(1), 0, 100);
+
+    EXPECT_EQ(getStateConst().stationAttraction.at({ station(1), 0 }), 100U);
+    EXPECT_TRUE(getStateConst().graphDirty);
+
+    getState().graphDirty = false;
+    setStationAttraction(station(1), 0, 100);
+    EXPECT_FALSE(getStateConst().graphDirty);
+
+    setStationAttraction(station(1), 0, 0);
+    EXPECT_FALSE(getStateConst().stationAttraction.contains({ station(1), 0 }));
+    EXPECT_TRUE(getStateConst().graphDirty);
+}

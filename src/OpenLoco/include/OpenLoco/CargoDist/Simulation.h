@@ -27,6 +27,7 @@ namespace OpenLoco::CargoDist
 
     void synchroniseStationCargo(StationId station, uint8_t cargo, StationCargoStats& nativeCargo);
     void synchroniseVehicleCargo(VehicleCargoKey key, Vehicles::VehicleCargo& nativeCargo);
+    void setStationAttraction(StationId station, uint8_t cargo, uint32_t attraction);
 
     void addProducedCargo(StationId station, uint8_t cargo, StationCargoStats& nativeCargo, uint16_t quantity);
     void updateStationCargoDaily(StationId station, uint8_t cargo, StationCargoStats& nativeCargo, uint16_t quantityBeforeUpdate);

@@ -92,8 +92,8 @@ namespace OpenLoco::CargoDist
                         }),
                         nodes.end());
             std::sort(nodes.begin(), nodes.end(), [](const auto& lhs, const auto& rhs) {
-                return std::make_tuple(stationValue(lhs.station), lhs.x, lhs.y, lhs.supply, lhs.accepts)
-                    < std::make_tuple(stationValue(rhs.station), rhs.x, rhs.y, rhs.supply, rhs.accepts);
+                return std::make_tuple(stationValue(lhs.station), lhs.x, lhs.y, lhs.supply, lhs.accepts, lhs.attraction)
+                    < std::make_tuple(stationValue(rhs.station), rhs.x, rhs.y, rhs.supply, rhs.accepts, rhs.attraction);
             });
             nodes.erase(std::unique(nodes.begin(), nodes.end(), [](const auto& lhs, const auto& rhs) {
                             return lhs.station == rhs.station;
@@ -256,15 +256,22 @@ namespace OpenLoco::CargoDist
             std::vector<uint64_t> weights;
             weights.reserve(sinks.size());
             uint64_t totalWeight = 0;
+            uint64_t maximumAttraction = 1;
             for (const auto sink : sinks)
             {
-                uint64_t weight = 1;
+                maximumAttraction = std::max<uint64_t>(maximumAttraction, nodes[sink].attraction);
+            }
+            for (const auto sink : sinks)
+            {
+                uint64_t distanceWeight = kAttractionScale;
                 if (distanceEffect != 0)
                 {
                     const auto distance = std::max<uint64_t>(1, geometricDistance(source, nodes[sink]));
                     const auto denominator = uint64_t{ 100 } + static_cast<uint64_t>(distanceEffect) * distance;
-                    weight = std::max<uint64_t>(1, kAttractionScale / denominator);
+                    distanceWeight = std::max<uint64_t>(1, kAttractionScale / denominator);
                 }
+                const auto attraction = std::max<uint64_t>(1, nodes[sink].attraction);
+                const auto weight = std::max<uint64_t>(1, saturatedMultiply(distanceWeight, attraction) / maximumAttraction);
                 weights.push_back(weight);
                 totalWeight += weight;
             }

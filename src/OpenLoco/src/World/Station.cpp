@@ -154,7 +154,7 @@ namespace OpenLoco
             _score.fill(0);
         }
 
-        uint32_t score(const uint8_t cargo)
+        uint32_t score(const uint8_t cargo) const
         {
             return _score[cargo];
         }
@@ -467,7 +467,16 @@ namespace OpenLoco
 
         setCatchmentDisplay(this, CatchmentFlags::flag_1);
 
-        return doCalcAcceptedCargo(this, cargoSearchState);
+        const auto acceptedCargo = doCalcAcceptedCargo(this, cargoSearchState);
+        for (uint8_t cargo = 0; cargo < kMaxCargoStats; ++cargo)
+        {
+            const auto* cargoObject = ObjectManager::get<CargoObject>(cargo);
+            if (cargoObject != nullptr && cargoObject->cargoCategory == CargoCategory::passengers)
+            {
+                CargoDist::setStationAttraction(id(), cargo, cargoSearchState.score(cargo));
+            }
+        }
+        return acceptedCargo;
     }
 
     // 0x00491FE0
