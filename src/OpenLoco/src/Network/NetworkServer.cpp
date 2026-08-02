@@ -90,6 +90,16 @@ Client* NetworkServer::findClient(const INetworkEndpoint& endpoint)
 
 void NetworkServer::createNewClient(std::unique_ptr<NetworkConnection> conn, const ConnectPacket& packet)
 {
+    ConnectResponsePacket response;
+    response.version = kNetworkVersion;
+    if (packet.version != kNetworkVersion)
+    {
+        response.result = ConnectionResult::error;
+        conn->sendPacket(response);
+        Logging::info("Rejected client with network version {}", packet.version);
+        return;
+    }
+
     auto newClient = std::make_unique<Client>();
     newClient->id = _nextClientId++;
     newClient->connection = std::move(conn);
@@ -98,7 +108,6 @@ void NetworkServer::createNewClient(std::unique_ptr<NetworkConnection> conn, con
 
     auto& newClientPtr = *_clients.back();
 
-    ConnectResponsePacket response;
     response.result = ConnectionResult::success;
     newClientPtr.connection->sendPacket(response);
 

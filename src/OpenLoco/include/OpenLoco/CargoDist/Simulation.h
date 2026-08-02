@@ -5,6 +5,7 @@
 
 namespace OpenLoco
 {
+    struct GameState;
     struct StationCargoStats;
 
     namespace Vehicles
@@ -36,7 +37,9 @@ namespace OpenLoco::CargoDist
     UnloadResult unloadVehicleCargo(VehicleCargoKey key, Vehicles::VehicleCargo& nativeCargo, StationId station, StationCargoStats& nativeStationCargo, std::span<const StationId> remainingStops, bool forceUnload);
 
     StationId getNextStop(const Vehicles::VehicleHead& head);
-    void enableAll();
+    void recalculateNow();
+    void validateState(const State& state, const GameState& gameState);
+    void restoreState(State state);
     void updateDaily();
 
     void removeStation(StationId station);

@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 #include <OpenLoco/CargoDist/Simulation.h>
 
+#include "Entities/EntityManager.h"
 #include "Vehicles/Vehicle.h"
 #include "World/Station.h"
+#include <OpenLoco/CargoDist/Save.h>
 #include <array>
 #include <gtest/gtest.h>
 #include <limits>
@@ -216,4 +218,21 @@ TEST(CargoDistSimulation, CapsTransferredCargoAtNativeStationLimit)
     EXPECT_EQ(result.transferred, 20);
     EXPECT_EQ(stationCargo.quantity, std::numeric_limits<uint16_t>::max());
     EXPECT_EQ(getStationCargoConst(station(2), 0)->quantity(), std::numeric_limits<uint16_t>::max());
+}
+
+TEST(CargoDistSimulation, RemovingStationKeepsFlowCursorsSerializable)
+{
+    reset();
+    EntityManager::reset();
+    getState().flows[{ 0, station(1), station(2) }] = {
+        { station(3), 75, -25 },
+        { station(4), 25, 25 },
+    };
+
+    removeStation(station(3));
+
+    const auto& options = getStateConst().flows.at({ 0, station(1), station(2) });
+    ASSERT_EQ(options.size(), 1);
+    EXPECT_EQ(options.front().current, 0);
+    EXPECT_NO_THROW(encodeState(getStateConst()));
 }

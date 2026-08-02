@@ -2,9 +2,11 @@
 #include "Config.h"
 #include "Date.h"
 #include "Environment.h"
+#include "GameCommands/General/SetCargoDistMode.h"
 #include "Graphics/Colour.h"
 #include "Graphics/Gfx.h"
 #include "Graphics/ImageIds.h"
+#include "Graphics/RenderTarget.h"
 #include "Graphics/SoftwareDrawingEngine.h"
 #include "Graphics/TextRenderer.h"
 #include "Input.h"
@@ -13,6 +15,7 @@
 #include "Localisation/LanguageFiles.h"
 #include "Localisation/Languages.h"
 #include "Localisation/StringIds.h"
+#include "Objects/CargoObject.h"
 #include "Objects/CompetitorObject.h"
 #include "Objects/CurrencyObject.h"
 #include "Objects/InterfaceSkinObject.h"
@@ -35,6 +38,7 @@
 #include "Ui/Widgets/ImageButtonWidget.h"
 #include "Ui/Widgets/LabelWidget.h"
 #include "Ui/Widgets/PanelWidget.h"
+#include "Ui/Widgets/ScrollViewWidget.h"
 #include "Ui/Widgets/SliderWidget.h"
 #include "Ui/Widgets/StepperWidget.h"
 #include "Ui/Widgets/TabWidget.h"
@@ -89,6 +93,7 @@ namespace OpenLoco::Ui::Windows::Options
             tab_controls,
             tab_company,
             tab_miscellaneous,
+            tab_cargo_distribution,
         };
 
         namespace Widx
@@ -104,6 +109,7 @@ namespace OpenLoco::Ui::Windows::Options
             constexpr WidgetId kTabControls{ "tab_controls" };
             constexpr WidgetId kTabCompany{ "tab_company" };
             constexpr WidgetId kTabMiscellaneous{ "tab_miscellaneous" };
+            constexpr WidgetId kTabCargoDistribution{ "tab_cargo_distribution" };
         }
 
         enum tab
@@ -115,6 +121,7 @@ namespace OpenLoco::Ui::Windows::Options
             controls,
             company,
             miscellaneous,
+            cargoDistribution,
         };
 
         static void prepareDraw(Window& self)
@@ -210,6 +217,8 @@ namespace OpenLoco::Ui::Windows::Options
                 const uint32_t imageId = skin->img + InterfaceSkin::ImageIds::tab_company;
                 self.widgets[widx::tab_company].image = imageId;
             }
+
+            self.widgets[widx::tab_cargo_distribution].image = ImageIds::tab_object_cargo;
         }
 
         static void onClose([[maybe_unused]] Window& self)
@@ -232,6 +241,7 @@ namespace OpenLoco::Ui::Windows::Options
                 case Widx::kTabControls:
                 case Widx::kTabCompany:
                 case Widx::kTabMiscellaneous:
+                case Widx::kTabCargoDistribution:
                     Options::tabOnMouseUp(self, wi);
                     return true;
 
@@ -255,7 +265,8 @@ namespace OpenLoco::Ui::Windows::Options
                 Widgets::Tab(Widx::kTabRegional, { 3 + kTabWidth * 3, 15 }, { kTabWidth, 27 }, WindowColour::secondary, ImageIds::tab_globe_0, StringIds::tooltip_regional_options),
                 Widgets::Tab(Widx::kTabControls, { 3 + kTabWidth * 4, 15 }, { kTabWidth, 27 }, WindowColour::secondary, ImageIds::tab_control, StringIds::tooltip_control_options),
                 Widgets::Tab(Widx::kTabCompany, { 3 + kTabWidth * 5, 15 }, { kTabWidth, 27 }, WindowColour::secondary, ImageIds::tab, StringIds::tooltip_company_options),
-                Widgets::Tab(Widx::kTabMiscellaneous, { 3 + kTabWidth * 6, 15 }, { kTabWidth, 27 }, WindowColour::secondary, ImageIds::tab_miscellaneous, StringIds::tooltip_miscellaneous_options));
+                Widgets::Tab(Widx::kTabMiscellaneous, { 3 + kTabWidth * 6, 15 }, { kTabWidth, 27 }, WindowColour::secondary, ImageIds::tab_miscellaneous, StringIds::tooltip_miscellaneous_options),
+                Widgets::Tab(Widx::kTabCargoDistribution, { 3 + kTabWidth * 7, 15 }, { kTabWidth, 27 }, WindowColour::secondary, ImageIds::tab_object_cargo, StringIds::tooltip_cargo_distribution_options));
         }
     }
 
@@ -265,7 +276,7 @@ namespace OpenLoco::Ui::Windows::Options
 
         enum widx
         {
-            frame_hardware = Common::widx::tab_miscellaneous + 1,
+            frame_hardware = Common::widx::tab_cargo_distribution + 1,
             screen_mode_label,
             screen_mode,
             screen_mode_btn,
@@ -639,7 +650,7 @@ namespace OpenLoco::Ui::Windows::Options
 
         enum widx
         {
-            frame_map_rendering = Common::widx::tab_miscellaneous + 1,
+            frame_map_rendering = Common::widx::tab_cargo_distribution + 1,
             vehicles_min_scale_label,
             vehicles_min_scale,
             vehicles_min_scale_btn,
@@ -1044,7 +1055,7 @@ namespace OpenLoco::Ui::Windows::Options
 
         enum widx
         {
-            frame_sound = Common::widx::tab_miscellaneous + 1,
+            frame_sound = Common::widx::tab_cargo_distribution + 1,
             audio_device,
             audio_device_btn,
 
@@ -1418,7 +1429,7 @@ namespace OpenLoco::Ui::Windows::Options
 
         enum widx
         {
-            language_label = Common::widx::tab_miscellaneous + 1,
+            language_label = Common::widx::tab_cargo_distribution + 1,
             language,
             language_btn,
             distance_label,
@@ -1897,7 +1908,7 @@ namespace OpenLoco::Ui::Windows::Options
     {
         enum widx
         {
-            edge_scrolling = Common::widx::tab_miscellaneous + 1,
+            edge_scrolling = Common::widx::tab_cargo_distribution + 1,
             zoom_to_cursor,
             invert_right_mouse_view_pan,
             toolbar_auto_menu,
@@ -2065,7 +2076,7 @@ namespace OpenLoco::Ui::Windows::Options
 
         enum widx
         {
-            groupPreferredOwner = Common::widx::tab_miscellaneous + 1,
+            groupPreferredOwner = Common::widx::tab_cargo_distribution + 1,
 
             usePreferredOwnerFace,
             changeOwnerFaceBtn,
@@ -2424,7 +2435,7 @@ namespace OpenLoco::Ui::Windows::Options
 
         enum widx
         {
-            groupCheats = Common::widx::tab_miscellaneous + 1,
+            groupCheats = Common::widx::tab_cargo_distribution + 1,
             enableCheatsToolbarButton,
             disableAICompanies,
             disableTownExpansion,
@@ -2819,6 +2830,244 @@ namespace OpenLoco::Ui::Windows::Options
         }
     }
 
+    namespace CargoDistribution
+    {
+        static constexpr Ui::Size kWindowSize = { 400, 250 };
+        static constexpr int16_t kRowHeight = 18;
+        static constexpr int16_t kDropdownLeft = 205;
+        static constexpr int16_t kGlobalDropdownRight = 385;
+        static constexpr int16_t kRowDropdownRight = 374;
+
+        enum widx
+        {
+            all_cargo_label = Common::widx::tab_cargo_distribution + 1,
+            all_cargo,
+            all_cargo_btn,
+            scrollview,
+        };
+
+        namespace Widx
+        {
+            constexpr WidgetId kAllCargo{ "all_cargo" };
+            constexpr WidgetId kAllCargoBtn{ "all_cargo_btn" };
+            constexpr WidgetId kScrollview{ "scrollview" };
+        }
+
+        static constexpr StringId kModeStringIds[] = {
+            StringIds::manual,
+            StringIds::cargo_distribution_asymmetric,
+        };
+
+        static constexpr auto _widgets = makeWidgets(
+            Common::makeCommonWidgets(kWindowSize, StringIds::options_title_cargo_distribution),
+            Widgets::Label({ 10, 52 }, { 180, 12 }, WindowColour::secondary, ContentAlign::left, StringIds::all_cargo),
+            Widgets::dropdownWidgets(Widx::kAllCargo, Widx::kAllCargoBtn, { kDropdownLeft, 52 }, { kGlobalDropdownRight - kDropdownLeft, 12 }, WindowColour::secondary),
+            Widgets::ScrollView(Widx::kScrollview, { 4, 70 }, { 392, 174 }, WindowColour::secondary, Scrollbars::vertical));
+
+        static std::optional<CargoDist::DistributionMode> getCommonMode()
+        {
+            std::optional<CargoDist::DistributionMode> result;
+            for (uint8_t cargo = 0; cargo < CargoDist::getStateConst().settings.modes.size(); ++cargo)
+            {
+                if (ObjectManager::get<CargoObject>(cargo) == nullptr)
+                {
+                    continue;
+                }
+                const auto mode = CargoDist::getMode(cargo);
+                if (result.has_value() && *result != mode)
+                {
+                    return std::nullopt;
+                }
+                result = mode;
+            }
+            return result;
+        }
+
+        static void showModeDropdown(Window& self, int16_t x, int16_t y, int16_t width, std::optional<CargoDist::DistributionMode> selected)
+        {
+            Dropdown::show(x, y, width, 12, self.getColour(WindowColour::secondary), std::size(kModeStringIds), 0x80);
+            for (size_t i = 0; i < std::size(kModeStringIds); ++i)
+            {
+                Dropdown::add(i, StringIds::dropdown_stringid, kModeStringIds[i]);
+            }
+            if (selected.has_value())
+            {
+                Dropdown::setItemSelected(enumValue(*selected));
+            }
+        }
+
+        static void onMouseUp(Window& self, WidgetIndex_t wi, const WidgetId id)
+        {
+            Common::onMouseUp(self, wi, id);
+        }
+
+        static void onMouseDown(Window& self, [[maybe_unused]] WidgetIndex_t wi, const WidgetId id)
+        {
+            if (id != Widx::kAllCargoBtn)
+            {
+                return;
+            }
+            const auto& target = self.widgets[widx::all_cargo];
+            showModeDropdown(self, self.x + target.left, self.y + target.top, target.width() - 4, getCommonMode());
+        }
+
+        static void applyMode(Window& self, uint8_t cargo, int16_t itemIndex)
+        {
+            if (itemIndex < 0 || itemIndex >= static_cast<int16_t>(std::size(kModeStringIds)))
+            {
+                return;
+            }
+            const GameCommands::SetCargoDistModeArgs args(cargo, static_cast<CargoDist::DistributionMode>(itemIndex));
+            if (GameCommands::doCommand(args, GameCommands::Flags::apply) != GameCommands::kFailure)
+            {
+                self.invalidate();
+            }
+        }
+
+        static void onDropdown(Window& self, [[maybe_unused]] WidgetIndex_t wi, const WidgetId id, int16_t itemIndex)
+        {
+            if (id == Widx::kAllCargoBtn)
+            {
+                applyMode(self, GameCommands::kAllCargo, itemIndex);
+            }
+            else if (id == Widx::kScrollview && self.rowHover >= 0)
+            {
+                applyMode(self, static_cast<uint8_t>(self.rowHover), itemIndex);
+            }
+        }
+
+        static void onUpdate(Window& self)
+        {
+            ++self.frameNo;
+            self.callPrepareDraw();
+            WindowManager::invalidateWidget(self.type, self.number, self.currentTab + Common::widx::tab_display);
+            if (WindowManager::find(WindowType::dropdown, 0) == nullptr && self.rowHover != -1)
+            {
+                self.rowHover = -1;
+                self.invalidate();
+            }
+        }
+
+        static void getScrollSize([[maybe_unused]] Window& self, [[maybe_unused]] uint32_t scrollIndex, int32_t& scrollWidth, int32_t& scrollHeight)
+        {
+            scrollWidth = 0;
+            scrollHeight = 0;
+            for (uint8_t cargo = 0; cargo < CargoDist::getStateConst().settings.modes.size(); ++cargo)
+            {
+                if (ObjectManager::get<CargoObject>(cargo) != nullptr)
+                {
+                    scrollHeight += kRowHeight;
+                }
+            }
+        }
+
+        static int16_t cargoAtScrollPosition(int16_t x, int16_t y)
+        {
+            if (x < kDropdownLeft || x > kRowDropdownRight || y < 0)
+            {
+                return -1;
+            }
+            for (uint8_t cargo = 0; cargo < CargoDist::getStateConst().settings.modes.size(); ++cargo)
+            {
+                if (ObjectManager::get<CargoObject>(cargo) == nullptr)
+                {
+                    continue;
+                }
+                if (y < kRowHeight)
+                {
+                    return cargo;
+                }
+                y -= kRowHeight;
+            }
+            return -1;
+        }
+
+        static void scrollMouseDown(Window& self, int16_t x, int16_t y, [[maybe_unused]] uint8_t scrollIndex)
+        {
+            const auto cargo = cargoAtScrollPosition(x, y);
+            if (cargo < 0)
+            {
+                return;
+            }
+            self.rowHover = cargo;
+            Audio::playSound(Audio::SoundId::clickDown, Audio::ChannelId::ui, self.widgets[widx::scrollview].right);
+
+            const auto& target = self.widgets[widx::scrollview];
+            const auto rowTop = y - y % kRowHeight;
+            showModeDropdown(
+                self,
+                self.x + target.left + kDropdownLeft + 1,
+                self.y + target.top + rowTop + 5 - self.scrollAreas[0].contentOffsetY,
+                kRowDropdownRight - kDropdownLeft - 2,
+                CargoDist::getMode(cargo));
+        }
+
+        static void prepareDraw(Window& self)
+        {
+            assert(self.currentTab == Common::tab::cargoDistribution);
+            Common::prepareDraw(self);
+            const auto commonMode = getCommonMode();
+            self.widgets[widx::all_cargo].text = commonMode.has_value()
+                ? kModeStringIds[enumValue(*commonMode)]
+                : StringIds::cargo_distribution_mixed;
+        }
+
+        static void drawScroll(Window& self, Gfx::DrawingContext& drawingCtx, [[maybe_unused]] uint32_t scrollIndex)
+        {
+            const auto& rt = drawingCtx.currentRenderTarget();
+            auto tr = Gfx::TextRenderer(drawingCtx);
+            int16_t y = 0;
+            for (uint8_t cargo = 0; cargo < CargoDist::getStateConst().settings.modes.size(); ++cargo)
+            {
+                const auto* cargoObj = ObjectManager::get<CargoObject>(cargo);
+                if (cargoObj == nullptr)
+                {
+                    continue;
+                }
+                if (y + kRowHeight >= rt.y && y <= rt.y + rt.height)
+                {
+                    drawingCtx.drawImage(ZoomLevel::full, 2, y + 1, cargoObj->unitInlineSprite);
+                    FormatArguments args{};
+                    args.push(cargoObj->name);
+                    tr.drawStringLeftClipped({ 20, static_cast<int16_t>(y + 5) }, kDropdownLeft - 24, Colour::black, StringIds::wcolour2_stringid, args);
+
+                    drawingCtx.fillRectInset(kDropdownLeft, y + 4, kRowDropdownRight, y + 15, self.getColour(WindowColour::secondary), Gfx::RectInsetFlags::borderInset | Gfx::RectInsetFlags::fillDarker);
+                    args = {};
+                    args.push(kModeStringIds[enumValue(CargoDist::getMode(cargo))]);
+                    tr.drawStringLeftClipped({ kDropdownLeft + 1, static_cast<int16_t>(y + 4) }, kRowDropdownRight - kDropdownLeft - 14, Colour::black, StringIds::black_stringid, args);
+
+                    const auto knobFlags = self.rowHover == cargo ? Gfx::RectInsetFlags::borderInset | Gfx::RectInsetFlags::fillDarker : Gfx::RectInsetFlags::none;
+                    drawingCtx.fillRectInset(kRowDropdownRight - 11, y + 5, kRowDropdownRight - 1, y + 14, self.getColour(WindowColour::secondary), knobFlags);
+                    tr.drawStringLeft({ kRowDropdownRight - 10, static_cast<int16_t>(y + 5) }, Colour::black, StringIds::dropdown);
+                }
+                y += kRowHeight;
+            }
+        }
+
+        static void draw(Window& self, Gfx::DrawingContext& drawingCtx)
+        {
+            self.draw(drawingCtx);
+        }
+
+        static constexpr WindowEventList kEvents = {
+            .onClose = Common::onClose,
+            .onMouseUp = onMouseUp,
+            .onMouseDown = onMouseDown,
+            .onDropdown = onDropdown,
+            .onUpdate = onUpdate,
+            .getScrollSize = getScrollSize,
+            .scrollMouseDown = scrollMouseDown,
+            .prepareDraw = prepareDraw,
+            .draw = draw,
+            .drawScroll = drawScroll,
+        };
+
+        static const WindowEventList& getEvents()
+        {
+            return kEvents;
+        }
+    }
+
     static void prepareObjectSelectionList()
     {
         _objectListSelection.resize(ObjectManager::getNumInstalledObjects());
@@ -2827,14 +3076,18 @@ namespace OpenLoco::Ui::Windows::Options
 
     static void disableTabsByCurrentScene(Window& self)
     {
-        self.disabledWidgets &= ~(1ULL << Common::widx::tab_regional);
+        self.disabledWidgets &= ~((1ULL << Common::widx::tab_regional) | (1ULL << Common::widx::tab_cargo_distribution));
 
         if (SceneManager::isEditorMode() && Scenario::getOptions().editorStep == EditorController::Step::objectSelection)
         {
             self.disabledWidgets |= 1ULL << Common::widx::tab_regional;
         }
+        if (SceneManager::isEditorMode() || SceneManager::isTitleMode())
+        {
+            self.disabledWidgets |= 1ULL << Common::widx::tab_cargo_distribution;
+        }
 
-        Widget::leftAlignTabs(self, Common::widx::tab_display, Common::widx::tab_miscellaneous);
+        Widget::leftAlignTabs(self, Common::widx::tab_display, Common::widx::tab_cargo_distribution);
     }
 
     // 0x004C1519 & 0x00474911
@@ -2918,6 +3171,7 @@ namespace OpenLoco::Ui::Windows::Options
         { Controls::_widgets,  Controls::getEvents(),  Controls::kWindowSize },
         { Company::_widgets,   Company::getEvents(),   Company::kWindowSize  },
         { Misc::_widgets,      Misc::getEvents(),      Misc::kWindowSize     },
+        { CargoDistribution::_widgets, CargoDistribution::getEvents(), CargoDistribution::kWindowSize },
     };
     // clang-format on
 

@@ -157,7 +157,14 @@ void NetworkClient::onReceivePacketFromServer(const Packet& packet)
     switch (packet.header.kind)
     {
         case PacketKind::connectResponse:
-            receiveConnectionResponsePacket(*reinterpret_cast<const ConnectResponsePacket*>(packet.data));
+            if (const auto* response = packet.as<PacketKind::connectResponse, ConnectResponsePacket>())
+            {
+                receiveConnectionResponsePacket(*response);
+            }
+            else
+            {
+                close();
+            }
             break;
         case PacketKind::requestStateResponse:
             receiveRequestStateResponsePacket(*reinterpret_cast<const RequestStateResponse*>(packet.data));
@@ -200,7 +207,7 @@ void NetworkClient::sendRequestStatePacket()
 
 void NetworkClient::receiveConnectionResponsePacket(const ConnectResponsePacket& response)
 {
-    if (response.result == ConnectionResult::success)
+    if (response.result == ConnectionResult::success && response.version == kNetworkVersion)
     {
         _status = NetworkClientStatus::connectedSuccessfully;
         setStatus("Connected to server successfully");

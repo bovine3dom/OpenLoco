@@ -2513,3 +2513,8 @@ strings:
   2458: "{STRINGID}{STRINGID}"
   2459: "Debug window"
   2460: "Show toolbar menus on hover instead of click"
+  2461: "{SMALLFONT}{COLOUR BLACK}Cargo distribution options"
+  2462: "Options - Cargo Distribution"
+  2463: "All cargo"
+  2464: "Asymmetric"
+  2465: "Mixed"

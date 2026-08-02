@@ -2,6 +2,9 @@
 #include <OpenLoco/CargoDist/Simulation.h>
 
 #include "Date.h"
+#include "GameState.h"
+#include "Objects/CargoObject.h"
+#include "Objects/ObjectManager.h"
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/Orders.h"
 #include "Vehicles/Vehicle.h"
@@ -17,6 +20,8 @@
 #include <array>
 #include <limits>
 #include <map>
+#include <set>
+#include <stdexcept>
 #include <vector>
 
 namespace OpenLoco::CargoDist
@@ -75,6 +80,38 @@ namespace OpenLoco::CargoDist
                         func(*head, VehicleCargoKey{ component.back->id, VehicleCargoSlot::secondary }, component.back->secondaryCargo);
                         func(*head, VehicleCargoKey{ component.body->id, VehicleCargoSlot::primary }, component.body->primaryCargo);
                     }
+                }
+            }
+        }
+
+        template<typename TFunc>
+        void forEachVehicleCargo(const GameState& gameState, TFunc&& func)
+        {
+            for (const auto& entity : gameState.entities)
+            {
+                const auto* vehicle = entity.asBase<Vehicles::VehicleBase>();
+                if (vehicle == nullptr)
+                {
+                    continue;
+                }
+
+                switch (vehicle->getSubType())
+                {
+                    case Vehicles::VehicleEntityType::bogie:
+                    {
+                        const auto& bogie = *reinterpret_cast<const Vehicles::VehicleBogie*>(&entity);
+                        func(VehicleCargoKey{ bogie.id, VehicleCargoSlot::secondary }, bogie.secondaryCargo);
+                        break;
+                    }
+                    case Vehicles::VehicleEntityType::body_start:
+                    case Vehicles::VehicleEntityType::body_continued:
+                    {
+                        const auto& body = *reinterpret_cast<const Vehicles::VehicleBody*>(&entity);
+                        func(VehicleCargoKey{ body.id, VehicleCargoSlot::primary }, body.primaryCargo);
+                        break;
+                    }
+                    default:
+                        break;
                 }
             }
         }
@@ -397,6 +434,21 @@ namespace OpenLoco::CargoDist
             std::erase_if(state.serviceEdges, [cargo](const auto& item) { return item.first.cargo == cargo; });
             std::erase_if(state.flows, [cargo](const auto& item) { return item.first.cargo == cargo; });
         }
+
+        void recalculateFlows()
+        {
+            auto& state = getState();
+            rebuildServiceEdges();
+            for (uint8_t cargo = 0; cargo < state.settings.modes.size(); ++cargo)
+            {
+                if (!isEnabled(cargo))
+                {
+                    continue;
+                }
+                setFlows(cargo, calculateAsymmetricFlows(buildGraph(cargo), state.settings.routing));
+                rerouteWaitingCargo(cargo);
+            }
+        }
     }
 
     void synchroniseStationCargo(StationId station, uint8_t cargo, StationCargoStats& nativeCargo)
@@ -650,12 +702,122 @@ namespace OpenLoco::CargoDist
         state.graphDirty = true;
     }
 
-    void enableAll()
+    void recalculateNow()
     {
-        for (uint8_t cargo = 0; cargo < getStateConst().settings.modes.size(); ++cargo)
+        auto& state = getState();
+        if (std::none_of(state.settings.modes.begin(), state.settings.modes.end(), [](auto mode) { return mode != DistributionMode::manual; }))
         {
-            setMode(cargo, DistributionMode::asymmetric);
+            state.graphDirty = false;
+            return;
         }
+        recalculateFlows();
+        state.nextRecalculationDay = getCurrentDay() + std::max<uint16_t>(1, state.settings.recalculationInterval);
+        state.graphDirty = false;
+    }
+
+    void validateState(const State& state, const GameState& gameState)
+    {
+        const auto isActiveStation = [&gameState](StationId id) {
+            const auto index = enumValue(id);
+            return index < std::size(gameState.stations) && !gameState.stations[index].empty();
+        };
+        const auto isEnabled = [&state](uint8_t cargo) {
+            return cargo < state.settings.modes.size() && state.settings.modes[cargo] != DistributionMode::manual;
+        };
+
+        const auto validatePackets = [&](const PacketList& packets) {
+            return std::all_of(packets.packets().begin(), packets.packets().end(), [&](const auto& packet) {
+                return isActiveStation(packet.origin) && (packet.nextHop == StationId::null || isActiveStation(packet.nextHop));
+            });
+        };
+        for (const auto& [key, packets] : state.stationCargo)
+        {
+            if (!isEnabled(key.cargo) || !isActiveStation(key.station) || !validatePackets(packets))
+            {
+                throw std::runtime_error("Invalid CargoDist station cargo state");
+            }
+        }
+        for (const auto& [key, amount] : state.supply)
+        {
+            if (!isEnabled(key.first) || !isActiveStation(key.second) || amount == 0)
+            {
+                throw std::runtime_error("Invalid CargoDist supply state");
+            }
+        }
+        for (const auto& [key, options] : state.flows)
+        {
+            if (!isEnabled(key.cargo) || !isActiveStation(key.station) || !isActiveStation(key.origin)
+                || std::any_of(options.begin(), options.end(), [&](const auto& option) { return !isActiveStation(option.via); }))
+            {
+                throw std::runtime_error("Invalid CargoDist flow state");
+            }
+        }
+
+        std::set<VehicleCargoKey> liveVehicleCargo;
+        forEachVehicleCargo(gameState, [&](VehicleCargoKey key, const auto& nativeCargo) {
+            liveVehicleCargo.insert(key);
+            const auto packets = state.vehicleCargo.find(key);
+            if (isEnabled(nativeCargo.type))
+            {
+                const auto quantity = packets == state.vehicleCargo.end() ? 0 : packets->second.quantity();
+                if (nativeCargo.qty != quantity
+                    || (quantity != 0 && (nativeCargo.townFrom != packets->second.representativeOrigin() || nativeCargo.numDays != packets->second.averageAge()))
+                    || (packets != state.vehicleCargo.end() && !validatePackets(packets->second)))
+                {
+                    throw std::runtime_error("CargoDist vehicle cargo does not match native state");
+                }
+            }
+            else if (packets != state.vehicleCargo.end())
+            {
+                throw std::runtime_error("CargoDist vehicle packets use manual cargo");
+            }
+        });
+        if (std::any_of(state.vehicleCargo.begin(), state.vehicleCargo.end(), [&](const auto& item) { return !liveVehicleCargo.contains(item.first); }))
+        {
+            throw std::runtime_error("CargoDist vehicle cargo references missing component");
+        }
+
+        for (uint16_t stationIndex = 0; stationIndex < std::size(gameState.stations); ++stationIndex)
+        {
+            const auto& station = gameState.stations[stationIndex];
+            if (station.empty())
+            {
+                continue;
+            }
+            for (uint8_t cargo = 0; cargo < state.settings.modes.size(); ++cargo)
+            {
+                const auto packets = state.stationCargo.find({ StationId(stationIndex), cargo });
+                if (isEnabled(cargo))
+                {
+                    const auto quantity = packets == state.stationCargo.end() ? 0 : packets->second.quantity();
+                    const auto& nativeCargo = station.cargoStats[cargo];
+                    if (nativeCargo.quantity != quantity
+                        || (quantity != 0 && (nativeCargo.origin != packets->second.representativeOrigin() || nativeCargo.enrouteAge != packets->second.averageAge())))
+                    {
+                        throw std::runtime_error("CargoDist station cargo does not match native state");
+                    }
+                }
+                else if (packets != state.stationCargo.end())
+                {
+                    throw std::runtime_error("CargoDist station packets use manual cargo");
+                }
+            }
+        }
+    }
+
+    void restoreState(State state)
+    {
+        for (uint8_t cargo = 0; cargo < state.settings.modes.size(); ++cargo)
+        {
+            if (ObjectManager::get<CargoObject>(cargo) == nullptr && state.settings.modes[cargo] != DistributionMode::manual)
+            {
+                throw std::runtime_error("CargoDist mode references unloaded cargo");
+            }
+        }
+        validateState(state, getGameState());
+        state.serviceEdges.clear();
+
+        getState() = std::move(state);
     }
 
     void updateDaily()
@@ -676,17 +838,7 @@ namespace OpenLoco::CargoDist
             return;
         }
 
-        rebuildServiceEdges();
-        for (uint8_t cargo = 0; cargo < state.settings.modes.size(); ++cargo)
-        {
-            if (!isEnabled(cargo))
-            {
-                continue;
-            }
-            const auto graph = buildGraph(cargo);
-            setFlows(cargo, calculateAsymmetricFlows(graph, state.settings.routing));
-            rerouteWaitingCargo(cargo);
-        }
+        recalculateFlows();
         if (scheduled)
         {
             for (auto it = state.supply.begin(); it != state.supply.end();)
@@ -729,7 +881,13 @@ namespace OpenLoco::CargoDist
                 it = state.flows.erase(it);
                 continue;
             }
-            std::erase_if(it->second, [station](const auto& option) { return option.via == station; });
+            if (std::erase_if(it->second, [station](const auto& option) { return option.via == station; }) != 0)
+            {
+                for (auto& option : it->second)
+                {
+                    option.current = 0;
+                }
+            }
             if (it->second.empty())
             {
                 it = state.flows.erase(it);

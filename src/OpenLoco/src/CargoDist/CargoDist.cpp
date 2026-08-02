@@ -27,6 +27,14 @@ namespace OpenLoco::CargoDist
         return total;
     }
 
+    PacketList PacketList::fromPackets(Container packets)
+    {
+        PacketList result;
+        result._packets = std::move(packets);
+        result.canonicalise();
+        return result;
+    }
+
     uint32_t PacketList::quantityFor(StationId nextHop) const
     {
         uint32_t total = 0;

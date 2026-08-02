@@ -41,6 +41,7 @@ namespace OpenLoco::CargoDist
         StationId representativeOrigin() const;
         uint8_t averageAge() const;
         std::span<const CargoPacket> packets() const { return _packets; }
+        static PacketList fromPackets(Container packets);
 
         void append(CargoPacket packet);
         void append(PacketList packets);

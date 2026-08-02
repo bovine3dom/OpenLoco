@@ -46,7 +46,7 @@
 #include "World/IndustryManager.h"
 #include "World/StationManager.h"
 #include "World/TownManager.h"
-#include <OpenLoco/CargoDist/Simulation.h>
+#include <OpenLoco/CargoDist/CargoDist.h>
 
 #include <OpenLoco/Platform/Platform.h>
 #include <algorithm>
@@ -221,8 +221,6 @@ namespace OpenLoco::Scenario
         Ui::Windows::Terraform::resetDefaultObjectIds();
         sub_43C8FD();
         MessageManager::reset();
-
-        CargoDist::enableAll();
     }
 
     // 0x004748D4

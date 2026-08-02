@@ -11,6 +11,7 @@
 #include "S5/S5File.h"
 #include "S5/S5Options.h"
 #include "Vehicles/Vehicle.h"
+#include <OpenLoco/CargoDist/Save.h>
 #include <OpenLoco/Core/FileStream.h>
 #include <OpenLoco/Core/MemoryStream.h>
 
@@ -20,6 +21,19 @@ namespace OpenLoco::GameSaveCompare
 {
     bool isLoggedDivergenceRoutings(OpenLoco::S5::GameState& gameState1, OpenLoco::S5::GameState& gameState2, bool displayAllDivergences);
     bool compareElements(const std::vector<S5::TileElement>& tileElements1, const std::vector<S5::TileElement>& tileElements2, bool displayAllDivergences);
+
+    static bool compareCargoDist(const S5::S5File& lhs, const S5::S5File& rhs)
+    {
+        const CargoDist::State defaultState;
+        const auto& lhsState = lhs.cargoDistState.has_value() ? *lhs.cargoDistState : defaultState;
+        const auto& rhsState = rhs.cargoDistState.has_value() ? *rhs.cargoDistState : defaultState;
+        const auto matches = CargoDist::encodeState(lhsState) == CargoDist::encodeState(rhsState);
+        if (!matches)
+        {
+            Logging::info("CargoDist state differs");
+        }
+        return matches;
+    }
 
     template<typename T>
     std::span<const std::byte> getBytesSpan(const T& item)
@@ -420,7 +434,7 @@ namespace OpenLoco::GameSaveCompare
         foundDivergence |= isLoggedDivergentGameStateField("scenarioTicks2", 0, gameState1.general.scenarioTicks2, gameState2.general.scenarioTicks2);
         foundDivergence |= isLoggedDivergentGameStateField("magicNumber", 0, gameState1.general.magicNumber, gameState2.general.magicNumber);
         foundDivergence |= isLoggedDivergentGameStateField("numMapAnimations", 0, gameState1.general.numMapAnimations, gameState2.general.numMapAnimations);
-        foundDivergence |= isLoggedDivergence("tileUpdateStartLocation", reinterpret_cast<uint16_t(&)[2]>(gameState1.general.tileUpdateStartLocation), reinterpret_cast<uint16_t(&)[2]>(gameState2.general.tileUpdateStartLocation), 2, displayAllDivergences);
+        foundDivergence |= isLoggedDivergence("tileUpdateStartLocation", reinterpret_cast<uint16_t (&)[2]>(gameState1.general.tileUpdateStartLocation), reinterpret_cast<uint16_t (&)[2]>(gameState2.general.tileUpdateStartLocation), 2, displayAllDivergences);
         foundDivergence |= isLoggedDivergence("scenarioConstruction.signals", gameState1.general.scenarioConstruction.signals, gameState2.general.scenarioConstruction.signals, 8, displayAllDivergences);
         foundDivergence |= isLoggedDivergence("scenarioConstruction.bridges", gameState1.general.scenarioConstruction.bridges, gameState2.general.scenarioConstruction.bridges, 8, displayAllDivergences);
         foundDivergence |= isLoggedDivergence("scenarioConstruction.trainStations", gameState1.general.scenarioConstruction.trainStations, gameState2.general.scenarioConstruction.trainStations, 8, displayAllDivergences);
@@ -690,7 +704,8 @@ namespace OpenLoco::GameSaveCompare
 
         FileStream referenceFile(path, StreamMode::read);
         auto referenceGameState = S5::loadSave(referenceFile);
-        return compareGameStates(currentGameState->gameState, referenceGameState->gameState, false);
+        return compareGameStates(currentGameState->gameState, referenceGameState->gameState, false)
+            && compareCargoDist(*currentGameState, *referenceGameState);
     }
 
     bool compareGameStates(const fs::path& path1, const fs::path& path2, bool displayAllDivergences)
@@ -705,6 +720,7 @@ namespace OpenLoco::GameSaveCompare
         auto state2 = S5::loadSave(file2);
         auto match = compareGameStates(state1->gameState, state2->gameState, displayAllDivergences);
         match &= compareElements(state1->tileElements, state2->tileElements, displayAllDivergences);
+        match &= compareCargoDist(*state1, *state2);
         return match;
     }
 }

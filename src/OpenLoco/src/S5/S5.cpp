@@ -1,6 +1,7 @@
 #define DO_TITLE_SEQUENCE_CHECKS
 
 #include "S5/S5.h"
+#include <OpenLoco/CargoDist/Save.h>
 #include <OpenLoco/CargoDist/Simulation.h>
 
 #include "Audio/Audio.h"
@@ -69,6 +70,27 @@ namespace OpenLoco::S5
     constexpr bool hasLoadFlags(LoadFlags flags, LoadFlags flagsToTest)
     {
         return (flags & flagsToTest) != LoadFlags::none;
+    }
+
+    static void validateCargoDistObjects(const CargoDist::State& state, std::span<const ObjectHeader> requiredObjects)
+    {
+        constexpr auto kCargoOffset = [] {
+            size_t offset = 0;
+            for (uint8_t type = 0; type < enumValue(ObjectType::cargo); ++type)
+            {
+                offset += ObjectManager::getMaxObjects(static_cast<ObjectType>(type));
+            }
+            return offset;
+        }();
+        for (uint8_t cargo = 0; cargo < state.settings.modes.size(); ++cargo)
+        {
+            const auto& header = requiredObjects[kCargoOffset + cargo];
+            if (state.settings.modes[cargo] != CargoDist::DistributionMode::manual
+                && (header.isEmpty() || header.getType() != ObjectType::cargo))
+            {
+                throw Exception::RuntimeError("CargoDist mode references unloaded cargo");
+            }
+        }
     }
 
     static Header prepareHeader(SaveFlags flags, size_t numPackedObjects)
@@ -528,6 +550,13 @@ namespace OpenLoco::S5
     {
         try
         {
+            std::vector<std::byte> cargoDistData;
+            if (file.header.type == S5Type::savedGame
+                && !file.header.hasFlags(HeaderFlags::isTitleSequence | HeaderFlags::isDump))
+            {
+                cargoDistData = CargoDist::encodeState(CargoDist::getStateConst());
+            }
+
             SawyerStreamWriter fs(stream);
             fs.writeChunk(SawyerEncoding::rotate, file.header);
             if (file.header.type == S5Type::scenario || file.header.type == S5Type::landscape)
@@ -562,6 +591,11 @@ namespace OpenLoco::S5
             else
             {
                 fs.writeChunk(SawyerEncoding::runLengthMulti, file.tileElements.data(), file.tileElements.size() * sizeof(TileElement));
+            }
+
+            if (!cargoDistData.empty())
+            {
+                fs.writeChunk(SawyerEncoding::uncompressed, cargoDistData.data(), cargoDistData.size());
             }
 
             fs.writeChecksum();
@@ -664,6 +698,37 @@ namespace OpenLoco::S5
             auto numTileElements = tileElements.size() / sizeof(TileElement);
             file->tileElements.resize(numTileElements);
             std::memcpy(file->tileElements.data(), tileElements.data(), numTileElements * sizeof(TileElement));
+        }
+
+        if (file->header.type == S5Type::savedGame)
+        {
+            const auto checksumPosition = stream.getLength() - sizeof(uint32_t);
+            if (stream.getPosition() < checksumPosition)
+            {
+                const auto bytesRemaining = checksumPosition - stream.getPosition();
+                if (bytesRemaining < sizeof(SawyerEncoding) + sizeof(uint32_t))
+                {
+                    throw Exception::RuntimeError("Truncated S5 extension");
+                }
+
+                SawyerEncoding encoding;
+                uint32_t encodedLength;
+                fs.read(&encoding, sizeof(encoding));
+                fs.read(&encodedLength, sizeof(encodedLength));
+                if (encoding != SawyerEncoding::uncompressed || encodedLength > CargoDist::kMaxSaveDataSize
+                    || encodedLength != checksumPosition - stream.getPosition())
+                {
+                    throw Exception::RuntimeError("Invalid S5 extension");
+                }
+
+                std::vector<std::byte> cargoDistData(encodedLength);
+                fs.read(cargoDistData.data(), cargoDistData.size());
+                file->cargoDistState = CargoDist::decodeState(cargoDistData);
+            }
+            if (stream.getPosition() != checksumPosition)
+            {
+                throw Exception::RuntimeError("Invalid trailing S5 data");
+            }
         }
 
         // Reset fields that don't affect the simulation, but would cause issues when comparing game states.
@@ -843,6 +908,13 @@ namespace OpenLoco::S5
                 }
             }
 
+            auto importedGameState = importGameState(file->gameState);
+            if (file->cargoDistState.has_value() && !hasLoadFlags(flags, LoadFlags::titleSequence))
+            {
+                validateCargoDistObjects(*file->cargoDistState, file->requiredObjects);
+                CargoDist::validateState(*file->cargoDistState, *importedGameState);
+            }
+
             // Load required objects
             auto loadObjectResult = ObjectManager::loadAll(file->requiredObjects);
             if (!loadObjectResult.success)
@@ -875,8 +947,7 @@ namespace OpenLoco::S5
             Audio::stopAmbientNoise();
 
             // Copy the S5 gamestate contents to the destination gamestate, field by field
-            auto& src = file->gameState;
-            dst = *importGameState(src);
+            dst = std::move(*importedGameState);
             CargoDist::reset();
 
             // Copy scenario options
@@ -936,7 +1007,6 @@ namespace OpenLoco::S5
 
             if (hasLoadFlags(flags, LoadFlags::scenario))
             {
-                CargoDist::enableAll();
                 dst.var_014A = 0;
                 Ui::ProgressBar::end();
                 return true;
@@ -992,7 +1062,10 @@ namespace OpenLoco::S5
             }
             else
             {
-                CargoDist::enableAll();
+                if (file->cargoDistState.has_value())
+                {
+                    CargoDist::restoreState(std::move(*file->cargoDistState));
+                }
             }
 
             Ui::ProgressBar::end();
