@@ -1,6 +1,12 @@
 #pragma once
 #include "Vehicle.h"
 
+namespace OpenLoco
+{
+    struct Station;
+    struct StationCargoStats;
+}
+
 namespace OpenLoco::Vehicles
 {
     using CargoTotalArray = std::array<uint32_t, Limits::kMaxCargoObjects>;
@@ -148,9 +154,9 @@ namespace OpenLoco::Vehicles
         void beginLoading();
         WaterMotionFlags updateWaterMotion(WaterMotionFlags flags);
         uint8_t getLoadingModifier(const VehicleBogie* bogie);
-        bool updateUnloadCargoComponent(VehicleCargo& cargo, VehicleBogie* bogie);
+        bool updateUnloadCargoComponent(VehicleCargo& cargo, VehicleBogie* bogie, EntityId cargoComponent, bool isSecondaryCargo);
         void updateUnloadCargo();
-        bool updateLoadCargoComponent(VehicleCargo& cargo, VehicleBogie* bogie);
+        bool updateLoadCargoComponent(VehicleCargo& cargo, VehicleBogie* bogie, EntityId cargoComponent, bool isSecondaryCargo);
         bool updateLoadCargo();
         void beginNewJourney();
         void advanceToNextRoutableOrder();
@@ -166,6 +172,7 @@ namespace OpenLoco::Vehicles
         VehicleStatus getStatusTravelling() const;
         void getSecondStatus(VehicleStatus& vehStatus) const;
         void updateLastIncomeStats(uint8_t cargoType, uint16_t cargoQty, uint16_t cargoDist, uint8_t cargoAge, currency32_t profit);
+        void deliverCargoPacket(Station& station, StationCargoStats& cargoStats, uint8_t cargoType, uint16_t quantity, StationId origin, uint8_t age);
         void calculateRefundCost();
     };
     static_assert(sizeof(VehicleHead) <= sizeof(Entity));

@@ -8,6 +8,7 @@
 #include "Vehicles/VehicleBogie.h"
 #include "Vehicles/VehicleHead.h"
 #include "Vehicles/VehicleManager.h"
+#include <OpenLoco/CargoDist/CargoDist.h>
 
 namespace OpenLoco::GameCommands
 {
@@ -161,6 +162,7 @@ namespace OpenLoco::GameCommands
             {
                 VehicleManager::placeDownVehicle(destHead, destPlacement->tileX, destPlacement->tileY, destPlacement->tileBaseZ, destPlacement->trackAndDirection, destPlacement->subPosition);
             }
+            CargoDist::markGraphDirty();
             return 0;
         }
     }

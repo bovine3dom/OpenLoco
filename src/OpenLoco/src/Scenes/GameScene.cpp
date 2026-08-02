@@ -29,6 +29,7 @@
 #include "World/IndustryManager.h"
 #include "World/StationManager.h"
 #include "World/TownManager.h"
+#include <OpenLoco/CargoDist/Simulation.h>
 #include <OpenLoco/Utility/String.hpp>
 #include <algorithm>
 #include <cstdio>
@@ -157,6 +158,7 @@ namespace OpenLoco::Scenes::GameScene
                 StationManager::updateDaily();
                 VehicleManager::updateDaily();
                 IndustryManager::updateDaily();
+                CargoDist::updateDaily();
                 MessageManager::updateDaily();
                 WindowManager::updateDaily();
 

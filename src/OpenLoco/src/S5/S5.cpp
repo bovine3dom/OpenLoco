@@ -1,6 +1,7 @@
 #define DO_TITLE_SEQUENCE_CHECKS
 
 #include "S5/S5.h"
+#include <OpenLoco/CargoDist/Simulation.h>
 
 #include "Audio/Audio.h"
 #include "EditorController.h"
@@ -876,6 +877,7 @@ namespace OpenLoco::S5
             // Copy the S5 gamestate contents to the destination gamestate, field by field
             auto& src = file->gameState;
             dst = *importGameState(src);
+            CargoDist::reset();
 
             // Copy scenario options
             if (hasLoadFlags(flags, LoadFlags::scenario | LoadFlags::landscape))
@@ -934,6 +936,7 @@ namespace OpenLoco::S5
 
             if (hasLoadFlags(flags, LoadFlags::scenario))
             {
+                CargoDist::enableAll();
                 dst.var_014A = 0;
                 Ui::ProgressBar::end();
                 return true;
@@ -986,6 +989,10 @@ namespace OpenLoco::S5
                 ScenarioManager::setScenarioTicks(ScenarioManager::getScenarioTicks() - 1);
                 ScenarioManager::setScenarioTicks2(ScenarioManager::getScenarioTicks2() - 1);
                 World::TileManager::disablePeriodicDefrag();
+            }
+            else
+            {
+                CargoDist::enableAll();
             }
 
             Ui::ProgressBar::end();

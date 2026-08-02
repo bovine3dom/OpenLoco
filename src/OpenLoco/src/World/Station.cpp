@@ -33,6 +33,7 @@
 #include "World/IndustryManager.h"
 #include "World/StationManager.h"
 #include "World/TownManager.h"
+#include <OpenLoco/CargoDist/Simulation.h>
 #include <OpenLoco/Math/Bound.hpp>
 #include <algorithm>
 #include <cassert>
@@ -228,6 +229,7 @@ namespace OpenLoco
 
         if (originallyAcceptedCargo != currentAcceptedCargo)
         {
+            CargoDist::markGraphDirty();
             if (owner == CompanyManager::getControllingId())
             {
                 alertCargoAcceptanceChange(originallyAcceptedCargo, currentAcceptedCargo);
@@ -630,6 +632,12 @@ namespace OpenLoco
     void Station::deliverCargoToStation(const uint8_t cargoType, const uint8_t cargoQuantity)
     {
         auto& stationCargoStat = cargoStats[cargoType];
+        if (CargoDist::isEnabled(cargoType))
+        {
+            CargoDist::addProducedCargo(id(), cargoType, stationCargoStat, cargoQuantity);
+            updateCargoDistribution();
+            return;
+        }
         stationCargoStat.quantity = Math::Bound::add(stationCargoStat.quantity, cargoQuantity);
         stationCargoStat.enrouteAge = 0;
         stationCargoStat.origin = id();
@@ -681,6 +689,7 @@ namespace OpenLoco
         for (uint32_t i = 0; i < kMaxCargoStats; i++)
         {
             auto& stationCargo = cargoStats[i];
+            const auto quantityBeforeUpdate = stationCargo.quantity;
             if (!stationCargo.empty())
             {
                 if (stationCargo.quantity != 0 && stationCargo.origin != id())
@@ -726,6 +735,10 @@ namespace OpenLoco
                         stationCargo.quantity = std::max(0, stationCargo.quantity - rng.randNext(1, 4));
                         quantityUpdated = true;
                     }
+                }
+                if (CargoDist::isEnabled(i))
+                {
+                    CargoDist::updateStationCargoDaily(id(), i, stationCargo, quantityBeforeUpdate);
                 }
             }
         }
@@ -1104,6 +1117,7 @@ namespace OpenLoco
             station->y = (totalY / count) + 16;
             station->updateLabel();
         }
+        CargoDist::markGraphDirty();
     }
 
     // 0x0048F529

@@ -4,6 +4,9 @@ set(OLOCO_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Audio/Music.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Audio/VehicleAudio.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/CommandLine.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/CargoDist/CargoDist.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/CargoDist/Routing.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/CargoDist/Simulation.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Config.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Date.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Economy/Economy.cpp"
@@ -382,6 +385,9 @@ set(OLOCO_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/World/TownManager.cpp")
 
 set(OLOCO_HEADERS
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/CargoDist/CargoDist.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/CargoDist/Routing.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/CargoDist/Simulation.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/Audio/Audio.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/CommandLine.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/Config.h"
@@ -768,6 +774,9 @@ set(private_compile_definitions
 )
 
 set(test_files
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/CargoDistPacketTests.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/CargoDistRoutingTests.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/CargoDistSimulationTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/TileManagerTests.cpp"
 )
 

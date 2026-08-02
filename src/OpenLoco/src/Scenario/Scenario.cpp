@@ -46,6 +46,7 @@
 #include "World/IndustryManager.h"
 #include "World/StationManager.h"
 #include "World/TownManager.h"
+#include <OpenLoco/CargoDist/Simulation.h>
 
 #include <OpenLoco/Platform/Platform.h>
 #include <algorithm>
@@ -195,6 +196,7 @@ namespace OpenLoco::Scenario
     void reset()
     {
         WindowManager::closeConstructionWindows();
+        CargoDist::reset();
 
         GameCommands::setUpdatingCompanyId(CompanyId::neutral);
         WindowManager::setCurrentRotation(0);
@@ -219,6 +221,8 @@ namespace OpenLoco::Scenario
         Ui::Windows::Terraform::resetDefaultObjectIds();
         sub_43C8FD();
         MessageManager::reset();
+
+        CargoDist::enableAll();
     }
 
     // 0x004748D4
