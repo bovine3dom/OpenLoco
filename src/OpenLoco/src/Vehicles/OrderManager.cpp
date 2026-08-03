@@ -17,16 +17,19 @@
 #include "Scenario/ScenarioOptions.h"
 #include "Ui/WindowManager.h"
 #include "Vehicles/OrderManager.h"
+#include "Vehicles/SharedOrderManager.h"
 #include "Vehicles/Vehicle.h"
-#include "Vehicles/VehicleHead.h"
 #include "Vehicles/Vehicle1.h"
+#include "Vehicles/VehicleHead.h"
 #include "Vehicles/VehicleManager.h"
 #include "World/StationManager.h"
 #include <OpenLoco/CargoDist/CargoDist.h>
 #include <OpenLoco/Core/Exception.hpp>
 #include <OpenLoco/Diagnostics/Logging.h>
-#include <sfl/static_vector.hpp>
+#include <algorithm>
 #include <cstring>
+#include <limits>
+#include <sfl/static_vector.hpp>
 #include <sstream>
 
 using namespace OpenLoco::Diagnostics;
@@ -113,6 +116,19 @@ namespace OpenLoco::Vehicles::OrderManager
         return _displayFrames;
     }
 
+    void clearNumDisplayFrames()
+    {
+        _displayFrames.clear();
+    }
+
+    static bool hasDisplayFramesForTable(const VehicleHead& head)
+    {
+        const auto tableEnd = head.orderTableOffset + head.sizeOfOrderTable;
+        return std::ranges::any_of(_displayFrames, [&head, tableEnd](const auto& frame) {
+            return frame.orderOffset >= head.orderTableOffset && frame.orderOffset < tableEnd;
+        });
+    }
+
     Order* orders() { return reinterpret_cast<Order*>(getGameState().orders); }
     uint32_t& orderTableLength() { return getGameState().orderTableLength; }
 
@@ -148,7 +164,13 @@ namespace OpenLoco::Vehicles::OrderManager
 
     bool spaceLeftInGlobalOrderTableForOrder(const Order* order)
     {
-        return orderTableLength() + kOrderSizes[enumValue(order->getType())] <= Limits::kMaxOrders;
+        const auto index = enumValue(order->getType());
+        return index < kOrderSizes.size() && spaceLeftInGlobalOrderTable(kOrderSizes[index]);
+    }
+
+    bool spaceLeftInGlobalOrderTable(const size_t requiredBytes)
+    {
+        return orderTableLength() <= Limits::kMaxOrders && requiredBytes <= Limits::kMaxOrders - orderTableLength();
     }
 
     bool spaceLeftInVehicleOrderTable(VehicleHead* head)
@@ -157,6 +179,90 @@ namespace OpenLoco::Vehicles::OrderManager
         size_t size = std::distance(ring.begin(), ring.end());
 
         return size < Limits::kMaxOrdersPerVehicle;
+    }
+
+    uint8_t getOrderSize(const OrderType type)
+    {
+        const auto index = enumValue(type);
+        return index < kOrderSizes.size() ? kOrderSizes[index] : 0;
+    }
+
+    bool isOrderOffsetValid(const VehicleHead& head, const uint32_t orderOffset, const bool allowEnd)
+    {
+        const auto tableSize = static_cast<uint32_t>(head.sizeOfOrderTable);
+        const auto tableOffset = head.orderTableOffset;
+        if (tableSize < sizeof(OrderEnd) || orderOffset >= tableSize || orderTableLength() > Limits::kMaxOrders
+            || tableOffset > orderTableLength() || tableSize > orderTableLength() - tableOffset)
+        {
+            return false;
+        }
+
+        bool isRequestedBoundary = false;
+        size_t orderCount = 0;
+        for (uint32_t offset = 0; offset < tableSize;)
+        {
+            const auto type = orders()[tableOffset + offset].getType();
+            const auto orderSize = getOrderSize(type);
+            if (orderSize == 0 || orderSize > tableSize - offset)
+            {
+                return false;
+            }
+
+            if (type == OrderType::End)
+            {
+                return offset + orderSize == tableSize
+                    && (isRequestedBoundary || (allowEnd && orderOffset == offset));
+            }
+
+            if (++orderCount > Limits::kMaxOrdersPerVehicle)
+            {
+                return false;
+            }
+            isRequestedBoundary |= orderOffset == offset;
+            offset += orderSize;
+        }
+        return false;
+    }
+
+    std::vector<uint8_t> copyOrderTable(const VehicleHead& head)
+    {
+        const auto* first = reinterpret_cast<const uint8_t*>(orders() + head.orderTableOffset);
+        return { first, first + head.sizeOfOrderTable };
+    }
+
+    void replaceOrderTable(VehicleHead& head, const std::span<const uint8_t> newOrders)
+    {
+        assert(!newOrders.empty() && (newOrders.back() & 0x7) == enumValue(OrderType::End));
+        assert(newOrders.size() <= std::numeric_limits<int16_t>::max());
+        if (hasDisplayFramesForTable(head))
+        {
+            clearNumDisplayFrames();
+        }
+        const auto oldSize = head.sizeOfOrderTable;
+        const auto newSize = static_cast<uint16_t>(newOrders.size());
+        const auto delta = static_cast<int16_t>(newSize) - static_cast<int16_t>(oldSize);
+
+        if (delta > 0)
+        {
+            shiftOrdersRight(head.orderTableOffset + oldSize, delta);
+            orderTableLength() += delta;
+            reoffsetVehicleOrderTables(head.orderTableOffset + 1, delta);
+        }
+
+        auto* destination = reinterpret_cast<uint8_t*>(orders() + head.orderTableOffset);
+        std::memcpy(destination, newOrders.data(), newOrders.size());
+
+        if (delta < 0)
+        {
+            shiftOrdersLeft(head.orderTableOffset + newSize, -delta);
+            orderTableLength() += delta;
+            reoffsetVehicleOrderTables(head.orderTableOffset + newSize + 1, delta);
+        }
+
+        head.sizeOfOrderTable = newSize;
+        head.currentOrder = 0;
+        head.resetUnbunching();
+        CargoDist::markGraphDirty();
     }
 
     // 0x004704AB
@@ -237,12 +343,19 @@ namespace OpenLoco::Vehicles::OrderManager
     {
         // No need to zero order table as it will get cleaned up on save
         orderTableLength() = 0;
+        clearNumDisplayFrames();
+        SharedOrderManager::reset();
     }
 
     // 0x00470334
     // Remove vehicle ?orders?
     void freeOrders(VehicleHead* const head)
     {
+        if (hasDisplayFramesForTable(*head))
+        {
+            clearNumDisplayFrames();
+        }
+        SharedOrderManager::remove(head->id);
         // Copy the offset as it will get modified during sub_470795
         const auto offset = head->orderTableOffset;
         const auto size = head->sizeOfOrderTable;
@@ -259,6 +372,7 @@ namespace OpenLoco::Vehicles::OrderManager
     // 0x00470312
     void allocateOrders(VehicleHead& head)
     {
+        SharedOrderManager::remove(head.id);
         OrderEnd end{};
         constexpr auto insOrderLength = kOrderSizes[enumValue(OrderEnd::kType)];
 
@@ -284,6 +398,13 @@ namespace OpenLoco::Vehicles::OrderManager
     bool areVehiclesOnSameRoute(const VehicleHead& lhs, const VehicleHead& rhs)
     {
         if (lhs.owner != rhs.owner || lhs.vehicleType != rhs.vehicleType || lhs.sizeOfOrderTable != rhs.sizeOfOrderTable || isExpress(lhs) != isExpress(rhs))
+        {
+            return false;
+        }
+
+        if (lhs.sizeOfOrderTable < sizeof(OrderEnd)
+            || !isOrderOffsetValid(lhs, lhs.sizeOfOrderTable - sizeof(OrderEnd), true)
+            || !isOrderOffsetValid(rhs, rhs.sizeOfOrderTable - sizeof(OrderEnd), true))
         {
             return false;
         }
@@ -458,7 +579,7 @@ namespace OpenLoco::Vehicles::OrderManager
         }
     }
 
-    uint16_t reverseVehicleOrderTable(uint16_t tableOffset, uint16_t orderOfInterest)
+    uint16_t reverseVehicleOrderTable(uint32_t tableOffset, uint16_t orderOfInterest)
     {
         // Currently the use of std:: algorithms is not feasible due to variable order lengths
         // TODO: simplify this after the changing the data structure for the order table

@@ -64,6 +64,7 @@
 #include "GameCommands/Vehicles/VehicleOrderDown.h"
 #include "GameCommands/Vehicles/VehicleOrderInsert.h"
 #include "GameCommands/Vehicles/VehicleOrderReverse.h"
+#include "GameCommands/Vehicles/VehicleOrderShare.h"
 #include "GameCommands/Vehicles/VehicleOrderSkip.h"
 #include "GameCommands/Vehicles/VehicleOrderToggleUnbunching.h"
 #include "GameCommands/Vehicles/VehicleOrderUp.h"
@@ -148,7 +149,7 @@ namespace OpenLoco::GameCommands
     static constexpr StringId kErrorBelongsToOther = 0xFFFEU;
 
     // clang-format off
-    static constexpr GameCommandInfo kGameCommandDefinitions[87] = {
+    static constexpr GameCommandInfo kGameCommandDefinitions[88] = {
         { GameCommand::vehicleRearrange,             vehicleRearrange,          0x004AF1DF, true  },
         { GameCommand::vehiclePlace,                 vehiclePlace,              0x004B01B6, true  },
         { GameCommand::vehiclePickup,                vehiclePickup,             0x004B0826, true  },
@@ -236,6 +237,7 @@ namespace OpenLoco::GameCommands
         { GameCommand::vehicleRepaint,               vehicleRepaint,            0,          false },
         { GameCommand::setCargoDistMode,             setCargoDistMode,          0,          false },
         { GameCommand::vehicleOrderToggleUnbunching, vehicleOrderToggleUnbunching, 0,       false },
+        { GameCommand::vehicleOrderShare,            vehicleOrderShare,         0,          false },
     };
     // clang-format on
 

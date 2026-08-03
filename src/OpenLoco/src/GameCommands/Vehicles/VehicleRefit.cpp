@@ -7,6 +7,7 @@
 #include "Objects/VehicleObject.h"
 #include "Types.hpp"
 #include "Ui/WindowManager.h"
+#include "Vehicles/SharedOrderManager.h"
 #include "Vehicles/Vehicle.h"
 #include "Vehicles/VehicleBody.h"
 #include "Vehicles/VehicleHead.h"
@@ -83,6 +84,7 @@ namespace OpenLoco::GameCommands
             car.body->primaryCargo.acceptedTypes = acceptedTypes;
 
             head->updateTrainProperties();
+            Vehicles::SharedOrderManager::detachIfIncompatible(head->id);
             CargoDist::markGraphDirty();
             Ui::WindowManager::invalidate(Ui::WindowType::vehicle, static_cast<Ui::WindowNumber_t>(head->id));
 

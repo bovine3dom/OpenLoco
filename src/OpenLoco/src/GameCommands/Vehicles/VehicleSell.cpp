@@ -3,6 +3,7 @@
 #include "GameCommands/GameCommands.h"
 #include "GameCommands/Vehicles/VehiclePickupAir.h"
 #include "GameCommands/Vehicles/VehiclePickupWater.h"
+#include "Vehicles/SharedOrderManager.h"
 #include "Vehicles/Vehicle.h"
 #include "Vehicles/VehicleBody.h"
 #include "Vehicles/VehicleBogie.h"
@@ -94,6 +95,7 @@ namespace OpenLoco::GameCommands
 
                 head->autoLayoutTrain();
                 head->updateTrainProperties();
+                SharedOrderManager::detachIfIncompatible(head->id);
                 head->applyBreakdownToTrain();
                 if (placeArgs.has_value())
                 {

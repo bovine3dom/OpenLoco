@@ -1,36 +1,65 @@
 #include "GameCommands/Vehicles/VehicleOrderToggleUnbunching.h"
-#include "Entities/EntityManager.h"
 #include "GameCommands/GameCommands.h"
+#include "GameCommands/Vehicles/VehicleOrderCommon.h"
 #include "Ui/WindowManager.h"
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/Orders.h"
+#include "Vehicles/SharedOrderManager.h"
 #include "Vehicles/VehicleHead.h"
 #include "Vehicles/VehicleManager.h"
+#include <algorithm>
+#include <ranges>
+#include <vector>
 
 namespace OpenLoco::GameCommands
 {
     static uint32_t vehicleOrderToggleUnbunching(const VehicleOrderToggleUnbunchingArgs& args, uint8_t flags)
     {
-        auto* head = EntityManager::get<Vehicles::VehicleHead>(args.head);
-        if (head == nullptr || args.orderOffset >= head->sizeOfOrderTable)
-        {
-            return kFailure;
-        }
-        if (!checkCompanyCompatibility(head->owner))
+        auto* head = VehicleOrderCommon::getHead(args.head);
+        if (head == nullptr || !Vehicles::OrderManager::isOrderOffsetValid(*head, args.orderOffset))
         {
             return kFailure;
         }
 
-        setPosition(head->position);
-        Vehicles::OrderStopAt* selectedOrder = nullptr;
-        for (auto& order : head->getCurrentOrders())
+        std::vector<EntityId> affected{ head->id };
+        for (size_t i = 0; i < affected.size(); ++i)
         {
-            if (order.getOffset() - head->orderTableOffset == args.orderOffset)
+            auto* current = VehicleOrderCommon::getHead(affected[i]);
+            if (current == nullptr)
             {
-                selectedOrder = order.as<Vehicles::OrderStopAt>();
-                break;
+                return kFailure;
+            }
+            for (auto* candidate : VehicleManager::VehicleList())
+            {
+                if (Vehicles::OrderManager::areVehiclesOnSameRoute(*current, *candidate)
+                    && std::ranges::find(affected, candidate->id) == affected.end())
+                {
+                    affected.push_back(candidate->id);
+                }
+            }
+            for (const auto member : Vehicles::SharedOrderManager::getMembers(current->id))
+            {
+                if (std::ranges::find(affected, member) == affected.end())
+                {
+                    affected.push_back(member);
+                }
             }
         }
+        std::ranges::sort(affected, {}, [](const EntityId id) { return enumValue(id); });
+
+        setPosition(head->position);
+        for (const auto id : affected)
+        {
+            const auto* member = VehicleOrderCommon::getHead(id);
+            if (member == nullptr || !checkCompanyCompatibility(member->owner)
+                || !Vehicles::SharedOrderManager::areOrdersEqual(*member, *head)
+                || !Vehicles::OrderManager::isOrderOffsetValid(*member, args.orderOffset))
+            {
+                return kFailure;
+            }
+        }
+
+        auto* selectedOrder = Vehicles::OrderRingView(head->orderTableOffset, args.orderOffset).begin()->as<Vehicles::OrderStopAt>();
         if (selectedOrder == nullptr)
         {
             return kFailure;
@@ -61,22 +90,15 @@ namespace OpenLoco::GameCommands
             return 0;
         }
 
-        for (auto* other : VehicleManager::VehicleList())
+        VehicleOrderCommon::invalidateOrderWindows(affected);
+        for (const auto id : affected)
         {
-            if (other == head || !Vehicles::OrderManager::areVehiclesOnSameRoute(*head, *other))
-            {
-                continue;
-            }
-
-            auto* otherOrder = Vehicles::OrderRingView(other->orderTableOffset, args.orderOffset).begin()->as<Vehicles::OrderStopAt>();
-            otherOrder->setUnbunching(enable);
-            other->resetUnbunching();
-            Ui::WindowManager::invalidate(Ui::WindowType::vehicle, enumValue(other->id));
+            auto* member = VehicleOrderCommon::getHead(id);
+            auto* memberOrder = Vehicles::OrderRingView(member->orderTableOffset, args.orderOffset).begin()->as<Vehicles::OrderStopAt>();
+            memberOrder->setUnbunching(enable);
+            member->resetUnbunching();
+            Ui::WindowManager::invalidate(Ui::WindowType::vehicle, enumValue(member->id));
         }
-
-        selectedOrder->setUnbunching(enable);
-        head->resetUnbunching();
-        Ui::WindowManager::invalidate(Ui::WindowType::vehicle, enumValue(head->id));
         return 0;
     }
 

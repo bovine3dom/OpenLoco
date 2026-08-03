@@ -40,10 +40,13 @@ using namespace OpenLoco::Vehicles;
 namespace OpenLoco::GameCommands
 {
     constexpr auto kMaxAiVehicles = 500;
-    constexpr auto kMaxNumCarComponentsInCar = 4;           // TODO: Move to VehicleObject
     constexpr auto kNumVehicleComponentsInCarComponent = 3; // Bogie body
     constexpr auto kNumVehicleComponentsInBase = 4;         // head unk_1 unk_2 tail
-    constexpr auto kMaxNumVehicleComponentsInCar = kNumVehicleComponentsInCarComponent * kMaxNumCarComponentsInCar;
+
+    static size_t getNumVehicleComponentsInCar(const VehicleObject& vehicleObject)
+    {
+        return vehicleObject.numCarComponents * kNumVehicleComponentsInCarComponent;
+    }
 
     // 0x004B1D96
     static bool aiIsBelowVehicleLimit()
@@ -304,7 +307,8 @@ namespace OpenLoco::GameCommands
     // 0x004AE86D
     static bool createCar(VehicleHead* head, const uint16_t vehicleTypeId)
     {
-        if (!EntityManager::checkNumFreeEntities(kMaxNumVehicleComponentsInCar))
+        const auto vehObject = ObjectManager::get<VehicleObject>(vehicleTypeId);
+        if (!EntityManager::checkNumFreeEntities(getNumVehicleComponentsInCar(*vehObject)))
         {
             return false;
         }
@@ -328,7 +332,6 @@ namespace OpenLoco::GameCommands
             lastVeh = train.veh2;
         }
 
-        const auto vehObject = ObjectManager::get<VehicleObject>(vehicleTypeId);
         const auto company = CompanyManager::get(getUpdatingCompanyId());
 
         auto colourScheme = company->mainColours;
@@ -623,7 +626,8 @@ namespace OpenLoco::GameCommands
         getLegacyReturnState().lastCreatedVehicleId = EntityId::null;
 
         setPosition({ Location::null, 0, 0 });
-        if (!EntityManager::checkNumFreeEntities(kMaxNumVehicleComponentsInCar + kNumVehicleComponentsInBase))
+        const auto vehObject = ObjectManager::get<VehicleObject>(vehicleTypeId);
+        if (!EntityManager::checkNumFreeEntities(getNumVehicleComponentsInCar(*vehObject) + kNumVehicleComponentsInBase))
         {
             return kFailure;
         }
@@ -635,8 +639,6 @@ namespace OpenLoco::GameCommands
 
         if (flags & Flags::apply)
         {
-            auto vehObject = ObjectManager::get<VehicleObject>(vehicleTypeId);
-
             auto head = createBaseVehicle(vehObject->mode, vehObject->type, vehObject->trackType);
             if (!head)
             {
@@ -676,7 +678,6 @@ namespace OpenLoco::GameCommands
             }
         }
         // 0x4AE733
-        auto vehObject = ObjectManager::get<VehicleObject>(vehicleTypeId);
         auto cost = Economy::getInflationAdjustedCost(vehObject->costFactor, vehObject->costIndex, 6);
         return cost;
     }
@@ -685,6 +686,7 @@ namespace OpenLoco::GameCommands
     static uint32_t addCarToVehicle(const uint8_t flags, const uint16_t vehicleTypeId, const EntityId headId)
     {
         Vehicle train(headId);
+        const auto vehObject = ObjectManager::get<VehicleObject>(vehicleTypeId);
         setPosition(train.veh2->position);
 
         if (!checkCompanyCompatibility(train.head->owner))
@@ -702,7 +704,7 @@ namespace OpenLoco::GameCommands
             return kFailure;
         }
 
-        if (!EntityManager::checkNumFreeEntities(kMaxNumVehicleComponentsInCar))
+        if (!EntityManager::checkNumFreeEntities(getNumVehicleComponentsInCar(*vehObject)))
         {
             return kFailure;
         }
@@ -741,7 +743,6 @@ namespace OpenLoco::GameCommands
             }
         }
         // 0x4AE733
-        auto vehObject = ObjectManager::get<VehicleObject>(vehicleTypeId);
         auto cost = Economy::getInflationAdjustedCost(vehObject->costFactor, vehObject->costIndex, 6);
         return cost;
     }

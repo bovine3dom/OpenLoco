@@ -1,31 +1,49 @@
 #include "GameCommands/Vehicles/VehicleOrderReverse.h"
-#include "Entities/EntityManager.h"
 #include "GameCommands/GameCommands.h"
-#include "Ui/WindowManager.h"
+#include "GameCommands/Vehicles/VehicleOrderCommon.h"
+#include "Localisation/StringIds.h"
 #include "Vehicles/OrderManager.h"
-#include "Vehicles/Vehicle.h"
+#include "Vehicles/SharedOrderManager.h"
 #include "Vehicles/VehicleHead.h"
 
 namespace OpenLoco::GameCommands
 {
     static uint32_t vehicleOrderReverse(const VehicleOrderReverseArgs& args, uint8_t flags)
     {
-        auto* head = EntityManager::get<Vehicles::VehicleHead>(args.head);
+        auto* head = VehicleOrderCommon::getHead(args.head);
         if (head == nullptr)
         {
-            return GameCommands::kFailure;
+            return kFailure;
         }
 
-        GameCommands::setPosition(head->position);
-        if (!(flags & GameCommands::Flags::apply))
+        setPosition(head->position);
+        const auto members = Vehicles::SharedOrderManager::getMembers(args.head);
+        if (!VehicleOrderCommon::hasConsistentOrderTables(*head, members))
+        {
+            setErrorText(StringIds::empty);
+            return kFailure;
+        }
+        for (const auto id : members)
+        {
+            const auto* member = VehicleOrderCommon::getHead(id);
+            if (!checkCompanyCompatibility(member->owner))
+            {
+                return kFailure;
+            }
+        }
+
+        if (!(flags & Flags::apply))
         {
             return 0;
         }
 
-        Ui::WindowManager::invalidateOrderPageByVehicleNumber(enumValue(head->id));
-
-        head->currentOrder = Vehicles::OrderManager::reverseVehicleOrderTable(head->orderTableOffset, head->currentOrder);
-        head->resetUnbunching();
+        VehicleOrderCommon::invalidateOrderWindows(members);
+        for (const auto id : members)
+        {
+            auto* member = VehicleOrderCommon::getHead(id);
+            member->currentOrder = Vehicles::OrderManager::reverseVehicleOrderTable(member->orderTableOffset, member->currentOrder);
+            member->resetUnbunching();
+        }
 
         return 0;
     }

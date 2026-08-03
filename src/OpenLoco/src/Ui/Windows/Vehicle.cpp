@@ -10,6 +10,7 @@
 #include "GameCommands/Vehicles/VehicleOrderDown.h"
 #include "GameCommands/Vehicles/VehicleOrderInsert.h"
 #include "GameCommands/Vehicles/VehicleOrderReverse.h"
+#include "GameCommands/Vehicles/VehicleOrderShare.h"
 #include "GameCommands/Vehicles/VehicleOrderSkip.h"
 #include "GameCommands/Vehicles/VehicleOrderToggleUnbunching.h"
 #include "GameCommands/Vehicles/VehicleOrderUp.h"
@@ -73,6 +74,7 @@
 #include "Ui/WindowManager.h"
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/Orders.h"
+#include "Vehicles/SharedOrderManager.h"
 #include "Vehicles/Vehicle.h"
 #include "Vehicles/Vehicle1.h"
 #include "Vehicles/Vehicle2.h"
@@ -88,8 +90,12 @@
 
 #include <OpenLoco/Math/Trigonometry.hpp>
 #include <OpenLoco/Utility/LookupTable.hpp>
+#include <algorithm>
+#include <limits>
+#include <ranges>
 #include <sfl/static_vector.hpp>
 #include <sstream>
+#include <vector>
 
 using namespace OpenLoco::World;
 using namespace OpenLoco::Literals;
@@ -339,6 +345,9 @@ namespace OpenLoco::Ui::Windows::Vehicle
             localMode,
             expressMode,
             orderUnbunch,
+            sharedOrderStatus,
+            sharedOrderPrimary,
+            sharedOrderLeave,
             routeList,
             orderForceUnload,
             orderWait,
@@ -354,6 +363,9 @@ namespace OpenLoco::Ui::Windows::Vehicle
             constexpr WidgetId kLocalMode{ "localMode" };
             constexpr WidgetId kExpressMode{ "expressMode" };
             constexpr WidgetId kOrderUnbunch{ "orderUnbunch" };
+            constexpr WidgetId kSharedOrderStatus{ "sharedOrderStatus" };
+            constexpr WidgetId kSharedOrderPrimary{ "sharedOrderPrimary" };
+            constexpr WidgetId kSharedOrderLeave{ "sharedOrderLeave" };
             constexpr WidgetId kRouteList{ "routeList" };
             constexpr WidgetId kOrderForceUnload{ "orderForceUnload" };
             constexpr WidgetId kOrderWait{ "orderWait" };
@@ -374,7 +386,10 @@ namespace OpenLoco::Ui::Windows::Vehicle
             Widgets::Button(Widx::kLocalMode, { 3, 44 }, { 118, 12 }, WindowColour::secondary, StringIds::local_mode_button),
             Widgets::Button(Widx::kExpressMode, { 121, 44 }, { 119, 12 }, WindowColour::secondary, StringIds::express_mode_button),
             Widgets::Button(Widx::kOrderUnbunch, { 3, 56 }, { 237, 12 }, WindowColour::secondary, StringIds::unbunching_button, StringIds::tooltip_route_toggle_unbunching),
-            Widgets::ScrollView(Widx::kRouteList, { 3, 70 }, { 237, 108 }, WindowColour::secondary, Scrollbars::vertical, StringIds::tooltip_route_scrollview),
+            Widgets::Label(Widx::kSharedOrderStatus, { 3, 70 }, { 100, 12 }, WindowColour::secondary, ContentAlign::left),
+            Widgets::Button(Widx::kSharedOrderPrimary, { 103, 70 }, { 95, 12 }, WindowColour::secondary, StringIds::use_shared_orders_from, StringIds::tooltip_use_shared_orders_from),
+            Widgets::Button(Widx::kSharedOrderLeave, { 198, 70 }, { 42, 12 }, WindowColour::secondary, StringIds::leave_shared_orders, StringIds::tooltip_leave_shared_orders),
+            Widgets::ScrollView(Widx::kRouteList, { 3, 84 }, { 237, 94 }, WindowColour::secondary, Scrollbars::vertical, StringIds::tooltip_route_scrollview),
             Widgets::ImageButton(Widx::kOrderForceUnload, { 240, 44 }, { 24, 24 }, WindowColour::secondary, ImageIds::route_force_unload, StringIds::tooltip_route_insert_force_unload),
             Widgets::ImageButton(Widx::kOrderWait, { 240, 68 }, { 24, 24 }, WindowColour::secondary, ImageIds::route_wait, StringIds::tooltip_route_insert_wait_full_cargo),
             Widgets::ImageButton(Widx::kOrderSkip, { 240, 92 }, { 24, 24 }, WindowColour::secondary, ImageIds::route_skip, StringIds::tooltip_route_skip_next_order),
@@ -1199,7 +1214,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
             return self;
         }
 
-        static void cloneVehicle(Window& self)
+        static void cloneVehicle(Window& self, const bool shareOrders)
         {
             auto head = Common::getVehicle(self);
             if (head == nullptr)
@@ -1211,6 +1226,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
 
             GameCommands::VehicleCloneArgs args{};
             args.vehicleHeadId = head->head;
+            args.shareOrders = shareOrders;
 
             if (GameCommands::doCommand(args, GameCommands::Flags::apply) != GameCommands::kFailure)
             {
@@ -1283,7 +1299,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
             if (id == Widx::kBuildNew)
             {
                 Dropdown::add(0, StringIds::dropdown_stringid, StringIds::dropdown_modify_vehicle);
-                Dropdown::add(1, StringIds::dropdown_stringid, StringIds::dropdown_clone_vehicle);
+                Dropdown::add(1, StringIds::dropdown_stringid, StringIds::dropdown_clone_vehicle_shared_orders_hint);
 
                 auto& widget = self.widgets[widx::buildNew];
                 Dropdown::showText(
@@ -1338,7 +1354,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
                 }
                 else if (itemIndex == 1)
                 {
-                    cloneVehicle(self);
+                    cloneVehicle(self, Input::hasKeyModifier(Input::KeyModifier::control));
                 }
                 return;
             }
@@ -2886,6 +2902,31 @@ namespace OpenLoco::Ui::Windows::Vehicle
 
     namespace Route
     {
+        enum class SharedOrderDropdownMode
+        {
+            none,
+            joinSource,
+            members,
+        };
+
+        static constexpr size_t kVehicleDropdownPageSize = 30;
+        static std::vector<EntityId> _sharedOrderDropdownVehicles;
+        static size_t _sharedOrderDropdownPageStart;
+        static EntityId _sharedOrderDropdownTarget = EntityId::null;
+        static SharedOrderDropdownMode _sharedOrderDropdownMode = SharedOrderDropdownMode::none;
+
+        static void resetSharedOrderDropdown(const EntityId target)
+        {
+            if (_sharedOrderDropdownTarget != target)
+            {
+                return;
+            }
+            _sharedOrderDropdownVehicles.clear();
+            _sharedOrderDropdownPageStart = 0;
+            _sharedOrderDropdownTarget = EntityId::null;
+            _sharedOrderDropdownMode = SharedOrderDropdownMode::none;
+        }
+
         static Vehicles::OrderRingView getOrderTable(const Vehicles::VehicleHead* const head)
         {
             return Vehicles::OrderRingView(head->orderTableOffset);
@@ -2894,6 +2935,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
         // 0x004B509B
         static void close(Window& self)
         {
+            resetSharedOrderDropdown(EntityId(self.number));
             if (ToolManager::isToolActive(self.type, self.number))
             {
                 ToolManager::toolCancel();
@@ -2934,8 +2976,8 @@ namespace OpenLoco::Ui::Windows::Vehicle
                 last = &order;
                 i++;
             }
-            // No order selected so delete the last one
-            if (last != nullptr)
+            // No order selected so delete the last one.
+            if (orderId == -1 && last != nullptr)
             {
                 orderDeleteCommand(head, last->getOffset());
             }
@@ -3138,7 +3180,128 @@ namespace OpenLoco::Ui::Windows::Vehicle
                     orderReverseCommand(head);
                     break;
                 }
+                case Widx::kSharedOrderLeave:
+                {
+                    if (head->owner != CompanyManager::getControllingId() || !Vehicles::SharedOrderManager::isShared(head->id))
+                    {
+                        return;
+                    }
+
+                    GameCommands::setErrorTitle(StringIds::cant_change_shared_orders);
+                    GameCommands::VehicleOrderShareArgs args{};
+                    args.target = head->id;
+                    args.mode = GameCommands::VehicleOrderShareArgs::Mode::leave;
+                    GameCommands::doCommand(args, GameCommands::Flags::apply);
+                    break;
+                }
             }
+        }
+
+        static bool canUseSharedOrdersFrom(const Vehicles::VehicleHead& target, const Vehicles::VehicleHead& source)
+        {
+            return target.id != source.id
+                && target.owner == source.owner
+                && Vehicles::SharedOrderManager::areVehiclesCompatible(target, source);
+        }
+
+        static void showSharedOrderVehicleDropdownPage(Window& self, const WidgetIndex_t widgetIndex)
+        {
+            auto* head = Common::getVehicle(self);
+            if (head == nullptr || _sharedOrderDropdownVehicles.empty())
+            {
+                return;
+            }
+
+            const auto pageEnd = std::min(_sharedOrderDropdownPageStart + kVehicleDropdownPageSize, _sharedOrderDropdownVehicles.size());
+            size_t dropdownIndex = 0;
+            size_t selectedIndex = std::numeric_limits<size_t>::max();
+            for (auto i = _sharedOrderDropdownPageStart; i < pageEnd; ++i)
+            {
+                const auto* vehicle = EntityManager::get<Vehicles::VehicleHead>(_sharedOrderDropdownVehicles[i]);
+                if (vehicle != nullptr)
+                {
+                    FormatArguments args{};
+                    args.push(vehicle->name);
+                    args.push(vehicle->ordinalNumber);
+                    Dropdown::add(dropdownIndex, StringIds::dropdown_stringid, args);
+                    if (vehicle->id == head->id)
+                    {
+                        selectedIndex = dropdownIndex;
+                    }
+                }
+                else
+                {
+                    Dropdown::add(dropdownIndex, StringIds::empty);
+                }
+                ++dropdownIndex;
+            }
+            if (_sharedOrderDropdownVehicles.size() > kVehicleDropdownPageSize)
+            {
+                Dropdown::add(dropdownIndex++, StringIds::dropdown_stringid, StringIds::more_vehicles);
+            }
+
+            const auto& widget = self.widgets[widgetIndex];
+            Dropdown::showText(
+                self.x + widget.left,
+                self.y + widget.top,
+                std::max<int16_t>(widget.width(), 160),
+                widget.height(),
+                self.getColour(WindowColour::secondary),
+                dropdownIndex,
+                0);
+            if (selectedIndex != std::numeric_limits<size_t>::max())
+            {
+                Dropdown::setHighlightedItem(selectedIndex);
+            }
+        }
+
+        static void showSharedOrderVehicleDropdown(Window& self, const WidgetIndex_t widgetIndex)
+        {
+            auto* head = Common::getVehicle(self);
+            if (head == nullptr)
+            {
+                return;
+            }
+
+            const bool showMembers = Vehicles::SharedOrderManager::isShared(head->id);
+            const auto mode = showMembers ? SharedOrderDropdownMode::members : SharedOrderDropdownMode::joinSource;
+            const auto requestedPage = _sharedOrderDropdownTarget == head->id && _sharedOrderDropdownMode == mode
+                ? _sharedOrderDropdownPageStart
+                : 0;
+
+            _sharedOrderDropdownVehicles.clear();
+            _sharedOrderDropdownPageStart = 0;
+            _sharedOrderDropdownTarget = EntityId::null;
+            _sharedOrderDropdownMode = SharedOrderDropdownMode::none;
+            if (showMembers)
+            {
+                _sharedOrderDropdownVehicles = Vehicles::SharedOrderManager::getMembers(head->id);
+            }
+            else
+            {
+                if (head->owner != CompanyManager::getControllingId())
+                {
+                    return;
+                }
+                for (const auto* source : VehicleManager::VehicleList())
+                {
+                    if (canUseSharedOrdersFrom(*head, *source))
+                    {
+                        _sharedOrderDropdownVehicles.push_back(source->id);
+                    }
+                }
+            }
+
+            std::ranges::sort(_sharedOrderDropdownVehicles, {}, [](const EntityId id) { return enumValue(id); });
+            if (_sharedOrderDropdownVehicles.empty())
+            {
+                return;
+            }
+
+            _sharedOrderDropdownPageStart = requestedPage < _sharedOrderDropdownVehicles.size() ? requestedPage : 0;
+            _sharedOrderDropdownTarget = head->id;
+            _sharedOrderDropdownMode = mode;
+            showSharedOrderVehicleDropdownPage(self, widgetIndex);
         }
 
         // 0x004B4DD3
@@ -3184,6 +3347,9 @@ namespace OpenLoco::Ui::Windows::Vehicle
                     break;
                 case Widx::kOrderWait:
                     createOrderDropdown(self, i, StringIds::orders_wait_for_full_load_of2);
+                    break;
+                case Widx::kSharedOrderPrimary:
+                    showSharedOrderVehicleDropdown(self, i);
                     break;
             }
         }
@@ -3234,15 +3400,102 @@ namespace OpenLoco::Ui::Windows::Vehicle
         }
 
         // 0x004B4BAC
-        static void onDropdown(Window& self, [[maybe_unused]] const WidgetIndex_t i, const WidgetId id, const int16_t dropdownIndex)
+        static void onDropdown(Window& self, const WidgetIndex_t i, const WidgetId id, const int16_t dropdownIndex)
         {
             auto item = dropdownIndex == -1 ? Dropdown::getHighlightedItem() : dropdownIndex;
-            if (item == -1)
+            if (item < 0)
             {
                 return;
             }
             switch (id)
             {
+                case Widx::kSharedOrderPrimary:
+                {
+                    if (_sharedOrderDropdownTarget != EntityId(self.number)
+                        || _sharedOrderDropdownPageStart >= _sharedOrderDropdownVehicles.size())
+                    {
+                        return;
+                    }
+
+                    const auto pageSize = std::min(kVehicleDropdownPageSize, _sharedOrderDropdownVehicles.size() - _sharedOrderDropdownPageStart);
+                    if (item > static_cast<int16_t>(pageSize))
+                    {
+                        return;
+                    }
+                    if (item == static_cast<int16_t>(pageSize))
+                    {
+                        if (_sharedOrderDropdownVehicles.size() <= kVehicleDropdownPageSize)
+                        {
+                            return;
+                        }
+                        const auto nextPage = _sharedOrderDropdownPageStart + pageSize;
+                        _sharedOrderDropdownPageStart = nextPage < _sharedOrderDropdownVehicles.size() ? nextPage : 0;
+                        showSharedOrderVehicleDropdown(self, i);
+                        return;
+                    }
+
+                    const auto selectedId = _sharedOrderDropdownVehicles[_sharedOrderDropdownPageStart + item];
+                    const auto mode = _sharedOrderDropdownMode;
+                    _sharedOrderDropdownMode = SharedOrderDropdownMode::none;
+                    _sharedOrderDropdownTarget = EntityId::null;
+                    _sharedOrderDropdownVehicles.clear();
+
+                    auto* head = Common::getVehicle(self);
+                    auto* selected = EntityManager::get<Vehicles::VehicleHead>(selectedId);
+                    if (head == nullptr || selected == nullptr)
+                    {
+                        return;
+                    }
+
+                    if (mode == SharedOrderDropdownMode::members)
+                    {
+                        if (Vehicles::SharedOrderManager::getGroupId(head->id) == EntityId::null
+                            || Vehicles::SharedOrderManager::getGroupId(head->id) != Vehicles::SharedOrderManager::getGroupId(selected->id))
+                        {
+                            return;
+                        }
+                        auto* memberWindow = Main::open(selected);
+                        if (memberWindow != nullptr)
+                        {
+                            memberWindow->callOnMouseUp(Common::widx::tabRoute, memberWindow->widgets[Common::widx::tabRoute].id);
+                        }
+                        return;
+                    }
+
+                    if (mode != SharedOrderDropdownMode::joinSource
+                        || head->owner != CompanyManager::getControllingId()
+                        || Vehicles::SharedOrderManager::isShared(head->id)
+                        || !canUseSharedOrdersFrom(*head, *selected))
+                    {
+                        return;
+                    }
+                    if (head->sizeOfOrderTable > sizeof(Vehicles::OrderEnd)
+                        && !Vehicles::SharedOrderManager::areOrdersEqual(*head, *selected))
+                    {
+                        FormatArguments promptArgs{};
+                        if (!Windows::PromptOkCancel::open(
+                                StringIds::cant_change_shared_orders,
+                                StringIds::replace_with_shared_orders_prompt,
+                                promptArgs,
+                                StringIds::share_orders))
+                        {
+                            return;
+                        }
+                    }
+
+                    GameCommands::setErrorTitle(StringIds::cant_change_shared_orders);
+                    GameCommands::VehicleOrderShareArgs args{};
+                    args.target = head->id;
+                    args.source = selected->id;
+                    args.mode = GameCommands::VehicleOrderShareArgs::Mode::joinSource;
+                    if (GameCommands::doCommand(args, GameCommands::Flags::apply) != GameCommands::kFailure)
+                    {
+                        self.orderTableIndex = -1;
+                        self.rowHover = -1;
+                        Vehicles::OrderManager::generateNumDisplayFrames(head);
+                    }
+                    break;
+                }
                 case Widx::kOrderForceUnload:
                 {
                     Vehicles::OrderUnloadAll unload(Dropdown::getItemArgument(item, 3));
@@ -3827,6 +4080,10 @@ namespace OpenLoco::Ui::Windows::Vehicle
             {
                 return;
             }
+            if (self.orderTableIndex >= 0 && getOrderTable(head).atIndex(self.orderTableIndex) == nullptr)
+            {
+                self.orderTableIndex = -1;
+            }
 
             // Set title.
             {
@@ -3905,16 +4162,16 @@ namespace OpenLoco::Ui::Windows::Vehicle
                 self.activatedWidgets |= (1 << widx::localMode);
             }
 
-            const bool isControllingCompany = head->owner == CompanyManager::getControllingId() ? false : true;
-            self.widgets[widx::orderForceUnload].hidden = isControllingCompany;
-            self.widgets[widx::orderWait].hidden = isControllingCompany;
-            self.widgets[widx::orderSkip].hidden = isControllingCompany;
-            self.widgets[widx::orderDelete].hidden = isControllingCompany;
-            self.widgets[widx::orderUp].hidden = isControllingCompany;
-            self.widgets[widx::orderDown].hidden = isControllingCompany;
-            self.widgets[widx::orderReverse].hidden = isControllingCompany;
+            const bool isOtherCompany = head->owner != CompanyManager::getControllingId();
+            self.widgets[widx::orderForceUnload].hidden = isOtherCompany;
+            self.widgets[widx::orderWait].hidden = isOtherCompany;
+            self.widgets[widx::orderSkip].hidden = isOtherCompany;
+            self.widgets[widx::orderDelete].hidden = isOtherCompany;
+            self.widgets[widx::orderUp].hidden = isOtherCompany;
+            self.widgets[widx::orderDown].hidden = isOtherCompany;
+            self.widgets[widx::orderReverse].hidden = isOtherCompany;
 
-            if (isControllingCompany)
+            if (isOtherCompany)
             {
                 self.widgets[widx::routeList].right += 22;
                 self.disabledWidgets |= (1 << widx::expressMode | 1 << widx::localMode);
@@ -3922,6 +4179,47 @@ namespace OpenLoco::Ui::Windows::Vehicle
             else
             {
                 self.disabledWidgets &= ~(1 << widx::expressMode | 1 << widx::localMode);
+            }
+
+            const bool hasSharedOrders = Vehicles::SharedOrderManager::isShared(head->id);
+            auto& sharedStatus = self.widgets[widx::sharedOrderStatus];
+            auto& sharedPrimary = self.widgets[widx::sharedOrderPrimary];
+            auto& sharedLeave = self.widgets[widx::sharedOrderLeave];
+            const auto contentRight = self.widgets[widx::routeList].right;
+
+            self.disabledWidgets &= ~((1 << widx::sharedOrderPrimary) | (1 << widx::sharedOrderLeave));
+            sharedPrimary.hidden = !hasSharedOrders && isOtherCompany;
+            sharedLeave.hidden = !hasSharedOrders || isOtherCompany;
+            if (hasSharedOrders)
+            {
+                sharedStatus.text = StringIds::shared_orders_vehicle_count;
+                auto args = FormatArguments(sharedStatus.textArgs);
+                args.push<uint16_t>(Vehicles::SharedOrderManager::getMemberCount(head->id));
+
+                sharedPrimary.text = StringIds::shared_order_members;
+                sharedPrimary.tooltip = StringIds::tooltip_shared_order_members;
+                sharedPrimary.right = contentRight - (isOtherCompany ? 0 : 44);
+                sharedPrimary.left = sharedPrimary.right - 63;
+                sharedLeave.right = contentRight;
+                sharedLeave.left = sharedLeave.right - 41;
+                sharedStatus.right = sharedPrimary.left - 2;
+                if (isOtherCompany)
+                {
+                    self.disabledWidgets |= 1 << widx::sharedOrderLeave;
+                }
+            }
+            else
+            {
+                sharedStatus.text = StringIds::independent_orders;
+                sharedStatus.right = std::min<int16_t>(102, contentRight);
+                sharedPrimary.text = StringIds::use_shared_orders_from;
+                sharedPrimary.tooltip = StringIds::tooltip_use_shared_orders_from;
+                sharedPrimary.left = sharedStatus.right + 2;
+                sharedPrimary.right = contentRight;
+                if (isOtherCompany)
+                {
+                    self.disabledWidgets |= 1 << widx::sharedOrderPrimary;
+                }
             }
 
             self.widgets[widx::expressMode].right = self.widgets[widx::routeList].right;
@@ -5053,6 +5351,10 @@ namespace OpenLoco::Ui::Windows::Vehicle
         // 0x004B2566
         static void switchTab(Window& self, WidgetIndex_t widgetIndex)
         {
+            if (self.currentTab == tabRoute - tabMain)
+            {
+                Route::resetSharedOrderDropdown(EntityId(self.number));
+            }
             ToolManager::toolCancel(self.type, self.number);
             TextInput::sub_4CE6C9(self.type, self.number);
 

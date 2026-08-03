@@ -11,15 +11,18 @@ namespace OpenLoco::GameCommands
         VehicleCloneArgs() = default;
         explicit VehicleCloneArgs(const registers& regs)
             : vehicleHeadId(static_cast<EntityId>(regs.ax))
+            , shareOrders(regs.dh == 1)
         {
         }
 
-        EntityId vehicleHeadId;
+        EntityId vehicleHeadId = EntityId::null;
+        bool shareOrders = false;
 
         explicit operator registers() const
         {
             registers regs;
             regs.ax = enumValue(vehicleHeadId);
+            regs.dh = shareOrders ? 1 : 0;
             return regs;
         }
     };

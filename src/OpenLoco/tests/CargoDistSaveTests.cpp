@@ -8,6 +8,7 @@
 #include "S5/SawyerStream.h"
 #include <OpenLoco/CargoDist/Simulation.h>
 #include <OpenLoco/Core/MemoryStream.h>
+#include <OpenLoco/S5/SaveExtension.h>
 #include <algorithm>
 #include <array>
 #include <gtest/gtest.h>
@@ -94,7 +95,11 @@ namespace
         return state;
     }
 
-    void writeMinimalSave(MemoryStream& stream, const State* cargoDistState)
+    void writeMinimalSave(
+        MemoryStream& stream,
+        const State* cargoDistState,
+        bool legacyExtension = false,
+        const Vehicles::SharedOrderManager::State* sharedOrderState = nullptr)
     {
         SawyerStreamWriter writer(stream);
         S5::Header header{};
@@ -110,9 +115,11 @@ namespace
 
         std::array<std::byte, sizeof(S5::TileElement)> tile{};
         writer.writeChunk(SawyerEncoding::uncompressed, tile.data(), tile.size());
-        if (cargoDistState != nullptr)
+        if (cargoDistState != nullptr || sharedOrderState != nullptr)
         {
-            const auto encoded = encodeState(*cargoDistState);
+            const auto encoded = legacyExtension
+                ? encodeState(*cargoDistState)
+                : S5::SaveExtension::encode({ cargoDistState, sharedOrderState });
             writer.writeChunk(SawyerEncoding::uncompressed, encoded.data(), encoded.size());
         }
         writer.writeChecksum();
@@ -223,13 +230,17 @@ TEST(CargoDistSave, RejectsInvalidFlowCursor)
 TEST(CargoDistSave, S5TailRoundTripsExtension)
 {
     const auto original = populatedState();
+    Vehicles::SharedOrderManager::State sharedOrders;
+    sharedOrders.groups = { { { entity(3), entity(8) } } };
     MemoryStream stream;
-    writeMinimalSave(stream, &original);
+    writeMinimalSave(stream, &original, false, &sharedOrders);
 
     const auto save = S5::loadSave(stream);
 
     ASSERT_TRUE(save->cargoDistState.has_value());
     expectStatesEqual(original, *save->cargoDistState);
+    ASSERT_TRUE(save->sharedOrderState.has_value());
+    EXPECT_EQ(*save->sharedOrderState, sharedOrders);
 }
 
 TEST(CargoDistSave, LegacyS5WithoutExtensionStillLoads)
@@ -240,4 +251,18 @@ TEST(CargoDistSave, LegacyS5WithoutExtensionStillLoads)
     const auto save = S5::loadSave(stream);
 
     EXPECT_FALSE(save->cargoDistState.has_value());
+    EXPECT_FALSE(save->sharedOrderState.has_value());
+}
+
+TEST(CargoDistSave, LegacyDirectExtensionStillLoads)
+{
+    const auto original = populatedState();
+    MemoryStream stream;
+    writeMinimalSave(stream, &original, true);
+
+    const auto save = S5::loadSave(stream);
+
+    ASSERT_TRUE(save->cargoDistState.has_value());
+    expectStatesEqual(original, *save->cargoDistState);
+    EXPECT_FALSE(save->sharedOrderState.has_value());
 }

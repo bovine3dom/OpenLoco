@@ -13,6 +13,8 @@
 #include "Objects/ObjectManager.h"
 #include "SceneManager.h"
 #include "Ui/WindowManager.h"
+#include "Vehicles/OrderManager.h"
+#include "Vehicles/SharedOrderManager.h"
 #include "World/CompanyManager.h"
 #include "World/StationManager.h"
 #include <algorithm>
@@ -56,12 +58,19 @@ namespace OpenLoco::GameCommands::Undo
         std::vector<uint8_t> after;
     };
 
+    struct SharedOrderPatch
+    {
+        Vehicles::SharedOrderManager::State before;
+        Vehicles::SharedOrderManager::State after;
+    };
+
     struct PendingTransaction
     {
         CompanyId company;
         bool captureEntities;
         std::vector<uint8_t> state;
         std::vector<TilePatch> tiles;
+        Vehicles::SharedOrderManager::State sharedOrders;
     };
 
     struct HistoryEntry
@@ -79,6 +88,7 @@ namespace OpenLoco::GameCommands::Undo
         std::vector<StateGuard> stateGuards;
         std::vector<StationId> createdStations;
         std::vector<TilePatch> tiles;
+        std::optional<SharedOrderPatch> sharedOrders;
     };
 
     struct ByteChange
@@ -108,7 +118,9 @@ namespace OpenLoco::GameCommands::Undo
 
     static bool isMapCommand(const GameCommand command)
     {
-        return command != GameCommand::vehicleCreate && command != GameCommand::vehicleClone;
+        return command != GameCommand::vehicleCreate
+            && command != GameCommand::vehicleClone
+            && command != GameCommand::vehicleOrderShare;
     }
 
     static bool isUndoableCommand(const GameCommand command)
@@ -117,6 +129,7 @@ namespace OpenLoco::GameCommands::Undo
         {
             case GameCommand::vehicleCreate:
             case GameCommand::vehicleClone:
+            case GameCommand::vehicleOrderShare:
             case GameCommand::createTrack:
             case GameCommand::createSignal:
             case GameCommand::createTrainStation:
@@ -546,6 +559,13 @@ namespace OpenLoco::GameCommands::Undo
                 return false;
             }
         }
+        if (_history->sharedOrders.has_value()
+            && (!Vehicles::SharedOrderManager::validateState(_history->sharedOrders->before)
+                || !Vehicles::SharedOrderManager::validateState(_history->sharedOrders->after)
+                || Vehicles::SharedOrderManager::captureState() != _history->sharedOrders->after))
+        {
+            return false;
+        }
         for (const auto& patch : _history->tiles)
         {
             for (auto* entity : EntityManager::EntityTileList(toWorldSpace(patch.pos)))
@@ -668,6 +688,18 @@ namespace OpenLoco::GameCommands::Undo
                 it->second.after = std::move(patch.after);
             }
         }
+
+        if (history.sharedOrders.has_value())
+        {
+            if (group.history.sharedOrders.has_value())
+            {
+                group.history.sharedOrders->after = std::move(history.sharedOrders->after);
+            }
+            else
+            {
+                group.history.sharedOrders = std::move(history.sharedOrders);
+            }
+        }
     }
 
     static void finishGroup()
@@ -709,6 +741,11 @@ namespace OpenLoco::GameCommands::Undo
                 group.history.tiles.push_back(std::move(patch));
             }
         }
+        if (group.history.sharedOrders.has_value()
+            && group.history.sharedOrders->before == group.history.sharedOrders->after)
+        {
+            group.history.sharedOrders.reset();
+        }
 
         _history = std::move(group.history);
         Ui::WindowManager::invalidate(Ui::WindowType::topToolbar);
@@ -720,6 +757,11 @@ namespace OpenLoco::GameCommands::Undo
         history.state = createStatePatches(_pending->state, _pending->captureEntities);
         createStateGuards(*_pending, history);
         history.tiles = createTilePatches(std::move(_pending->tiles));
+        auto sharedOrdersAfter = Vehicles::SharedOrderManager::captureState();
+        if (_pending->sharedOrders != sharedOrdersAfter)
+        {
+            history.sharedOrders = SharedOrderPatch{ std::move(_pending->sharedOrders), std::move(sharedOrdersAfter) };
+        }
         _pending.reset();
         return history;
     }
@@ -740,6 +782,7 @@ namespace OpenLoco::GameCommands::Undo
         transaction.captureEntities = !isMapCommand(command);
         transaction.state.resize(getStateSize());
         std::memcpy(transaction.state.data(), &getGameState(), transaction.state.size());
+        transaction.sharedOrders = Vehicles::SharedOrderManager::captureState();
         if (isMapCommand(command))
         {
             transaction.tiles = captureAffectedTiles(command, company, regs);
@@ -773,7 +816,7 @@ namespace OpenLoco::GameCommands::Undo
         if (_groupDepth != 0 && _pending.has_value())
         {
             auto history = capturePending();
-            if (!history.state.empty() || !history.stateGuards.empty() || !history.tiles.empty())
+            if (!history.state.empty() || !history.stateGuards.empty() || !history.tiles.empty() || history.sharedOrders.has_value())
             {
                 addToGroup(std::move(history));
             }
@@ -843,6 +886,12 @@ namespace OpenLoco::GameCommands::Undo
         {
             std::memcpy(state + patch.offset, patch.before.data(), patch.before.size());
         }
+        Vehicles::OrderManager::clearNumDisplayFrames();
+        bool sharedOrdersRestored = true;
+        if (history.sharedOrders.has_value())
+        {
+            sharedOrdersRestored = Vehicles::SharedOrderManager::restoreState(history.sharedOrders->before);
+        }
         EntityManager::resetSpatialIndex();
         EntityTweener::get().reset();
         for (const auto station : history.createdStations)
@@ -875,6 +924,11 @@ namespace OpenLoco::GameCommands::Undo
         }
         Gfx::invalidateScreen();
         Ui::WindowManager::invalidateAllWindowsAfterInput();
+        if (!sharedOrdersRestored)
+        {
+            clear();
+            return Result::stateChanged;
+        }
         return Result::success;
     }
 }

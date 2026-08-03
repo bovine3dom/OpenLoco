@@ -3,6 +3,7 @@
 #include "S5/S5.h"
 #include <OpenLoco/CargoDist/Save.h>
 #include <OpenLoco/CargoDist/Simulation.h>
+#include <OpenLoco/S5/SaveExtension.h>
 
 #include "Audio/Audio.h"
 #include "EditorController.h"
@@ -40,6 +41,7 @@
 #include "Ui/ProgressBar.h"
 #include "Ui/WindowManager.h"
 #include "Vehicles/OrderManager.h"
+#include "Vehicles/SharedOrderManager.h"
 #include "World/CompanyManager.h"
 #include "World/IndustryManager.h"
 #include "World/StationManager.h"
@@ -551,11 +553,18 @@ namespace OpenLoco::S5
     {
         try
         {
-            std::vector<std::byte> cargoDistData;
+            std::vector<std::byte> extensionData;
             if (file.header.type == S5Type::savedGame
-                && !file.header.hasFlags(HeaderFlags::isTitleSequence | HeaderFlags::isDump))
+                && !file.header.hasFlags(HeaderFlags::isRaw | HeaderFlags::isDump | HeaderFlags::isTitleSequence))
             {
-                cargoDistData = CargoDist::encodeState(CargoDist::getStateConst());
+                const auto sharedOrderState = Vehicles::SharedOrderManager::captureState();
+                if (!Vehicles::SharedOrderManager::validateState(sharedOrderState))
+                {
+                    throw Exception::RuntimeError("Invalid shared vehicle order state");
+                }
+                extensionData = sharedOrderState.groups.empty()
+                    ? CargoDist::encodeState(CargoDist::getStateConst())
+                    : SaveExtension::encode({ &CargoDist::getStateConst(), &sharedOrderState });
             }
 
             SawyerStreamWriter fs(stream);
@@ -594,9 +603,9 @@ namespace OpenLoco::S5
                 fs.writeChunk(SawyerEncoding::runLengthMulti, file.tileElements.data(), file.tileElements.size() * sizeof(TileElement));
             }
 
-            if (!cargoDistData.empty())
+            if (!extensionData.empty())
             {
-                fs.writeChunk(SawyerEncoding::uncompressed, cargoDistData.data(), cargoDistData.size());
+                fs.writeChunk(SawyerEncoding::uncompressed, extensionData.data(), extensionData.size());
             }
 
             fs.writeChecksum();
@@ -716,15 +725,17 @@ namespace OpenLoco::S5
                 uint32_t encodedLength;
                 fs.read(&encoding, sizeof(encoding));
                 fs.read(&encodedLength, sizeof(encodedLength));
-                if (encoding != SawyerEncoding::uncompressed || encodedLength > CargoDist::kMaxSaveDataSize
+                if (encoding != SawyerEncoding::uncompressed || encodedLength > SaveExtension::kMaxDataSize
                     || encodedLength != checksumPosition - stream.getPosition())
                 {
                     throw Exception::RuntimeError("Invalid S5 extension");
                 }
 
-                std::vector<std::byte> cargoDistData(encodedLength);
-                fs.read(cargoDistData.data(), cargoDistData.size());
-                file->cargoDistState = CargoDist::decodeState(cargoDistData);
+                std::vector<std::byte> extensionData(encodedLength);
+                fs.read(extensionData.data(), extensionData.size());
+                auto extensionState = SaveExtension::decode(extensionData);
+                file->cargoDistState = std::move(extensionState.cargoDistState);
+                file->sharedOrderState = std::move(extensionState.sharedOrderState);
             }
             if (stream.getPosition() != checksumPosition)
             {
@@ -915,6 +926,11 @@ namespace OpenLoco::S5
                 validateCargoDistObjects(*file->cargoDistState, file->requiredObjects);
                 CargoDist::validateState(*file->cargoDistState, *importedGameState);
             }
+            if (file->sharedOrderState.has_value() && !hasLoadFlags(flags, LoadFlags::titleSequence)
+                && !Vehicles::SharedOrderManager::validateState(*file->sharedOrderState, *importedGameState))
+            {
+                throw LoadException("Invalid shared vehicle order state", StringIds::error_file_contains_invalid_data);
+            }
 
             // Load required objects
             auto loadObjectResult = ObjectManager::loadAll(file->requiredObjects);
@@ -950,6 +966,7 @@ namespace OpenLoco::S5
             // Copy the S5 gamestate contents to the destination gamestate, field by field
             dst = std::move(*importedGameState);
             CargoDist::reset();
+            Vehicles::SharedOrderManager::reset();
 
             // Copy scenario options
             if (hasLoadFlags(flags, LoadFlags::scenario | LoadFlags::landscape))
@@ -1063,6 +1080,11 @@ namespace OpenLoco::S5
             }
             else
             {
+                if (file->sharedOrderState.has_value()
+                    && !Vehicles::SharedOrderManager::restoreState(*file->sharedOrderState))
+                {
+                    throw Exception::RuntimeError("Invalid shared vehicle order state");
+                }
                 if (file->cargoDistState.has_value())
                 {
                     CargoDist::restoreState(std::move(*file->cargoDistState));

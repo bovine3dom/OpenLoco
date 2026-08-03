@@ -5,9 +5,11 @@
 #include "Scenario/ScenarioManager.h"
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/Orders.h"
+#include "Vehicles/SharedOrderManager.h"
 #include "Vehicles/Vehicle1.h"
 #include "Vehicles/VehicleHead.h"
 #include <gtest/gtest.h>
+#include <limits>
 
 using namespace OpenLoco;
 using namespace OpenLoco::GameCommands;
@@ -38,6 +40,7 @@ namespace
             head->vehicleType = type;
             head->status = Status::travelling;
             head->stationId = StationId::null;
+            head->trainAcceptedCargoTypes = std::numeric_limits<uint32_t>::max();
             EntityManager::moveEntityToList(head, EntityManager::EntityListType::vehicleHead);
 
             auto* vehicle1Entity = EntityManager::createEntityVehicle();
@@ -72,7 +75,7 @@ namespace
             appendStop(head, secondStation);
         }
 
-        static uint32_t toggleUnbunching(VehicleHead& head, const uint16_t orderOffset, const uint8_t flags)
+        static uint32_t toggleUnbunching(VehicleHead& head, const uint32_t orderOffset, const uint8_t flags)
         {
             VehicleOrderToggleUnbunchingArgs args{};
             args.head = head.id;
@@ -135,6 +138,8 @@ TEST_F(VehicleUnbunchingTest, CommandTogglesEveryVehicleOnTheSameRoute)
     EXPECT_EQ(toggleUnbunching(first, selectedOffset, 0), 0U);
     EXPECT_FALSE(first.hasUnbunchingOrder());
     EXPECT_FALSE(second.hasUnbunchingOrder());
+    EXPECT_EQ(first.unbunchingState, 123);
+    EXPECT_EQ(second.unbunchingState, 456);
 
     EXPECT_EQ(toggleUnbunching(first, selectedOffset, Flags::apply), 0U);
     EXPECT_TRUE(first.hasUnbunchingOrder());
@@ -146,6 +151,45 @@ TEST_F(VehicleUnbunchingTest, CommandTogglesEveryVehicleOnTheSameRoute)
     EXPECT_EQ(toggleUnbunching(first, selectedOffset, Flags::apply), 0U);
     EXPECT_FALSE(first.hasUnbunchingOrder());
     EXPECT_FALSE(second.hasUnbunchingOrder());
+}
+
+TEST_F(VehicleUnbunchingTest, CommandKeepsSharedLocalAndExpressRoutesSynchronized)
+{
+    auto& sharedLocal = createVehicle();
+    auto& sharedExpress = createVehicle(CompanyId(0), VehicleType::train, true);
+    auto& matchingLocal = createVehicle();
+    auto& matchingExpress = createVehicle(CompanyId(0), VehicleType::train, true);
+    const auto selectedOffset = appendStop(sharedLocal, 1);
+    appendStop(sharedLocal, 2);
+    addRoute(sharedExpress);
+    addRoute(matchingLocal);
+    addRoute(matchingExpress);
+    ASSERT_TRUE(SharedOrderManager::join(sharedExpress.id, sharedLocal.id));
+    for (auto* vehicle : { &sharedLocal, &sharedExpress, &matchingLocal, &matchingExpress })
+    {
+        vehicle->unbunchingState = 1;
+    }
+
+    EXPECT_EQ(toggleUnbunching(sharedLocal, selectedOffset, 0), 0U);
+    EXPECT_FALSE(sharedLocal.hasUnbunchingOrder());
+    EXPECT_EQ(toggleUnbunching(sharedLocal, selectedOffset, Flags::apply), 0U);
+    for (const auto* vehicle : { &sharedLocal, &sharedExpress, &matchingLocal, &matchingExpress })
+    {
+        EXPECT_TRUE(vehicle->hasUnbunchingOrder());
+        EXPECT_EQ(vehicle->unbunchingState, 0U);
+    }
+    EXPECT_TRUE(SharedOrderManager::areOrdersEqual(sharedLocal, sharedExpress));
+}
+
+TEST_F(VehicleUnbunchingTest, CommandRejectsUnrepresentableOrderOffset)
+{
+    auto& head = createVehicle();
+    appendStop(head, 1);
+    appendStop(head, 2);
+    OrderManager::orders()[head.orderTableOffset + 0x10000].setType(OrderType::StopAt);
+
+    EXPECT_EQ(toggleUnbunching(head, 0x10000, Flags::apply), kFailure);
+    EXPECT_FALSE(head.hasUnbunchingOrder());
 }
 
 TEST_F(VehicleUnbunchingTest, CommandRejectsFullLoadAndMultipleUnbunchingStops)

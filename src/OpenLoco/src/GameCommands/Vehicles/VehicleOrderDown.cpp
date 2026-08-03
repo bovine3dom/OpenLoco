@@ -1,9 +1,9 @@
 #include "GameCommands/Vehicles/VehicleOrderDown.h"
-#include "Entities/EntityManager.h"
 #include "GameCommands/GameCommands.h"
-#include "Ui/WindowManager.h"
+#include "GameCommands/Vehicles/VehicleOrderCommon.h"
+#include "Localisation/StringIds.h"
 #include "Vehicles/OrderManager.h"
-#include "Vehicles/Vehicle.h"
+#include "Vehicles/SharedOrderManager.h"
 #include "Vehicles/VehicleHead.h"
 
 namespace OpenLoco::GameCommands
@@ -11,54 +11,61 @@ namespace OpenLoco::GameCommands
     // 0x00470E06
     static uint32_t vehicleOrderDown(const VehicleOrderDownArgs& args, uint8_t flags)
     {
-        auto* head = EntityManager::get<Vehicles::VehicleHead>(args.head);
+        auto* head = VehicleOrderCommon::getHead(args.head);
         if (head == nullptr)
-        {
-            return GameCommands::kFailure;
-        }
-
-        GameCommands::setPosition(head->position);
-        if (!(flags & GameCommands::Flags::apply))
-        {
-            return 0;
-        }
-
-        if (args.orderOffset > head->sizeOfOrderTable)
         {
             return kFailure;
         }
 
-        Ui::WindowManager::invalidateOrderPageByVehicleNumber(enumValue(head->id));
+        setPosition(head->position);
+        auto members = Vehicles::SharedOrderManager::getMembers(args.head);
+        if (!VehicleOrderCommon::hasConsistentOrderTables(*head, members)
+            || !VehicleOrderCommon::isOrderOffsetValidForMembers(members, args.orderOffset, false))
+        {
+            setErrorText(StringIds::empty);
+            return kFailure;
+        }
+        for (const auto id : members)
+        {
+            if (!checkCompanyCompatibility(VehicleOrderCommon::getHead(id)->owner))
+            {
+                return kFailure;
+            }
+        }
 
-        // Figure out which orders to swap
-        Vehicles::OrderRingView orders(head->orderTableOffset, args.orderOffset);
-        auto iterator = orders.begin();
-        auto& currentOrder = *(iterator);
-        auto& nextOrder = *(++iterator);
-
-        // Don't swap if we've looped around
-        if (nextOrder.getOffset() < currentOrder.getOffset())
+        if (!(flags & Flags::apply))
         {
             return 0;
         }
 
-        // Before we proceed, we keep track of the currently active order
-        bool currentOrderIsActive = head->currentOrder == currentOrder.getOffset() - head->orderTableOffset;
-        bool nextOrderIsActive = head->currentOrder == nextOrder.getOffset() - head->orderTableOffset;
-        auto oldOffsetDiff = nextOrder.getOffset() - currentOrder.getOffset();
-
-        // Actually swap the two orders
-        const auto newOffsetDiff = Vehicles::OrderManager::swapAdjacentOrders(currentOrder, nextOrder);
-        head->resetUnbunching();
-
-        // Compensate if we swapped the current order around
-        if (currentOrderIsActive)
+        VehicleOrderCommon::invalidateOrderWindows(members);
+        const auto table = Vehicles::OrderManager::copyOrderTable(*head);
+        const auto currentOrderSize = Vehicles::OrderManager::getOrderSize(static_cast<Vehicles::OrderType>(table[args.orderOffset] & 0x7));
+        const auto nextOffset = static_cast<uint16_t>(args.orderOffset + currentOrderSize);
+        if (nextOffset == table.size() - sizeof(Vehicles::OrderEnd))
         {
-            head->currentOrder += newOffsetDiff;
+            return 0;
         }
-        else if (nextOrderIsActive)
+
+        for (const auto id : members)
         {
-            head->currentOrder -= oldOffsetDiff;
+            auto* member = VehicleOrderCommon::getHead(id);
+            auto* memberOrders = Vehicles::OrderManager::orders() + member->orderTableOffset;
+            auto& currentOrder = memberOrders[args.orderOffset];
+            auto& nextOrder = memberOrders[nextOffset];
+            const bool currentIsActive = member->currentOrder == args.orderOffset;
+            const bool nextIsActive = member->currentOrder == nextOffset;
+            const auto newOffsetDiff = Vehicles::OrderManager::swapAdjacentOrders(currentOrder, nextOrder);
+            member->resetUnbunching();
+
+            if (currentIsActive)
+            {
+                member->currentOrder += newOffsetDiff;
+            }
+            else if (nextIsActive)
+            {
+                member->currentOrder -= currentOrderSize;
+            }
         }
 
         return 0;

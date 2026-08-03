@@ -4,16 +4,19 @@
 #include "GameCommands/GameCommands.h"
 #include "GameCommands/Vehicles/CreateVehicle.h"
 #include "GameCommands/Vehicles/VehicleChangeRunningMode.h"
-#include "GameCommands/Vehicles/VehicleOrderInsert.h"
+#include "GameCommands/Vehicles/VehicleOrderCommon.h"
 #include "GameCommands/Vehicles/VehicleRefit.h"
+#include "Localisation/StringIds.h"
 #include "Ui/WindowManager.h"
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/Orders.h"
+#include "Vehicles/SharedOrderManager.h"
 #include "Vehicles/Vehicle.h"
 #include "Vehicles/Vehicle1.h"
 #include "Vehicles/VehicleBody.h"
 #include "Vehicles/VehicleBogie.h"
 #include "Vehicles/VehicleHead.h"
+#include "Vehicles/VehicleManager.h"
 
 namespace OpenLoco::GameCommands
 {
@@ -36,10 +39,57 @@ namespace OpenLoco::GameCommands
         }
     }
 
-    static uint32_t cloneVehicle(EntityId head, uint8_t flags)
+    static uint32_t cloneVehicle(const VehicleCloneArgs& args, uint8_t flags)
     {
-        Vehicles::Vehicle existingTrain(head);
+        auto* sourceHead = VehicleOrderCommon::getHead(args.vehicleHeadId);
+        if (sourceHead == nullptr)
+        {
+            return kFailure;
+        }
+        Vehicles::Vehicle existingTrain(*sourceHead);
+        if (existingTrain.cars.empty())
+        {
+            return kFailure;
+        }
         Vehicles::VehicleHead* newHead = nullptr;
+
+        size_t requiredEntities = 0;
+        existingTrain.applyToComponents([&requiredEntities](const auto&) { ++requiredEntities; });
+        if (!EntityManager::checkNumFreeEntities(requiredEntities))
+        {
+            return kFailure;
+        }
+
+        const auto sourceOrderTableSize = existingTrain.head->sizeOfOrderTable;
+        if (sourceOrderTableSize < sizeof(Vehicles::OrderEnd)
+            || !Vehicles::OrderManager::isOrderOffsetValid(*existingTrain.head, sourceOrderTableSize - sizeof(Vehicles::OrderEnd), true))
+        {
+            setErrorText(StringIds::empty);
+            return kFailure;
+        }
+        if (!checkCompanyCompatibility(existingTrain.head->owner))
+        {
+            return kFailure;
+        }
+        if (args.shareOrders && existingTrain.head->owner != getUpdatingCompanyId())
+        {
+            setErrorText(StringIds::empty);
+            return kFailure;
+        }
+        const auto sourceMembers = Vehicles::SharedOrderManager::getMembers(existingTrain.head->id);
+        if (args.shareOrders
+            && (!VehicleOrderCommon::hasConsistentOrderTables(*existingTrain.head, sourceMembers)
+                || !Vehicles::SharedOrderManager::areVehiclesCompatible(*existingTrain.head, *existingTrain.head)))
+        {
+            setErrorText(StringIds::empty);
+            return kFailure;
+        }
+        const auto sourceOrders = Vehicles::OrderManager::copyOrderTable(*existingTrain.head);
+        if (!Vehicles::OrderManager::spaceLeftInGlobalOrderTable(sourceOrders.size()))
+        {
+            setErrorText(StringIds::no_space_for_more_vehicle_orders);
+            return kFailure;
+        }
 
         // Get total cost for a new vehicle
         if (!(flags & Flags::apply))
@@ -90,6 +140,10 @@ namespace OpenLoco::GameCommands
                     return kFailure;
                 }
                 newHead = EntityManager::get<Vehicles::VehicleHead>(newVeh->getHead());
+                if (newHead == nullptr)
+                {
+                    return kFailure;
+                }
             }
             else
             {
@@ -101,15 +155,18 @@ namespace OpenLoco::GameCommands
             }
             if (cost == kFailure)
             {
-                totalCost = kFailure;
-                break;
+                if (newHead != nullptr)
+                {
+                    VehicleManager::deleteTrain(*newHead);
+                }
+                return kFailure;
             }
             else
             {
                 totalCost += cost;
             }
         }
-        if (totalCost == kFailure || newHead == nullptr)
+        if (newHead == nullptr)
         {
             return kFailure;
         }
@@ -117,24 +174,8 @@ namespace OpenLoco::GameCommands
         auto newTrain = Vehicles::Vehicle(*newHead);
         copyVehicleColours(existingTrain, newTrain);
 
-        // Copy orders
-        std::vector<std::shared_ptr<Vehicles::Order>> clonedOrders;
-        for (auto& existingOrders : Vehicles::OrderRingView(existingTrain.head->orderTableOffset))
-        {
-            clonedOrders.push_back(existingOrders.clone());
-        }
-
-        for (auto& order : clonedOrders)
-        {
-            // Do not cache this as it will be a different value every iteration
-            auto chosenOffset = newHead->sizeOfOrderTable - 1;
-
-            VehicleOrderInsertArgs args{};
-            args.head = newHead->id;
-            args.orderOffset = chosenOffset;
-            args.rawOrder = order->getRaw();
-            GameCommands::doCommand(args, GameCommands::Flags::apply);
-        }
+        // The new head is unshared, so replacing its table cannot fan out to a group.
+        Vehicles::OrderManager::replaceOrderTable(*newHead, sourceOrders);
 
         // Copy express/local
         if ((existingTrain.veh1->var_48 & Vehicles::Flags48::expressMode) != Vehicles::Flags48::none)
@@ -142,7 +183,11 @@ namespace OpenLoco::GameCommands
             GameCommands::VehicleChangeRunningModeArgs args{};
             args.head = newHead->id;
             args.mode = GameCommands::VehicleChangeRunningModeArgs::Mode::toggleLocalExpress;
-            GameCommands::doCommand(args, GameCommands::Flags::apply);
+            if (GameCommands::doCommand(args, GameCommands::Flags::apply) == kFailure)
+            {
+                VehicleManager::deleteTrain(*newHead);
+                return kFailure;
+            }
         }
 
         // Copy cargo refit status (only applies to boats and airplanes)
@@ -151,7 +196,28 @@ namespace OpenLoco::GameCommands
             VehicleRefitArgs args{};
             args.head = newHead->head;
             args.cargoType = cargoType;
-            doCommand(args, Flags::apply);
+            if (doCommand(args, Flags::apply) == kFailure)
+            {
+                VehicleManager::deleteTrain(*newHead);
+                return kFailure;
+            }
+        }
+
+        if (args.shareOrders)
+        {
+            const auto joined = Vehicles::SharedOrderManager::areVehiclesCompatible(*newHead, *existingTrain.head)
+                && Vehicles::SharedOrderManager::areOrdersEqual(*newHead, *existingTrain.head)
+                && Vehicles::SharedOrderManager::join(newHead->id, existingTrain.head->id);
+            if (!joined)
+            {
+                VehicleManager::deleteTrain(*newHead);
+                return kFailure;
+            }
+            for (const auto member : Vehicles::SharedOrderManager::getMembers(newHead->id))
+            {
+                Ui::WindowManager::invalidateOrderPageByVehicleNumber(enumValue(member));
+            }
+            Ui::WindowManager::invalidate(Ui::WindowType::vehicleList);
         }
 
         // Finally, set the expenditure type
@@ -163,6 +229,6 @@ namespace OpenLoco::GameCommands
 
     void cloneVehicle(registers& regs, const uint8_t flags)
     {
-        regs.ebx = cloneVehicle(EntityId(regs.ax), flags);
+        regs.ebx = cloneVehicle(VehicleCloneArgs(regs), flags);
     }
 }

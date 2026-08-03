@@ -300,12 +300,9 @@ namespace OpenLoco::Ui::Dropdown
                                 colour = Colour::white;
                             }
 
-                            if ((_dropdownDisabledItems & (1 << itemCount)))
+                            if (itemCount < 32 && (_dropdownDisabledItems & (1U << itemCount)))
                             {
-                                if (itemCount < 32)
-                                {
-                                    colour = self.getColour(WindowColour::primary).opaque().inset();
-                                }
+                                colour = self.getColour(WindowColour::primary).opaque().inset();
                             }
 
                             auto x = _windowDropdownOnpaintCellX * _dropdownItemWidth + 2;

@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <vector>
 
 namespace OpenLoco::Vehicles
 {
@@ -122,7 +123,12 @@ namespace OpenLoco::Vehicles::OrderManager
     void reoffsetVehicleOrderTables(const uint32_t removeOrderTableOffset, const int16_t sizeOfRemovedOrderTable);
 
     bool spaceLeftInGlobalOrderTableForOrder(const Order* order);
+    bool spaceLeftInGlobalOrderTable(size_t requiredBytes);
     bool spaceLeftInVehicleOrderTable(VehicleHead* head);
+    uint8_t getOrderSize(OrderType type);
+    bool isOrderOffsetValid(const VehicleHead& head, uint32_t orderOffset, bool allowEnd = false);
+    std::vector<uint8_t> copyOrderTable(const VehicleHead& head);
+    void replaceOrderTable(VehicleHead& head, std::span<const uint8_t> newOrders);
     void insertOrder(VehicleHead* head, uint16_t orderOffset, const Order* order);
 
     void deleteOrder(VehicleHead* head, uint16_t orderOffset);
@@ -133,8 +139,9 @@ namespace OpenLoco::Vehicles::OrderManager
 
     std::pair<World::Pos3, std::string> generateOrderUiStringAndLoc(uint32_t orderOffset, uint8_t orderNum);
     void generateNumDisplayFrames(Vehicles::VehicleHead* head);
+    void clearNumDisplayFrames();
     std::span<const NumDisplayFrame> displayFrames();
-    uint16_t reverseVehicleOrderTable(uint16_t tableOffset, uint16_t orderOfInterest);
+    uint16_t reverseVehicleOrderTable(uint32_t tableOffset, uint16_t orderOfInterest);
     uint8_t swapAdjacentOrders(Order& a, Order& b);
     void removeOrdersForStation(const StationId stationId);
     void fixCorruptWaypointOrders();

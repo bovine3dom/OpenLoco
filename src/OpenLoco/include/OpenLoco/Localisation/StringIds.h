@@ -2200,6 +2200,25 @@ namespace OpenLoco::StringIds
     constexpr StringId only_one_unbunching_stop_allowed = 2488;
     constexpr StringId unbunching_incompatible_with_full_load = 2489;
     constexpr StringId vehicle_status_waiting_to_unbunch = 2490;
+    constexpr StringId matching_orders = 2491;
+    constexpr StringId shared_orders = 2492;
+    constexpr StringId independent_orders = 2493;
+    constexpr StringId shared_orders_vehicle_count = 2494;
+    constexpr StringId use_shared_orders_from = 2495;
+    constexpr StringId shared_order_members = 2496;
+    constexpr StringId leave_shared_orders = 2497;
+    constexpr StringId share_all_matching_orders = 2498;
+    constexpr StringId matching_order_vehicle_count = 2499;
+    constexpr StringId shared_order_vehicle_count = 2500;
+    constexpr StringId tooltip_use_shared_orders_from = 2501;
+    constexpr StringId tooltip_shared_order_members = 2502;
+    constexpr StringId tooltip_leave_shared_orders = 2503;
+    constexpr StringId tooltip_share_all_matching_orders = 2504;
+    constexpr StringId dropdown_clone_vehicle_shared_orders_hint = 2505;
+    constexpr StringId cant_change_shared_orders = 2506;
+    constexpr StringId more_vehicles = 2507;
+    constexpr StringId replace_with_shared_orders_prompt = 2508;
+    constexpr StringId share_orders = 2509;
 
     constexpr StringId temporary_object_load_str_0 = 8192;
     constexpr StringId temporary_object_load_str_1 = 8193;

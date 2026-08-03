@@ -1,5 +1,7 @@
 #include "Date.h"
 #include "Entities/EntityManager.h"
+#include "GameCommands/GameCommands.h"
+#include "GameCommands/Vehicles/VehicleOrderShare.h"
 #include "GameState.h"
 #include "Graphics/Colour.h"
 #include "Graphics/ImageIds.h"
@@ -15,6 +17,7 @@
 #include "Objects/ObjectManager.h"
 #include "OpenLoco.h"
 #include "Ui/Dropdown.h"
+#include "Ui/ScrollView.h"
 #include "Ui/ToolManager.h"
 #include "Ui/ToolTip.h"
 #include "Ui/Widget.h"
@@ -30,6 +33,7 @@
 #include "Ui/WindowManager.h"
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/Orders.h"
+#include "Vehicles/SharedOrderManager.h"
 #include "Vehicles/Vehicle.h"
 #include "Vehicles/Vehicle1.h"
 #include "Vehicles/Vehicle2.h"
@@ -38,8 +42,11 @@
 #include "Vehicles/VehicleManager.h"
 #include "World/CompanyManager.h"
 #include <OpenLoco/Utility/String.hpp>
+#include <algorithm>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace OpenLoco::Ui::Windows::VehicleList
 {
@@ -136,6 +143,8 @@ namespace OpenLoco::Ui::Windows::VehicleList
     {
         allVehicles,
         transportingCargo,
+        matchingOrders,
+        sharedOrders,
     };
 
     static constexpr uint8_t row_heights[] = {
@@ -181,11 +190,32 @@ namespace OpenLoco::Ui::Windows::VehicleList
     }
 
     static void sortVehicleList(Window& self);
+    static bool orderVehicleIds(const Window& self, EntityId lhs, EntityId rhs);
+
+    static bool isClusterFilter(const Window& self)
+    {
+        return self.var_850 == FilterMode::matchingOrders || self.var_850 == FilterMode::sharedOrders;
+    }
+
+    static size_t getOrderTableHash(const VehicleHead& head)
+    {
+        constexpr size_t kOffset = sizeof(size_t) == 8 ? 1469598103934665603ULL : 2166136261U;
+        constexpr size_t kPrime = sizeof(size_t) == 8 ? 1099511628211ULL : 16777619U;
+        size_t hash = kOffset;
+        const auto* bytes = reinterpret_cast<const uint8_t*>(Vehicles::OrderManager::orders() + head.orderTableOffset);
+        for (uint16_t i = 0; i < head.sizeOfOrderTable; ++i)
+        {
+            hash = (hash ^ bytes[i]) * kPrime;
+        }
+        return hash;
+    }
 
     // 0x004C1D4F
     static void populateVehicleList(Window& self)
     {
         self.rowCount = 0;
+
+        std::vector<EntityId> vehicles;
 
         // Populate vehicle list with relevant entity ids
         for (auto* vehicle : VehicleManager::VehicleList())
@@ -205,10 +235,96 @@ namespace OpenLoco::Ui::Windows::VehicleList
                 continue;
             }
 
-            self.rowInfo[self.rowCount++] = enumValue(vehicle->head);
+            if (self.var_850 == FilterMode::matchingOrders
+                && (vehicle->sizeOfOrderTable <= sizeof(Vehicles::OrderEnd)
+                    || !Vehicles::SharedOrderManager::areVehiclesCompatible(*vehicle, *vehicle)))
+            {
+                continue;
+            }
+
+            if (self.var_850 == FilterMode::sharedOrders && !Vehicles::SharedOrderManager::isShared(vehicle->id))
+            {
+                continue;
+            }
+
+            vehicles.push_back(vehicle->id);
         }
 
-        sortVehicleList(self);
+        if (!isClusterFilter(self))
+        {
+            for (const auto id : vehicles)
+            {
+                self.rowInfo[self.rowCount++] = enumValue(id);
+            }
+            sortVehicleList(self);
+            return;
+        }
+
+        std::stable_sort(vehicles.begin(), vehicles.end(), [&self](const EntityId lhs, const EntityId rhs) {
+            return orderVehicleIds(self, lhs, rhs);
+        });
+
+        std::vector<std::vector<EntityId>> clusters;
+        if (self.var_850 == FilterMode::sharedOrders)
+        {
+            std::unordered_map<uint16_t, size_t> clusterByGroup;
+            for (const auto id : vehicles)
+            {
+                const auto group = Vehicles::SharedOrderManager::getGroupId(id);
+                auto [it, inserted] = clusterByGroup.try_emplace(enumValue(group), clusters.size());
+                if (inserted)
+                {
+                    clusters.emplace_back();
+                }
+                clusters[it->second].push_back(id);
+            }
+        }
+        else
+        {
+            std::unordered_map<size_t, std::vector<size_t>> clustersByHash;
+            for (const auto id : vehicles)
+            {
+                auto* candidate = EntityManager::get<VehicleHead>(id);
+                if (candidate == nullptr)
+                {
+                    continue;
+                }
+
+                const auto hash = getOrderTableHash(*candidate);
+                bool added = false;
+                for (const auto clusterIndex : clustersByHash[hash])
+                {
+                    auto* anchor = EntityManager::get<VehicleHead>(clusters[clusterIndex].front());
+                    if (anchor != nullptr
+                        && Vehicles::SharedOrderManager::areVehiclesCompatible(*candidate, *anchor)
+                        && Vehicles::SharedOrderManager::areOrdersEqual(*candidate, *anchor))
+                    {
+                        clusters[clusterIndex].push_back(id);
+                        added = true;
+                        break;
+                    }
+                }
+                if (!added)
+                {
+                    clustersByHash[hash].push_back(clusters.size());
+                    clusters.push_back({ id });
+                }
+            }
+        }
+
+        for (const auto& cluster : clusters)
+        {
+            if (cluster.size() < 2)
+            {
+                continue;
+            }
+            for (const auto id : cluster)
+            {
+                self.rowInfo[self.rowCount++] = enumValue(id);
+            }
+        }
+
+        self.invalidate();
     }
 
     // 0x004C1E4F
@@ -278,18 +394,126 @@ namespace OpenLoco::Ui::Windows::VehicleList
         return false;
     }
 
+    static bool orderVehicleIds(const Window& self, const EntityId lhs, const EntityId rhs)
+    {
+        const auto* lhsVehicle = EntityManager::get<VehicleHead>(lhs);
+        const auto* rhsVehicle = EntityManager::get<VehicleHead>(rhs);
+        if (lhsVehicle == nullptr)
+        {
+            return false;
+        }
+        if (rhsVehicle == nullptr)
+        {
+            return true;
+        }
+        return getOrder(SortMode(self.sortMode), *lhsVehicle, *rhsVehicle);
+    }
+
     // 0x004C1D92
     static void sortVehicleList(Window& self)
     {
         auto list = std::span<EntityId>(reinterpret_cast<EntityId*>(self.rowInfo), self.rowCount);
 
-        std::stable_sort(list.begin(), list.end(), [self](EntityId lhs, EntityId rhs) {
-            auto* lhsVehicle = EntityManager::get<VehicleHead>(lhs);
-            auto* rhsVehicle = EntityManager::get<VehicleHead>(rhs);
-            return getOrder(SortMode(self.sortMode), *lhsVehicle, *rhsVehicle);
+        std::stable_sort(list.begin(), list.end(), [&self](const EntityId lhs, const EntityId rhs) {
+            return orderVehicleIds(self, lhs, rhs);
         });
 
         self.invalidate();
+    }
+
+    static bool rowsShareCluster(const Window& self, const uint16_t lhsIndex, const uint16_t rhsIndex)
+    {
+        if (!isClusterFilter(self) || lhsIndex >= self.rowCount || rhsIndex >= self.rowCount)
+        {
+            return false;
+        }
+
+        const auto* lhs = EntityManager::get<VehicleHead>(EntityId(self.rowInfo[lhsIndex]));
+        const auto* rhs = EntityManager::get<VehicleHead>(EntityId(self.rowInfo[rhsIndex]));
+        if (lhs == nullptr || rhs == nullptr)
+        {
+            return false;
+        }
+
+        if (self.var_850 == FilterMode::sharedOrders)
+        {
+            const auto groupId = Vehicles::SharedOrderManager::getGroupId(lhs->id);
+            return groupId != EntityId::null && groupId == Vehicles::SharedOrderManager::getGroupId(rhs->id);
+        }
+        return Vehicles::SharedOrderManager::areVehiclesCompatible(*rhs, *lhs)
+            && Vehicles::SharedOrderManager::areOrdersEqual(*rhs, *lhs);
+    }
+
+    static bool isFirstClusterRow(const Window& self, const uint16_t row)
+    {
+        return isClusterFilter(self) && (row == 0 || !rowsShareCluster(self, row - 1, row));
+    }
+
+    static uint16_t getClusterSize(const Window& self, const uint16_t firstRow)
+    {
+        uint16_t size = 1;
+        while (firstRow + size < self.rowCount && rowsShareCluster(self, firstRow, firstRow + size))
+        {
+            ++size;
+        }
+        return size;
+    }
+
+    static constexpr int16_t kClusterMarkerWidth = 58;
+    static constexpr int16_t kShareAllWidth = 54;
+    static constexpr int16_t kClusterHeaderHeight = 12;
+
+    static bool canShareAllMatchingOrders(const Window& self, const uint16_t firstRow)
+    {
+        if (self.var_850 != FilterMode::matchingOrders || CompanyId(self.number) != CompanyManager::getControllingId()
+            || !isFirstClusterRow(self, firstRow))
+        {
+            return false;
+        }
+
+        const auto group = Vehicles::SharedOrderManager::getGroupId(EntityId(self.rowInfo[firstRow]));
+        const auto clusterSize = getClusterSize(self, firstRow);
+        if (clusterSize < 2)
+        {
+            return false;
+        }
+        if (group == EntityId::null)
+        {
+            return true;
+        }
+        for (uint16_t i = 1; i < clusterSize; ++i)
+        {
+            if (Vehicles::SharedOrderManager::getGroupId(EntityId(self.rowInfo[firstRow + i])) != group)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static int16_t getClusterHeaderRight(const Window& self)
+    {
+        const auto scrollContentRight = self.widgets[widx::scrollview].width() - ScrollView::kScrollbarSize - 4;
+        const auto nameColumnRight = self.widgets[widx::sort_name].right - self.widgets[widx::scrollview].left;
+        return std::min<int16_t>(nameColumnRight, scrollContentRight);
+    }
+
+    static int16_t getShareAllLeft(const Window& self)
+    {
+        return getClusterHeaderRight(self) - kShareAllWidth + 1;
+    }
+
+    static bool isShareAllHit(const Window& self, const uint16_t row, const int16_t x, const int16_t y)
+    {
+        if (!canShareAllMatchingOrders(self, row))
+        {
+            return false;
+        }
+        const auto rowTop = row * self.rowHeight;
+        return x >= getShareAllLeft(self)
+            && x < getShareAllLeft(self) + kShareAllWidth
+            && y >= rowTop
+            && y < rowTop + kClusterHeaderHeight;
     }
 
     // 0x004C2A6E
@@ -520,13 +744,9 @@ namespace OpenLoco::Ui::Windows::VehicleList
             self.disabledWidgets &= ~((1 << widx::cargo_type) | (1 << widx::cargo_type_btn));
         }
 
-        // Set appropriate tooltip
-        static constexpr std::array<StringId, 3> kFilterTooltipByType = {
-            StringIds::null,
-            StringIds::tooltip_open_station_window_to_filter,
-            StringIds::tooltip_select_cargo_type,
-        };
-        self.widgets[widx::cargo_type_btn].tooltip = kFilterTooltipByType[self.var_850];
+        self.widgets[widx::cargo_type_btn].tooltip = self.var_850 == FilterMode::transportingCargo
+            ? StringIds::tooltip_select_cargo_type
+            : StringIds::null;
 
         Widget::leftAlignTabs(self, widx::tab_trains, widx::tab_ships);
 
@@ -548,9 +768,11 @@ namespace OpenLoco::Ui::Windows::VehicleList
             args.push(self.rowCount);
         }
 
-        static constexpr std::array<StringId, 2> kTypeToFilterStringIds{
+        static constexpr std::array<StringId, 4> kTypeToFilterStringIds{
             StringIds::all_vehicles,
             StringIds::transporting_cargo,
+            StringIds::matching_orders,
+            StringIds::shared_orders,
         };
 
         {
@@ -664,7 +886,45 @@ namespace OpenLoco::Ui::Windows::VehicleList
                 // Draw status
                 yPos += 2;
                 auto point = Point(statusHeader.left + 1, yPos);
-                tr.drawStringLeftClipped(point, statusHeader.width() - 2, AdvancedColour(Colour::black).outline(), format, args);
+                int32_t statusWidth = statusHeader.width() - 2;
+                if (isFirstClusterRow(self, i))
+                {
+                    statusWidth = getClusterHeaderRight(self) - point.x - kClusterMarkerWidth + 1;
+                    if (canShareAllMatchingOrders(self, i))
+                    {
+                        statusWidth -= kShareAllWidth;
+                    }
+                }
+                tr.drawStringLeftClipped(point, std::max(statusWidth, 0), AdvancedColour(Colour::black).outline(), format, args);
+            }
+
+            if (isFirstClusterRow(self, i))
+            {
+                const auto clusterSize = getClusterSize(self, i);
+                const bool showShareAll = canShareAllMatchingOrders(self, i);
+                const auto markerRight = getClusterHeaderRight(self) - (showShareAll ? kShareAllWidth : 0);
+                auto args = FormatArguments::common(clusterSize);
+                const auto markerString = self.var_850 == FilterMode::matchingOrders
+                    ? StringIds::matching_order_vehicle_count
+                    : StringIds::shared_order_vehicle_count;
+                tr.drawStringRight({ markerRight, yPos }, Colour::black, markerString, args);
+
+                if (showShareAll)
+                {
+                    const auto actionLeft = getShareAllLeft(self);
+                    drawingCtx.drawRectInset(
+                        actionLeft,
+                        yPos - 2,
+                        kShareAllWidth,
+                        kClusterHeaderHeight,
+                        self.getColour(WindowColour::secondary),
+                        Gfx::RectInsetFlags::none);
+                    tr.drawStringCentredClipped(
+                        { actionLeft + kShareAllWidth / 2, yPos - 1 },
+                        kShareAllWidth - 2,
+                        Colour::black,
+                        StringIds::share_all_matching_orders);
+                }
             }
 
             // Vehicle profit
@@ -800,13 +1060,15 @@ namespace OpenLoco::Ui::Windows::VehicleList
         else if (id == Widx::kFilterTypeBtn)
         {
             Widget dropdown = self.widgets[widx::filter_type];
-            Dropdown::show(self.x + dropdown.left, self.y + dropdown.top, dropdown.width() - 4, dropdown.height(), self.getColour(WindowColour::secondary), 2, 0x80);
+            Dropdown::show(self.x + dropdown.left, self.y + dropdown.top, dropdown.width() - 4, dropdown.height(), self.getColour(WindowColour::secondary), 4, 0x80);
 
             Dropdown::add(0, StringIds::dropdown_stringid, StringIds::all_vehicles);
             Dropdown::add(1, StringIds::dropdown_stringid, StringIds::transporting_cargo);
+            Dropdown::add(2, StringIds::dropdown_stringid, StringIds::matching_orders);
+            Dropdown::add(3, StringIds::dropdown_stringid, StringIds::shared_orders);
             Dropdown::setItemSelected(self.var_850);
         }
-        else if (id == Widx::kCargoTypeBtn)
+        else if (id == Widx::kCargoTypeBtn && self.var_850 == FilterMode::transportingCargo)
         {
             auto index = 0;
             auto selectedIndex = -1;
@@ -898,7 +1160,7 @@ namespace OpenLoco::Ui::Windows::VehicleList
             }
         }
 
-        else if (id == Widx::kCargoTypeBtn && itemIndex != -1)
+        else if (id == Widx::kCargoTypeBtn && self.var_850 == FilterMode::transportingCargo && itemIndex != -1)
         {
             auto newCargo = Dropdown::getItemArgument(itemIndex, 3);
             if (self.var_852 != newCargo)
@@ -921,12 +1183,19 @@ namespace OpenLoco::Ui::Windows::VehicleList
     static void onUpdate(Window& self)
     {
         self.frameNo++;
+        if (isClusterFilter(self) && (self.frameNo & 0xF) == 0)
+        {
+            populateVehicleList(self);
+        }
+        else if (!isClusterFilter(self))
+        {
+            sortVehicleList(self);
+        }
+
         self.callPrepareDraw();
 
         auto widgetIndex = getTabFromType(static_cast<VehicleType>(self.currentTab));
         WindowManager::invalidateWidget(WindowType::vehicleList, self.number, widgetIndex);
-
-        sortVehicleList(self);
     }
 
     // 0x004C265B
@@ -953,7 +1222,7 @@ namespace OpenLoco::Ui::Windows::VehicleList
     }
 
     // 0x004C26A4
-    static void onScrollMouseOver(Window& self, [[maybe_unused]] int16_t x, int16_t y, [[maybe_unused]] uint8_t scroll_index)
+    static void onScrollMouseOver(Window& self, int16_t x, int16_t y, [[maybe_unused]] uint8_t scroll_index)
     {
         Ui::ToolTip::setTooltipTimeout(2000);
 
@@ -969,7 +1238,8 @@ namespace OpenLoco::Ui::Windows::VehicleList
             self.rowHover = -1;
         }
 
-        StringId tooltipId = StringIds::buffer_337;
+        const bool overShareAll = currentRow < self.rowCount && isShareAllHit(self, currentRow, x, y);
+        StringId tooltipId = overShareAll ? StringIds::tooltip_share_all_matching_orders : StringIds::buffer_337;
         if (self.rowHover == -1)
         {
             tooltipId = StringIds::null;
@@ -978,7 +1248,9 @@ namespace OpenLoco::Ui::Windows::VehicleList
         char* tooltipBuffer = const_cast<char*>(StringManager::getString(StringIds::buffer_337));
 
         // Have we already got the right tooltip?
-        if (tooltipBuffer[0] != '\0' && self.widgets[widx::scrollview].tooltip == tooltipId && self.rowHover == self.var_85C)
+        if (self.widgets[widx::scrollview].tooltip == tooltipId
+            && self.rowHover == self.var_85C
+            && (tooltipId != StringIds::buffer_337 || tooltipBuffer[0] != '\0'))
         {
             return;
         }
@@ -987,7 +1259,7 @@ namespace OpenLoco::Ui::Windows::VehicleList
         self.var_85C = self.rowHover;
         Ui::Windows::ToolTip::closeAndReset();
 
-        if (self.rowHover == -1)
+        if (self.rowHover == -1 || overShareAll)
         {
             return;
         }
@@ -1031,7 +1303,7 @@ namespace OpenLoco::Ui::Windows::VehicleList
     }
 
     // 0x004C27C0
-    static void onScrollMouseDown(Window& self, [[maybe_unused]] int16_t x, int16_t y, [[maybe_unused]] uint8_t scroll_index)
+    static void onScrollMouseDown(Window& self, int16_t x, int16_t y, [[maybe_unused]] uint8_t scroll_index)
     {
         uint16_t currentRow = y / self.rowHeight;
         if (currentRow >= self.rowCount)
@@ -1048,6 +1320,27 @@ namespace OpenLoco::Ui::Windows::VehicleList
         auto* head = EntityManager::get<VehicleHead>(currentVehicleId);
         if (head == nullptr)
         {
+            return;
+        }
+
+        if (isShareAllHit(self, currentRow, x, y))
+        {
+            const auto selectedId = head->id;
+            populateVehicleList(self);
+            const auto rows = std::span<EntityId>(reinterpret_cast<EntityId*>(self.rowInfo), self.rowCount);
+            const auto selectedRow = std::ranges::find(rows, selectedId);
+            if (selectedRow == rows.end()
+                || !canShareAllMatchingOrders(self, static_cast<uint16_t>(std::distance(rows.begin(), selectedRow))))
+            {
+                return;
+            }
+
+            GameCommands::setErrorTitle(StringIds::cant_change_shared_orders);
+            GameCommands::VehicleOrderShareArgs args{};
+            args.target = selectedId;
+            args.mode = GameCommands::VehicleOrderShareArgs::Mode::joinAllMatching;
+            GameCommands::doCommand(args, GameCommands::Flags::apply);
+            populateVehicleList(self);
             return;
         }
 

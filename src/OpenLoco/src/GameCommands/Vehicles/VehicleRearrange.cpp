@@ -4,6 +4,7 @@
 #include "Entities/EntityManager.h"
 #include "GameCommands/Vehicles/VehiclePickupAir.h"
 #include "GameCommands/Vehicles/VehiclePickupWater.h"
+#include "Vehicles/SharedOrderManager.h"
 #include "Vehicles/Vehicle.h"
 #include "Vehicles/VehicleBogie.h"
 #include "Vehicles/VehicleHead.h"
@@ -148,10 +149,12 @@ namespace OpenLoco::GameCommands
 
             destHead->autoLayoutTrain();
             destHead->updateTrainProperties();
+            Vehicles::SharedOrderManager::detachIfIncompatible(destHead->id);
             if (sourceHead != destHead)
             {
                 sourceHead->autoLayoutTrain();
                 sourceHead->updateTrainProperties();
+                Vehicles::SharedOrderManager::detachIfIncompatible(sourceHead->id);
             }
 
             if (sourcePlacement.has_value() && !sourceTrain.cars.empty())

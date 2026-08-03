@@ -35,6 +35,19 @@ namespace OpenLoco::GameSaveCompare
         return matches;
     }
 
+    static bool compareSharedOrders(const S5::S5File& lhs, const S5::S5File& rhs)
+    {
+        const Vehicles::SharedOrderManager::State defaultState;
+        const auto& lhsState = lhs.sharedOrderState.has_value() ? *lhs.sharedOrderState : defaultState;
+        const auto& rhsState = rhs.sharedOrderState.has_value() ? *rhs.sharedOrderState : defaultState;
+        const auto matches = lhsState == rhsState;
+        if (!matches)
+        {
+            Logging::info("Shared vehicle order state differs");
+        }
+        return matches;
+    }
+
     template<typename T>
     std::span<const std::byte> getBytesSpan(const T& item)
     {
@@ -704,8 +717,10 @@ namespace OpenLoco::GameSaveCompare
 
         FileStream referenceFile(path, StreamMode::read);
         auto referenceGameState = S5::loadSave(referenceFile);
-        return compareGameStates(currentGameState->gameState, referenceGameState->gameState, false)
-            && compareCargoDist(*currentGameState, *referenceGameState);
+        auto matches = compareGameStates(currentGameState->gameState, referenceGameState->gameState, false);
+        matches &= compareCargoDist(*currentGameState, *referenceGameState);
+        matches &= compareSharedOrders(*currentGameState, *referenceGameState);
+        return matches;
     }
 
     bool compareGameStates(const fs::path& path1, const fs::path& path2, bool displayAllDivergences)
@@ -721,6 +736,7 @@ namespace OpenLoco::GameSaveCompare
         auto match = compareGameStates(state1->gameState, state2->gameState, displayAllDivergences);
         match &= compareElements(state1->tileElements, state2->tileElements, displayAllDivergences);
         match &= compareCargoDist(*state1, *state2);
+        match &= compareSharedOrders(*state1, *state2);
         return match;
     }
 }
