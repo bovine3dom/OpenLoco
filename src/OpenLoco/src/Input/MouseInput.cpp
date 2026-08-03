@@ -25,6 +25,7 @@
 #include "Ui/ViewportInteraction.h"
 #include "Ui/Widget.h"
 #include "Ui/WindowManager.h"
+#include "Ui/Windows/CargoFlowOverlay.h"
 #include "Vehicles/Vehicle.h"
 #include "World/CompanyManager.h"
 #include "World/StationManager.h"
@@ -1553,6 +1554,7 @@ namespace OpenLoco::Input
     void processMouseOver(int32_t x, int32_t y)
     {
         bool skipItem = false;
+        Ui::Viewport* cargoFlowViewport = nullptr;
         Ui::CursorId cursorId = Ui::CursorId::pointer;
 
         Windows::MapToolTip::reset();
@@ -1634,6 +1636,10 @@ namespace OpenLoco::Input
                         }
                         else
                         {
+                            if (window->type == Ui::WindowType::main && window->viewports[0] != nullptr)
+                            {
+                                cargoFlowViewport = window->viewports[0];
+                            }
                             switch (ViewportInteraction::getItemLeft(x, y).type)
                             {
                                 case InteractionItem::entity:
@@ -1654,9 +1660,14 @@ namespace OpenLoco::Input
             }
         }
 
+        auto existingRightInteraction = skipItem;
         if (!skipItem)
         {
-            ViewportInteraction::rightOver(x, y);
+            existingRightInteraction = ViewportInteraction::rightOver(x, y).type != InteractionItem::noInteraction;
+        }
+        if (cargoFlowViewport != nullptr && !existingRightInteraction && !Windows::MapToolTip::hasContent())
+        {
+            Windows::CargoFlowOverlay::setTooltip(*cargoFlowViewport, { x, y });
         }
 
         if (Input::state() == Input::State::resizing)

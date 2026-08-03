@@ -19,6 +19,7 @@
 #include "Objects/WaterObject.h"
 #include "Ui/Dropdown.h"
 #include "Ui/Widget.h"
+#include "Ui/Windows/CargoFlowOverlay.h"
 #include "Vehicles/Vehicle.h"
 #include "World/CompanyManager.h"
 #include "World/StationManager.h"
@@ -160,7 +161,9 @@ namespace OpenLoco::Ui::Windows::ToolbarTop::Common
         Dropdown::add(11, 0);
         Dropdown::add(12, StringIds::dropdown_without_checkmark, StringIds::menu_town_names_displayed);
         Dropdown::add(13, StringIds::dropdown_without_checkmark, StringIds::menu_station_names_displayed);
-        Dropdown::showBelow(window, widgetIndex, 14, 0);
+        Dropdown::add(14, 0);
+        Dropdown::add(15, StringIds::dropdown_without_checkmark, StringIds::cargo_flow_overlay);
+        Dropdown::showBelow(window, widgetIndex, 16, 0);
 
         ViewportFlags current_viewport_flags = WindowManager::getMainWindow()->viewports[0]->flags;
 
@@ -222,6 +225,15 @@ namespace OpenLoco::Ui::Windows::ToolbarTop::Common
         if ((current_viewport_flags & ViewportFlags::hideStationNames) == ViewportFlags::none)
         {
             Dropdown::setItemSelected(13);
+        }
+
+        if (CargoFlowOverlay::isOpen())
+        {
+            Dropdown::setItemSelected(15);
+        }
+        if (!CargoFlowOverlay::hasEnabledCargo())
+        {
+            Dropdown::setItemDisabled(15);
         }
 
         Dropdown::setHighlightedItem(0);
@@ -413,6 +425,10 @@ namespace OpenLoco::Ui::Windows::ToolbarTop::Common
         else if (itemIndex == 13)
         {
             viewport->flags ^= ViewportFlags::hideStationNames;
+        }
+        else if (itemIndex == 15)
+        {
+            CargoFlowOverlay::toggle();
         }
 
         window->invalidate();

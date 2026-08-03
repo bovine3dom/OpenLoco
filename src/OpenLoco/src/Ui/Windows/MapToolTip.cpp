@@ -77,7 +77,7 @@ namespace OpenLoco::Ui::Windows::MapToolTip
         }
         else
         {
-            window = WindowManager::createWindow(WindowType::mapTooltip, { x, y }, { width, height }, WindowFlags::stickToFront | WindowFlags::transparent | WindowFlags::noBackground, getEvents());
+            window = WindowManager::createWindow(WindowType::mapTooltip, { x, y }, { width, height }, WindowFlags::stickToFront | WindowFlags::transparent | WindowFlags::noBackground | WindowFlags::ignoreInFindAt, getEvents());
             window->setWidgets(_widgets);
             auto* skin = ObjectManager::get<InterfaceSkinObject>();
             window->setColour(WindowColour::secondary, skin->mapTooltipObjectColour);
@@ -93,6 +93,12 @@ namespace OpenLoco::Ui::Windows::MapToolTip
     uint16_t getTooltipTimeout()
     {
         return _mapTooltipTimeout;
+    }
+
+    bool hasContent()
+    {
+        auto args = FormatArguments::mapToolTip();
+        return FormatArgumentsView(args).pop<StringId>() != StringIds::null;
     }
 
     void reset()

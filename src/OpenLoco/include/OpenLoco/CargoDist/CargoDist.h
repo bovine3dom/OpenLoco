@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -96,6 +97,16 @@ namespace OpenLoco::CargoDist
         uint32_t travelTime{};
     };
 
+    struct PlannedServiceEdge
+    {
+        StationId from = StationId::null;
+        StationId to = StationId::null;
+        uint64_t plannedDemand{};
+        std::optional<uint32_t> capacity;
+
+        auto operator<=>(const PlannedServiceEdge&) const = default;
+    };
+
     struct FlowKey
     {
         uint8_t cargo{};
@@ -134,6 +145,7 @@ namespace OpenLoco::CargoDist
         std::map<StationCargoKey, uint32_t> stationAttraction;
         std::map<ServiceEdgeKey, ServiceEdgeStats> serviceEdges;
         std::map<FlowKey, std::vector<FlowOption>> flows;
+        uint64_t routingRevision{};
         uint32_t nextRecalculationDay{};
         bool graphDirty{};
     };
@@ -146,6 +158,7 @@ namespace OpenLoco::CargoDist
     bool isEnabled(uint8_t cargo);
     void setMode(uint8_t cargo, DistributionMode mode);
     void markGraphDirty();
+    std::vector<PlannedServiceEdge> getPlannedServiceEdges(uint8_t cargo);
 
     PacketList* getStationCargo(StationId station, uint8_t cargo);
     const PacketList* getStationCargoConst(StationId station, uint8_t cargo);

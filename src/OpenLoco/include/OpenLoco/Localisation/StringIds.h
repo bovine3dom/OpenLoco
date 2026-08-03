@@ -2185,6 +2185,14 @@ namespace OpenLoco::StringIds
     constexpr StringId tooltip_undo_last_action = 2473;
     constexpr StringId cannot_undo = 2474;
     constexpr StringId undo_world_state_changed = 2475;
+    constexpr StringId cargo_flow_overlay = 2476;
+    constexpr StringId cargo_flow_cargo = 2477;
+    constexpr StringId cargo_flow_saturation = 2478;
+    constexpr StringId cargo_flow_unused = 2479;
+    constexpr StringId cargo_flow_saturated = 2480;
+    constexpr StringId cargo_flow_overloaded = 2481;
+    constexpr StringId cargo_flow_tooltip = 2482;
+    constexpr StringId cargo_flow_tooltip_no_capacity = 2483;
 
     constexpr StringId temporary_object_load_str_0 = 8192;
     constexpr StringId temporary_object_load_str_1 = 8193;

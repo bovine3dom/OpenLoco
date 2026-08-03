@@ -245,6 +245,7 @@ namespace OpenLoco::Ui::Windows
         void open();
         void setOwner(CompanyId company);
         uint16_t getTooltipTimeout();
+        bool hasContent();
         void reset();
     }
 

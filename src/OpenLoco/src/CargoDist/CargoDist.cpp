@@ -227,7 +227,9 @@ namespace OpenLoco::CargoDist
 
     void reset()
     {
+        const auto routingRevision = _state.routingRevision + 1;
         _state = {};
+        _state.routingRevision = routingRevision;
     }
 
     DistributionMode getMode(uint8_t cargo)
@@ -394,5 +396,49 @@ namespace OpenLoco::CargoDist
     void markGraphDirty()
     {
         _state.graphDirty = true;
+    }
+
+    std::vector<PlannedServiceEdge> getPlannedServiceEdges(uint8_t cargo)
+    {
+        struct EdgeStats
+        {
+            uint64_t plannedDemand{};
+            std::optional<uint32_t> capacity;
+        };
+
+        std::map<ServiceEdgeKey, EdgeStats> edges;
+        for (const auto& [key, stats] : _state.serviceEdges)
+        {
+            if (key.cargo == cargo && key.from != StationId::null && key.to != StationId::null && key.from != key.to)
+            {
+                edges[key].capacity = stats.capacity;
+            }
+        }
+
+        for (const auto& [key, options] : _state.flows)
+        {
+            if (key.cargo != cargo || key.station == StationId::null)
+            {
+                continue;
+            }
+            for (const auto& option : options)
+            {
+                if (option.weight == 0 || option.via == StationId::null || option.via == key.station)
+                {
+                    continue;
+                }
+
+                auto& plannedDemand = edges[{ cargo, key.station, option.via }].plannedDemand;
+                plannedDemand += std::min<uint64_t>(option.weight, std::numeric_limits<uint64_t>::max() - plannedDemand);
+            }
+        }
+
+        std::vector<PlannedServiceEdge> result;
+        result.reserve(edges.size());
+        for (const auto& [key, stats] : edges)
+        {
+            result.push_back({ key.from, key.to, stats.plannedDemand, stats.capacity });
+        }
+        return result;
     }
 }

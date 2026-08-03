@@ -17,6 +17,7 @@
 #include "Ui/ViewportInteraction.h"
 #include "Ui/Window.h"
 #include "Ui/WindowManager.h"
+#include "Ui/Windows/CargoFlowOverlay.h"
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/Orders.h"
 #include "Vehicles/VehicleManager.h"
@@ -171,6 +172,9 @@ namespace OpenLoco::Ui
 
         if (!SceneManager::isTitleMode())
         {
+            const auto cargoFlowLinks = Windows::CargoFlowOverlay::projectLinks(*this, true);
+            Windows::CargoFlowOverlay::drawLinks(drawingCtx, cargoFlowLinks);
+
             if (!hasFlags(ViewportFlags::hideStationNames) && zoom <= Config::get().stationNamesMinScale)
             {
                 for (const auto& station : StationManager::stations())
@@ -300,6 +304,10 @@ namespace OpenLoco::Ui
             columns.push_back(columnRt);
         }
 
+        const auto cargoFlowLinks = drawOverlays && !SceneManager::isTitleMode()
+            ? Windows::CargoFlowOverlay::projectLinks(*this, false)
+            : std::vector<Windows::CargoFlowOverlay::ProjectedLink>{};
+
         std::for_each(std::execution::par, columns.begin(), columns.end(), [&](const auto& columnRt) {
             // TODO: This bypasses the interface currently, needs refactoring to create a new drawing context per thread.
             Gfx::SoftwareDrawingContext columnDrawingCtx;
@@ -311,6 +319,8 @@ namespace OpenLoco::Ui
             sess.arrangeStructs();
             sess.drawStructs(columnDrawingCtx);
             // Climate code used to draw here.
+
+            Windows::CargoFlowOverlay::drawLinks(columnDrawingCtx, cargoFlowLinks);
 
             if (drawOverlays && !SceneManager::isTitleMode())
             {

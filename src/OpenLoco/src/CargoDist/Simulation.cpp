@@ -466,6 +466,7 @@ namespace OpenLoco::CargoDist
                 setFlows(cargo, calculateAsymmetricFlows(buildGraph(cargo), state.settings.routing));
                 rerouteWaitingCargo(cargo);
             }
+            ++state.routingRevision;
         }
     }
 
@@ -745,6 +746,7 @@ namespace OpenLoco::CargoDist
         }
         state.nextRecalculationDay = 0;
         state.graphDirty = true;
+        ++state.routingRevision;
     }
 
     void recalculateNow()
@@ -868,8 +870,10 @@ namespace OpenLoco::CargoDist
         }
         validateState(state, getGameState());
         state.serviceEdges.clear();
+        state.routingRevision = getStateConst().routingRevision + 1;
 
         getState() = std::move(state);
+        rebuildServiceEdges();
     }
 
     void updateDaily()
@@ -952,6 +956,7 @@ namespace OpenLoco::CargoDist
         }
         synchroniseAllCargo();
         state.graphDirty = true;
+        ++state.routingRevision;
     }
 
     void eraseVehicleCargoForComponent(EntityId component)

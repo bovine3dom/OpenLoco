@@ -1047,7 +1047,11 @@ namespace OpenLoco::Gfx
         // 0x00452DA4
         static void drawLine(const RenderTarget& rt, Ui::Point a, Ui::Point b, const PaletteIndex_t colour)
         {
-            const auto bounding = Rect::fromLTRB(a.x, a.y, b.x, b.y);
+            const auto bounding = Rect(
+                std::min(a.x, b.x),
+                std::min(a.y, b.y),
+                std::abs(a.x - b.x) + 1,
+                std::abs(a.y - b.y) + 1);
             // Check to make sure the line is within the drawing area
             if (!rt.getUiRect().intersects(bounding))
             {
@@ -1077,7 +1081,7 @@ namespace OpenLoco::Gfx
             const auto yStep = a.y < b.y ? 1 : -1;
             auto y = a.y;
 
-            for (auto x = a.x, xStart = a.x, length = 1; x < b.x; ++x, ++length)
+            for (auto x = a.x, xStart = a.x, length = 1; x <= b.x; ++x, ++length)
             {
                 // Vertical lines are drawn 1 pixel at a time
                 if (isSteep)
@@ -1102,7 +1106,7 @@ namespace OpenLoco::Gfx
                 }
 
                 // Catch the case of the last line
-                if (x + 1 == b.x && !isSteep)
+                if (x == b.x && !isSteep && length != 0)
                 {
                     drawHorizontalLine(rt, colour, { xStart, y }, length);
                 }
