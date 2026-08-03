@@ -85,9 +85,17 @@ namespace OpenLoco::Vehicles
         uint32_t journeyStartTicks;        //  ticks since journey start
         int8_t manualPower;                //  manual power control VehicleFlags::manualControl
         uint8_t restartStoppedCarsTimeout; //  timeout before auto starting trams/buses
+        uint32_t unbunchingLastDepartureTick;
+        uint16_t unbunchingState; // Packed round-trip duration and stop state.
 
     public:
         bool isVehicleTypeCompatible(const uint16_t vehicleTypeId);
+        bool hasUnbunchingOrder() const;
+        void resetUnbunching();
+        void arriveAtUnbunchingStop();
+        bool isWaitingForUnbunching();
+        bool isWaitingToUnbunch() const;
+        void leaveUnbunchingStop();
         void updateBreakdown();
         void updateVehicle();
         bool update();
@@ -161,6 +169,7 @@ namespace OpenLoco::Vehicles
         bool updateLoadCargo();
         void beginNewJourney();
         void advanceToNextRoutableOrder();
+        bool isUnbunchingAtStop() const;
         Status sub_427BF2();
         void produceLeavingDockSound();
         void produceTouchdownAirportSound();

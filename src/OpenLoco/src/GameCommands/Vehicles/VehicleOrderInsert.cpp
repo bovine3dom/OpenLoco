@@ -25,6 +25,27 @@ namespace OpenLoco::GameCommands
         GameCommands::setPosition(head->position);
 
         auto* order = reinterpret_cast<const Order*>(&args.rawOrder);
+        if (const auto* stopOrder = order->as<OrderStopAt>(); stopOrder != nullptr && stopOrder->isUnbunching())
+        {
+            if (head->hasUnbunchingOrder())
+            {
+                setErrorText(StringIds::only_one_unbunching_stop_allowed);
+                return kFailure;
+            }
+            for (const auto& existingOrder : head->getCurrentOrders())
+            {
+                if (existingOrder.is<OrderWaitFor>())
+                {
+                    setErrorText(StringIds::unbunching_incompatible_with_full_load);
+                    return kFailure;
+                }
+            }
+        }
+        else if (order->is<OrderWaitFor>() && head->hasUnbunchingOrder())
+        {
+            setErrorText(StringIds::unbunching_incompatible_with_full_load);
+            return kFailure;
+        }
 
         // Ensure we can use any station that has been selected
         if (order->hasFlags(OrderFlags::HasStation))
@@ -108,7 +129,9 @@ namespace OpenLoco::GameCommands
 
             if (existingOrder != nullptr && newOrder != nullptr && existingOrder->getStation() == newOrder->getStation())
             {
+                existingOrder->setUnbunching(false);
                 existingOrder->setType(OrderType::RouteThrough);
+                head->resetUnbunching();
                 return 0;
             }
         }

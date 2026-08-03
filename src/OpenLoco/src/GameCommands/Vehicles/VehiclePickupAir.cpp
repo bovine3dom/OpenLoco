@@ -59,6 +59,7 @@ namespace OpenLoco::GameCommands
         train.head->status = Vehicles::Status::unk_0;
         train.head->stationId = StationId::null;
         train.head->vehicleFlags |= VehicleFlags::commandStop;
+        train.head->resetUnbunching();
 
         // Clear ghost flag on primary vehicle pieces and all car components.
         train.applyToComponents([](auto& component) {

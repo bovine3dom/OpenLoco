@@ -43,6 +43,7 @@ namespace OpenLoco::GameCommands
 
             head->var_5C = 2;
             train.veh1->var_48 |= Vehicles::Flags48::passSignal;
+            head->resetUnbunching();
             return 0;
         }
         catch (std::runtime_error&)

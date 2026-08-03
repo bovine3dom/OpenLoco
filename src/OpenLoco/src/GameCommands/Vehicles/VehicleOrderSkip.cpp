@@ -29,6 +29,7 @@ namespace OpenLoco::GameCommands
         Vehicles::OrderRingView orders(head->orderTableOffset, head->currentOrder);
         auto nextOrder = ++orders.begin();
         head->currentOrder = nextOrder->getOffset() - head->orderTableOffset;
+        head->resetUnbunching();
         return 0;
     }
 

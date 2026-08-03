@@ -86,10 +86,18 @@ namespace OpenLoco::Vehicles
     struct OrderStopAt : OrderStation
     {
         static constexpr OrderType kType = OrderType::StopAt;
+        static constexpr uint8_t kUnbunch = 1U << 3;
+
         OrderStopAt(const StationId station)
         {
             setType(kType);
             setStation(station);
+        }
+
+        bool isUnbunching() const { return (_type & kUnbunch) != 0; }
+        void setUnbunching(bool enabled)
+        {
+            _type = (_type & ~kUnbunch) | (enabled ? kUnbunch : 0);
         }
     };
 

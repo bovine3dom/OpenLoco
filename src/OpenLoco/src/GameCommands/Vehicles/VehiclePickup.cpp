@@ -67,6 +67,7 @@ namespace OpenLoco::GameCommands
         train.applyToComponents([](auto& component) { component.var_38 &= ~Vehicles::Flags38::isGhost; });
 
         head->vehicleFlags |= Vehicles::VehicleFlags::commandStop;
+        head->resetUnbunching();
 
         return 0;
     }

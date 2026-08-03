@@ -44,6 +44,7 @@ namespace OpenLoco::GameCommands
         head->var_52 = 1;
         head->sub_4ADB47(0);
         head->var_52 = var_52_backup;
+        head->resetUnbunching();
         setPosition(head->position);
 
         return 0;

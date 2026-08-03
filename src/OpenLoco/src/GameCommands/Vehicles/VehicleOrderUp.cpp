@@ -56,6 +56,7 @@ namespace OpenLoco::GameCommands
 
         // Actually swap the two orders
         const auto newOffsetDiff = Vehicles::OrderManager::swapAdjacentOrders(*prevOrder, currentOrder);
+        head->resetUnbunching();
 
         // Compensate if we swapped the current order around
         if (prevOrderIsActive)

@@ -220,6 +220,8 @@ namespace OpenLoco::S5
         dstHead.journeyStartTicks = src.journeyStartTicks;
         dstHead.lastAverageSpeed = src.lastAverageSpeed.getRaw();
         dstHead.restartStoppedCarsTimeout = src.restartStoppedCarsTimeout;
+        dstHead.unbunchingLastDepartureTick = src.unbunchingLastDepartureTick;
+        dstHead.unbunchingState = src.unbunchingState;
 
         return dst;
     }
@@ -643,6 +645,8 @@ namespace OpenLoco::S5
         dst.journeyStartTicks = src.journeyStartTicks;
         dst.lastAverageSpeed = Speed16(src.lastAverageSpeed);
         dst.restartStoppedCarsTimeout = src.restartStoppedCarsTimeout;
+        dst.unbunchingLastDepartureTick = src.unbunchingLastDepartureTick;
+        dst.unbunchingState = src.unbunchingState;
     }
 
     static OpenLoco::Vehicles::IncomeStats importIncomeStats(const S5::IncomeStats& src)

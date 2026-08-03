@@ -11,6 +11,7 @@
 #include "GameCommands/Vehicles/VehicleOrderInsert.h"
 #include "GameCommands/Vehicles/VehicleOrderReverse.h"
 #include "GameCommands/Vehicles/VehicleOrderSkip.h"
+#include "GameCommands/Vehicles/VehicleOrderToggleUnbunching.h"
 #include "GameCommands/Vehicles/VehicleOrderUp.h"
 #include "GameCommands/Vehicles/VehiclePassSignal.h"
 #include "GameCommands/Vehicles/VehiclePickup.h"
@@ -337,6 +338,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
             tool = Common::widx::tabRoute + 1, // Only used to hold the tool does nothing
             localMode,
             expressMode,
+            orderUnbunch,
             routeList,
             orderForceUnload,
             orderWait,
@@ -351,6 +353,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
         {
             constexpr WidgetId kLocalMode{ "localMode" };
             constexpr WidgetId kExpressMode{ "expressMode" };
+            constexpr WidgetId kOrderUnbunch{ "orderUnbunch" };
             constexpr WidgetId kRouteList{ "routeList" };
             constexpr WidgetId kOrderForceUnload{ "orderForceUnload" };
             constexpr WidgetId kOrderWait{ "orderWait" };
@@ -370,7 +373,8 @@ namespace OpenLoco::Ui::Windows::Vehicle
             makeWidget({ 0, 0 }, { 1, 1 }, WidgetType::empty, WindowColour::primary),
             Widgets::Button(Widx::kLocalMode, { 3, 44 }, { 118, 12 }, WindowColour::secondary, StringIds::local_mode_button),
             Widgets::Button(Widx::kExpressMode, { 121, 44 }, { 119, 12 }, WindowColour::secondary, StringIds::express_mode_button),
-            Widgets::ScrollView(Widx::kRouteList, { 3, 58 }, { 237, 120 }, WindowColour::secondary, Scrollbars::vertical, StringIds::tooltip_route_scrollview),
+            Widgets::Button(Widx::kOrderUnbunch, { 3, 56 }, { 237, 12 }, WindowColour::secondary, StringIds::unbunching_button, StringIds::tooltip_route_toggle_unbunching),
+            Widgets::ScrollView(Widx::kRouteList, { 3, 70 }, { 237, 108 }, WindowColour::secondary, Scrollbars::vertical, StringIds::tooltip_route_scrollview),
             Widgets::ImageButton(Widx::kOrderForceUnload, { 240, 44 }, { 24, 24 }, WindowColour::secondary, ImageIds::route_force_unload, StringIds::tooltip_route_insert_force_unload),
             Widgets::ImageButton(Widx::kOrderWait, { 240, 68 }, { 24, 24 }, WindowColour::secondary, ImageIds::route_wait, StringIds::tooltip_route_insert_wait_full_cargo),
             Widgets::ImageButton(Widx::kOrderSkip, { 240, 92 }, { 24, 24 }, WindowColour::secondary, ImageIds::route_skip, StringIds::tooltip_route_skip_next_order),
@@ -3077,6 +3081,26 @@ namespace OpenLoco::Ui::Windows::Vehicle
                     }
                     break;
                 }
+                case Widx::kOrderUnbunch:
+                {
+                    if (head->owner != CompanyManager::getControllingId() || self.orderTableIndex < 0)
+                    {
+                        return;
+                    }
+
+                    auto* order = getOrderTable(head).atIndex(self.orderTableIndex);
+                    if (order == nullptr || !order->is<Vehicles::OrderStopAt>())
+                    {
+                        return;
+                    }
+
+                    GameCommands::setErrorTitle(StringIds::cannot_change_unbunching);
+                    GameCommands::VehicleOrderToggleUnbunchingArgs args{};
+                    args.head = head->id;
+                    args.orderOffset = order->getOffset() - head->orderTableOffset;
+                    GameCommands::doCommand(args, GameCommands::Flags::apply);
+                    break;
+                }
                 case Widx::kOrderSkip:
                 {
                     GameCommands::setErrorTitle(StringIds::empty);
@@ -3850,6 +3874,25 @@ namespace OpenLoco::Ui::Windows::Vehicle
                 self.disabledWidgets &= ~((1 << widx::orderWait) | (1 << widx::orderForceUnload));
             }
 
+            self.disabledWidgets |= 1 << widx::orderUnbunch;
+            self.activatedWidgets &= ~(1 << widx::orderUnbunch);
+            if (self.orderTableIndex >= 0)
+            {
+                const auto* selectedOrder = getOrderTable(head).atIndex(self.orderTableIndex);
+                const auto* stopOrder = selectedOrder != nullptr ? selectedOrder->as<Vehicles::OrderStopAt>() : nullptr;
+                if (stopOrder != nullptr)
+                {
+                    if (head->owner == CompanyManager::getControllingId())
+                    {
+                        self.disabledWidgets &= ~(1 << widx::orderUnbunch);
+                    }
+                    if (stopOrder->isUnbunching())
+                    {
+                        self.activatedWidgets |= 1 << widx::orderUnbunch;
+                    }
+                }
+            }
+
             // Express / local
             self.activatedWidgets &= ~((1 << widx::expressMode) | (1 << widx::localMode));
             Vehicles::Vehicle train(*head);
@@ -3884,6 +3927,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
             self.widgets[widx::expressMode].right = self.widgets[widx::routeList].right;
             self.widgets[widx::expressMode].left = (self.widgets[widx::expressMode].right - 3) / 2 + 3;
             self.widgets[widx::localMode].right = self.widgets[widx::expressMode].left - 1;
+            self.widgets[widx::orderUnbunch].right = self.widgets[widx::routeList].right;
 
             self.disabledWidgets |= (1 << widx::orderUp) | (1 << widx::orderDown);
             if (self.orderTableIndex != -1)
@@ -4049,8 +4093,14 @@ namespace OpenLoco::Ui::Windows::Vehicle
                     drawingCtx.fillRect(0, y, self.width, y + 9, enumValue(ExtColour::unk30), Gfx::RectFlags::transparent);
                 }
 
+                auto orderStringId = orderString[static_cast<uint8_t>(order.getType())];
+                const auto* stopOrder = order.as<Vehicles::OrderStopAt>();
+                if (stopOrder != nullptr && stopOrder->isUnbunching())
+                {
+                    orderStringId = StringIds::orders_stop_at_unbunching;
+                }
                 FormatArguments args{};
-                args.push(orderString[static_cast<uint8_t>(order.getType())]);
+                args.push(orderStringId);
                 switch (order.getType())
                 {
                     case Vehicles::OrderType::End:

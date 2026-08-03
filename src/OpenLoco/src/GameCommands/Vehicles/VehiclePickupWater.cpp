@@ -80,6 +80,7 @@ namespace OpenLoco::GameCommands
         });
 
         train.head->vehicleFlags |= VehicleFlags::commandStop;
+        train.head->resetUnbunching();
         if (!Config::get().keepCargoModifyPickup)
         {
             for (auto& car : train.cars)

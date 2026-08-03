@@ -1,4 +1,5 @@
 #include "Vehicles/OrderManager.h"
+#include "Entities/EntityManager.h"
 #include "GameState.h"
 #include "Graphics/ImageIds.h"
 #include "Graphics/TextRenderer.h"
@@ -18,12 +19,14 @@
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/Vehicle.h"
 #include "Vehicles/VehicleHead.h"
+#include "Vehicles/Vehicle1.h"
 #include "Vehicles/VehicleManager.h"
 #include "World/StationManager.h"
 #include <OpenLoco/CargoDist/CargoDist.h>
 #include <OpenLoco/Core/Exception.hpp>
 #include <OpenLoco/Diagnostics/Logging.h>
 #include <sfl/static_vector.hpp>
+#include <cstring>
 #include <sstream>
 
 using namespace OpenLoco::Diagnostics;
@@ -183,6 +186,7 @@ namespace OpenLoco::Vehicles::OrderManager
 
         // Recalculate order offsets for other vehicles
         reoffsetVehicleOrderTables(head->orderTableOffset + 1, insOrderLength);
+        head->resetUnbunching();
         CargoDist::markGraphDirty();
     }
 
@@ -217,6 +221,7 @@ namespace OpenLoco::Vehicles::OrderManager
 
         // Compensate other vehicles to use new table offsets
         reoffsetVehicleOrderTables(head->orderTableOffset + orderOffset + 1, -removeOrderSize);
+        head->resetUnbunching();
         CargoDist::markGraphDirty();
     }
 
@@ -268,6 +273,24 @@ namespace OpenLoco::Vehicles::OrderManager
         auto rawOrder = end.getRaw();
         auto dest = reinterpret_cast<uint8_t*>(orders() + head.orderTableOffset);
         std::memcpy(dest, &rawOrder, insOrderLength);
+    }
+
+    static bool isExpress(const VehicleHead& head)
+    {
+        auto* vehicle = EntityManager::get<VehicleBase>(head.nextCarId);
+        return vehicle != nullptr && vehicle->isVehicle1() && (vehicle->asVehicle1()->var_48 & Flags48::expressMode) != Flags48::none;
+    }
+
+    bool areVehiclesOnSameRoute(const VehicleHead& lhs, const VehicleHead& rhs)
+    {
+        if (lhs.owner != rhs.owner || lhs.vehicleType != rhs.vehicleType || lhs.sizeOfOrderTable != rhs.sizeOfOrderTable || isExpress(lhs) != isExpress(rhs))
+        {
+            return false;
+        }
+
+        const auto* lhsOrders = reinterpret_cast<const uint8_t*>(orders() + lhs.orderTableOffset);
+        const auto* rhsOrders = reinterpret_cast<const uint8_t*>(orders() + rhs.orderTableOffset);
+        return std::memcmp(lhsOrders, rhsOrders, lhs.sizeOfOrderTable) == 0;
     }
 
     // 0x00470B76

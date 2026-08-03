@@ -92,6 +92,7 @@ set(OLOCO_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/GameCommands/Vehicles/VehicleOrderInsert.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/GameCommands/Vehicles/VehicleOrderReverse.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/GameCommands/Vehicles/VehicleOrderSkip.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/GameCommands/Vehicles/VehicleOrderToggleUnbunching.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/GameCommands/Vehicles/VehicleOrderUp.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/GameCommands/Vehicles/VehiclePassSignal.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/GameCommands/Vehicles/VehiclePickup.cpp"
@@ -803,6 +804,7 @@ set(test_files
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/SignalFuzzerTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/TileManagerTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/UndoTests.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/VehicleUnbunchingTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/ViewportTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/WaterPathfindingTests.cpp"
 )

@@ -426,6 +426,8 @@ namespace OpenLoco::GameCommands
         newHead->totalRefundCost = 0;
         newHead->lastAverageSpeed = 0_mph;
         newHead->restartStoppedCarsTimeout = 0;
+        newHead->unbunchingLastDepartureTick = 0;
+        newHead->unbunchingState = 0;
         OrderManager::allocateOrders(*newHead);
         return newHead;
     }

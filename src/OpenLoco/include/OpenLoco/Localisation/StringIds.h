@@ -2193,6 +2193,13 @@ namespace OpenLoco::StringIds
     constexpr StringId cargo_flow_overloaded = 2481;
     constexpr StringId cargo_flow_tooltip = 2482;
     constexpr StringId cargo_flow_tooltip_no_capacity = 2483;
+    constexpr StringId unbunching_button = 2484;
+    constexpr StringId tooltip_route_toggle_unbunching = 2485;
+    constexpr StringId orders_stop_at_unbunching = 2486;
+    constexpr StringId cannot_change_unbunching = 2487;
+    constexpr StringId only_one_unbunching_stop_allowed = 2488;
+    constexpr StringId unbunching_incompatible_with_full_load = 2489;
+    constexpr StringId vehicle_status_waiting_to_unbunch = 2490;
 
     constexpr StringId temporary_object_load_str_0 = 8192;
     constexpr StringId temporary_object_load_str_1 = 8193;

@@ -177,8 +177,10 @@ namespace OpenLoco::S5
         uint32_t journeyStartTicks;        // 0x73 ticks since journey start
         int16_t lastAverageSpeed;          // 0x77
         uint8_t restartStoppedCarsTimeout; // 0x79 timeout before auto starting trams/buses
+        uint32_t unbunchingLastDepartureTick; // 0x7A
+        uint16_t unbunchingState;             // 0x7E
     };
-    static_assert(sizeof(VehicleHead) == 0x7A); // Can't use offset_of change this to last field if more found
+    static_assert(sizeof(VehicleHead) == 0x80); // Can't use offset_of change this to last field if more found
 
     struct IncomeStats
     {

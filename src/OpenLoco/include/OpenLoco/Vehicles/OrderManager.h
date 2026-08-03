@@ -138,4 +138,5 @@ namespace OpenLoco::Vehicles::OrderManager
     uint8_t swapAdjacentOrders(Order& a, Order& b);
     void removeOrdersForStation(const StationId stationId);
     void fixCorruptWaypointOrders();
+    bool areVehiclesOnSameRoute(const VehicleHead& lhs, const VehicleHead& rhs);
 }

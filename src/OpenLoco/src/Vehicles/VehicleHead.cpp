@@ -57,6 +57,7 @@
 
 #include <OpenLoco/Math/Bound.hpp>
 #include <OpenLoco/Math/Trigonometry.hpp>
+#include <algorithm>
 #include <cassert>
 #include <numeric>
 #include <optional>
@@ -76,6 +77,11 @@ namespace OpenLoco::Vehicles
     static constexpr uint8_t kRestartStoppedRoadVehiclesTimeout = 20; // Number of days before stopped road vehicle (bus and tram) is restarted
     static constexpr uint16_t kReliabilityLossPerDay = 4;
     static constexpr uint16_t kReliabilityLossPerDayObsolete = 10;
+    static constexpr uint16_t kUnbunchingAtStop = 1U << 15;
+    static constexpr uint16_t kUnbunchingWaiting = 1U << 14;
+    static constexpr uint16_t kUnbunchingReleased = 1U << 13;
+    static constexpr uint16_t kUnbunchingRoundTripMask = kUnbunchingReleased - 1;
+    static constexpr uint32_t kUnbunchingTickQuantum = 32;
 
     // In order of preference when finding a route
     enum class RouteSignalState : uint32_t
@@ -909,7 +915,7 @@ namespace OpenLoco::Vehicles
                 {
                     return getStatusTravelling();
                 }
-                vehStatus.status1 = StringIds::vehicle_status_loading;
+                vehStatus.status1 = isWaitingToUnbunch() ? StringIds::vehicle_status_waiting_to_unbunch : StringIds::vehicle_status_loading;
                 auto station = StationManager::get(stationId);
                 vehStatus.status1Args = station->name | (enumValue(station->town) << 16);
                 return vehStatus;
@@ -1534,6 +1540,12 @@ namespace OpenLoco::Vehicles
             return true;
         }
 
+        if (isWaitingForUnbunching())
+        {
+            return true;
+        }
+
+        leaveUnbunchingStop();
         beginNewJourney();
         status = Status::stopped;
         advanceToNextRoutableOrder();
@@ -2124,6 +2136,11 @@ namespace OpenLoco::Vehicles
             return true;
         }
 
+        if (isWaitingForUnbunching())
+        {
+            return true;
+        }
+
         advanceToNextRoutableOrder();
         status = Status::travelling;
         status = airplaneGetNewStatus().first;
@@ -2144,6 +2161,7 @@ namespace OpenLoco::Vehicles
             // most likely to not cause issues.
             AirplaneApproachTargetParams approachParams{};
             approachParams.targetZ = position.z;
+            leaveUnbunchingStop();
             return sub_4A9348(newMovementEdge, approachParams);
         }
 
@@ -2376,6 +2394,11 @@ namespace OpenLoco::Vehicles
                 return true;
             }
 
+            if (isWaitingForUnbunching())
+            {
+                return true;
+            }
+
             const auto previousJourneyStartPos = journeyStartPos;
             const auto previousJourneyStartTicks = journeyStartTicks;
             const auto previousBreakdownFlags = breakdownFlags;
@@ -2391,6 +2414,7 @@ namespace OpenLoco::Vehicles
                 status = Status::loading;
                 return true;
             }
+            leaveUnbunchingStop();
             produceLeavingDockSound();
             return true;
         }
@@ -2699,6 +2723,12 @@ namespace OpenLoco::Vehicles
         if (orderStation->getStation() != stationId)
         {
             return;
+        }
+
+        auto* stopOrder = curOrder->as<OrderStopAt>();
+        if (stopOrder != nullptr && stopOrder->isUnbunching())
+        {
+            arriveAtUnbunchingStop();
         }
 
         curOrder++;
@@ -3681,6 +3711,108 @@ namespace OpenLoco::Vehicles
         journeyStartTicks = ScenarioManager::getScenarioTicks();
         journeyStartPos = Pos2(train.veh2->position);
         breakdownFlags |= BreakdownFlags::journeyStarted;
+    }
+
+    void VehicleHead::resetUnbunching()
+    {
+        unbunchingLastDepartureTick = 0;
+        unbunchingState = 0;
+    }
+
+    bool VehicleHead::hasUnbunchingOrder() const
+    {
+        for (const auto& order : getCurrentOrders())
+        {
+            const auto* stopOrder = order.as<OrderStopAt>();
+            if (stopOrder != nullptr && stopOrder->isUnbunching())
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void VehicleHead::arriveAtUnbunchingStop()
+    {
+        auto roundTrip = unbunchingState & kUnbunchingRoundTripMask;
+        if (unbunchingLastDepartureTick != 0)
+        {
+            const auto duration = ScenarioManager::getScenarioTicks() - unbunchingLastDepartureTick;
+            const auto durationQuanta = duration / kUnbunchingTickQuantum + (duration % kUnbunchingTickQuantum != 0);
+            roundTrip = static_cast<uint16_t>(std::clamp<uint32_t>(durationQuanta, 1, kUnbunchingRoundTripMask));
+        }
+        unbunchingState = roundTrip | kUnbunchingAtStop;
+    }
+
+    bool VehicleHead::isWaitingForUnbunching()
+    {
+        if (!hasUnbunchingOrder())
+        {
+            resetUnbunching();
+            return false;
+        }
+        if (!isUnbunchingAtStop() || (unbunchingState & kUnbunchingReleased) != 0)
+        {
+            return false;
+        }
+
+        const auto now = ScenarioManager::getScenarioTicks();
+        uint32_t totalRoundTrip = 0;
+        uint32_t activeVehicles = 0;
+        uint32_t timeSinceLastDeparture = std::numeric_limits<uint32_t>::max();
+        for (auto* other : VehicleManager::VehicleList())
+        {
+            const auto isInactive = !other->isPlaced()
+                || other->hasVehicleFlags(VehicleFlags::commandStop | VehicleFlags::manualControl)
+                || other->status == Status::crashed
+                || other->status == Status::stuck;
+            if (!OrderManager::areVehiclesOnSameRoute(*this, *other) || isInactive)
+            {
+                continue;
+            }
+
+            activeVehicles++;
+            totalRoundTrip += (other->unbunchingState & kUnbunchingRoundTripMask) * kUnbunchingTickQuantum;
+            if (other->unbunchingLastDepartureTick != 0)
+            {
+                timeSinceLastDeparture = std::min(timeSinceLastDeparture, now - other->unbunchingLastDepartureTick);
+            }
+        }
+
+        if (activeVehicles > 1 && timeSinceLastDeparture != std::numeric_limits<uint32_t>::max())
+        {
+            // Average the measured round trips, then divide that route time evenly between the active vehicles.
+            const auto separation = std::max(totalRoundTrip / activeVehicles / activeVehicles, 1U);
+            if (timeSinceLastDeparture < separation)
+            {
+                unbunchingState |= kUnbunchingWaiting;
+                return true;
+            }
+        }
+
+        unbunchingState = (unbunchingState & ~kUnbunchingWaiting) | kUnbunchingReleased;
+        return false;
+    }
+
+    bool VehicleHead::isUnbunchingAtStop() const
+    {
+        return (unbunchingState & kUnbunchingAtStop) != 0;
+    }
+
+    bool VehicleHead::isWaitingToUnbunch() const
+    {
+        return hasUnbunchingOrder() && (unbunchingState & (kUnbunchingAtStop | kUnbunchingWaiting)) == (kUnbunchingAtStop | kUnbunchingWaiting);
+    }
+
+    void VehicleHead::leaveUnbunchingStop()
+    {
+        if (!isUnbunchingAtStop())
+        {
+            return;
+        }
+
+        unbunchingLastDepartureTick = ScenarioManager::getScenarioTicks();
+        unbunchingState &= kUnbunchingRoundTripMask;
     }
 
     // 0x004707C0
