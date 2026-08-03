@@ -42,8 +42,7 @@ namespace OpenLoco::CargoDist
                     {
                         throw std::runtime_error("CargoDist save data is too large");
                     }
-                    _data.push_back(static_cast<std::byte>(value & 0xFF));
-                    value >>= 8;
+                    _data.push_back(static_cast<std::byte>((value >> (i * 8)) & 0xFF));
                 }
             }
 
