@@ -76,6 +76,70 @@ TEST_F(UndoTest, RestoresChangedTilesAndRefundsWithoutRewindingLaterCash)
     EXPECT_FALSE(Undo::isAvailable());
 }
 
+TEST_F(UndoTest, RestoresGroupedTileChangesAndRefundsTheirCombinedCost)
+{
+    constexpr std::array tilePositions{ TilePos2{ 20, 20 }, TilePos2{ 21, 20 } };
+    std::array<coord_t, tilePositions.size()> originalBaseZ{};
+
+    for (size_t i = 0; i < tilePositions.size(); ++i)
+    {
+        auto* surface = TileManager::get(tilePositions[i]).surface();
+        ASSERT_NE(surface, nullptr);
+        originalBaseZ[i] = surface->baseZ();
+    }
+
+    {
+        Undo::Group undoGroup;
+        for (size_t i = 0; i < tilePositions.size(); ++i)
+        {
+            auto* surface = TileManager::get(tilePositions[i]).surface();
+            const auto regs = makeLandRegisters(tilePositions[i]);
+            Undo::prepare(GameCommand::raiseLand, CompanyId(0), regs, Flags::apply);
+            surface->setBaseZ(originalBaseZ[i] + 4);
+            surface->setClearZ(originalBaseZ[i] + 4);
+            Undo::commit(100, ExpenditureType::Construction, { toWorldSpace(tilePositions[i]), 32 });
+            CompanyManager::applyPaymentToCompany(CompanyId(0), 100, ExpenditureType::Construction);
+        }
+
+        auto* surface = TileManager::get(tilePositions[0]).surface();
+        const auto regs = makeLandRegisters(tilePositions[0]);
+        Undo::prepare(GameCommand::raiseLand, CompanyId(0), regs, Flags::apply);
+        surface->setBaseZ(originalBaseZ[0] + 8);
+        surface->setClearZ(originalBaseZ[0] + 8);
+        Undo::commit(50, ExpenditureType::Construction, { toWorldSpace(tilePositions[0]), 32 });
+        CompanyManager::applyPaymentToCompany(CompanyId(0), 50, ExpenditureType::Construction);
+    }
+
+    ASSERT_TRUE(Undo::isAvailable());
+    EXPECT_EQ(Undo::apply(), Undo::Result::success);
+    for (size_t i = 0; i < tilePositions.size(); ++i)
+    {
+        EXPECT_EQ(TileManager::get(tilePositions[i]).surface()->baseZ(), originalBaseZ[i]);
+    }
+    EXPECT_EQ(CompanyManager::get(CompanyId(0))->cash, currency48_t{ 10000 });
+}
+
+TEST_F(UndoTest, RestoresPartialChangesFromFailedGroupedCommand)
+{
+    constexpr TilePos2 tilePos{ 20, 20 };
+    auto* surface = TileManager::get(tilePos).surface();
+    ASSERT_NE(surface, nullptr);
+    const auto originalBaseZ = surface->baseZ();
+
+    {
+        Undo::Group undoGroup;
+        const auto regs = makeLandRegisters(tilePos);
+        Undo::prepare(GameCommand::raiseLand, CompanyId(0), regs, Flags::apply);
+        surface->setBaseZ(originalBaseZ + 4);
+        surface->setClearZ(originalBaseZ + 4);
+        Undo::cancel();
+    }
+
+    ASSERT_TRUE(Undo::isAvailable());
+    EXPECT_EQ(Undo::apply(), Undo::Result::success);
+    EXPECT_EQ(TileManager::get(tilePos).surface()->baseZ(), originalBaseZ);
+}
+
 TEST_F(UndoTest, RejectsUndoWhenCommandChangedTileWasModifiedAgain)
 {
     constexpr TilePos2 tilePos{ 20, 20 };
@@ -196,6 +260,31 @@ TEST_F(UndoTest, RestoresNewStationState)
 
     ASSERT_EQ(Undo::apply(), Undo::Result::success);
     EXPECT_TRUE(station.empty());
+}
+
+TEST_F(UndoTest, RestoresGroupedStationStateChanges)
+{
+    auto& station = getGameState().stations[0];
+    station = {};
+
+    registers regs{};
+    regs.ax = 20 * kTileSize;
+    regs.cx = 20 * kTileSize;
+
+    {
+        Undo::Group undoGroup;
+        Undo::prepare(GameCommand::createTrainStation, CompanyId(0), regs, Flags::apply);
+        station.name = StringId{ 1 };
+        Undo::commit(0, ExpenditureType::Construction, {});
+        Undo::prepare(GameCommand::createTrainStation, CompanyId(0), regs, Flags::apply);
+        station.name = StringId{ 2 };
+        station.cargoStats[0].quantity = 1;
+        Undo::commit(0, ExpenditureType::Construction, {});
+    }
+
+    EXPECT_EQ(Undo::apply(), Undo::Result::success);
+    EXPECT_TRUE(station.empty());
+    station = {};
 }
 
 TEST_F(UndoTest, RestoresStateOnlyPurchaseAndRefundsCost)

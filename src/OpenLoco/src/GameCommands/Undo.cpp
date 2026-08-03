@@ -17,6 +17,8 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <limits>
+#include <map>
 #include <optional>
 #include <span>
 #include <vector>
@@ -63,18 +65,38 @@ namespace OpenLoco::GameCommands::Undo
 
     struct HistoryEntry
     {
-        CompanyId company;
-        currency32_t cost;
-        ExpenditureType expenditureType;
-        Pos3 position;
+        struct Payment
+        {
+            CompanyId company;
+            currency32_t cost;
+            ExpenditureType expenditureType;
+            Pos3 position;
+        };
+
+        std::vector<Payment> payments;
         std::vector<BytePatch> state;
         std::vector<StateGuard> stateGuards;
         std::vector<StationId> createdStations;
         std::vector<TilePatch> tiles;
     };
 
+    struct ByteChange
+    {
+        uint8_t before;
+        uint8_t after;
+    };
+
+    struct HistoryGroup
+    {
+        HistoryEntry history{};
+        std::map<uint32_t, ByteChange> state;
+        std::map<uint32_t, TilePatch> tiles;
+    };
+
     static std::optional<PendingTransaction> _pending;
     static std::optional<HistoryEntry> _history;
+    static std::optional<HistoryGroup> _group;
+    static uint32_t _groupDepth;
 
     static bool isMapCommand(const GameCommand command)
     {
@@ -485,6 +507,111 @@ namespace OpenLoco::GameCommands::Undo
         return true;
     }
 
+    static void addToGroup(HistoryEntry&& history)
+    {
+        if (!_group.has_value())
+        {
+            _group.emplace();
+        }
+
+        auto& group = *_group;
+        group.history.payments.insert(group.history.payments.end(), history.payments.begin(), history.payments.end());
+
+        for (const auto& patch : history.state)
+        {
+            for (size_t i = 0; i < patch.before.size(); ++i)
+            {
+                const auto offset = patch.offset + static_cast<uint32_t>(i);
+                auto [it, inserted] = group.state.try_emplace(offset, ByteChange{ patch.before[i], patch.after[i] });
+                if (!inserted)
+                {
+                    it->second.after = patch.after[i];
+                }
+            }
+        }
+
+        for (auto& guard : history.stateGuards)
+        {
+            const auto existing = std::ranges::find(group.history.stateGuards, guard.offset, &StateGuard::offset);
+            if (existing == group.history.stateGuards.end())
+            {
+                group.history.stateGuards.push_back(std::move(guard));
+            }
+        }
+
+        for (const auto station : history.createdStations)
+        {
+            if (std::ranges::find(group.history.createdStations, station) == group.history.createdStations.end())
+            {
+                group.history.createdStations.push_back(station);
+            }
+        }
+
+        for (auto& patch : history.tiles)
+        {
+            const auto key = static_cast<uint32_t>(patch.pos.y) * kMapColumns + patch.pos.x;
+            auto [it, inserted] = group.tiles.try_emplace(key, std::move(patch));
+            if (!inserted)
+            {
+                it->second.after = std::move(patch.after);
+            }
+        }
+    }
+
+    static void finishGroup()
+    {
+        if (!_group.has_value())
+        {
+            return;
+        }
+
+        auto group = std::move(*_group);
+        _group.reset();
+
+        for (const auto& [offset, change] : group.state)
+        {
+            if (change.before == change.after)
+            {
+                continue;
+            }
+
+            if (group.history.state.empty()
+                || offset != group.history.state.back().offset + group.history.state.back().before.size())
+            {
+                group.history.state.push_back({ offset, {}, {} });
+            }
+            group.history.state.back().before.push_back(change.before);
+            group.history.state.back().after.push_back(change.after);
+        }
+
+        const auto* state = reinterpret_cast<const uint8_t*>(&getGameState());
+        for (auto& guard : group.history.stateGuards)
+        {
+            guard.after.assign(state + guard.offset, state + guard.offset + guard.after.size());
+        }
+
+        for (auto& [_, patch] : group.tiles)
+        {
+            if (patch.before != patch.after)
+            {
+                group.history.tiles.push_back(std::move(patch));
+            }
+        }
+
+        _history = std::move(group.history);
+        Ui::WindowManager::invalidate(Ui::WindowType::topToolbar);
+    }
+
+    static HistoryEntry capturePending()
+    {
+        HistoryEntry history{};
+        history.state = createStatePatches(_pending->state, _pending->captureEntities);
+        createStateGuards(*_pending, history);
+        history.tiles = createTilePatches(std::move(_pending->tiles));
+        _pending.reset();
+        return history;
+    }
+
     void prepare(const GameCommand command, const CompanyId company, const registers& regs, const uint8_t flags)
     {
         _pending.reset();
@@ -515,27 +642,56 @@ namespace OpenLoco::GameCommands::Undo
             return;
         }
 
-        HistoryEntry history{};
-        history.company = _pending->company;
-        history.cost = cost;
-        history.expenditureType = expenditureType;
-        history.position = position;
-        history.state = createStatePatches(_pending->state, _pending->captureEntities);
-        createStateGuards(*_pending, history);
-        history.tiles = createTilePatches(std::move(_pending->tiles));
-        _history = std::move(history);
-        _pending.reset();
-        Ui::WindowManager::invalidate(Ui::WindowType::topToolbar);
+        const auto company = _pending->company;
+        auto history = capturePending();
+        history.payments.push_back({ company, cost, expenditureType, position });
+        if (_groupDepth != 0)
+        {
+            addToGroup(std::move(history));
+        }
+        else
+        {
+            _history = std::move(history);
+            Ui::WindowManager::invalidate(Ui::WindowType::topToolbar);
+        }
     }
 
     void cancel()
     {
+        if (_groupDepth != 0 && _pending.has_value())
+        {
+            auto history = capturePending();
+            if (!history.state.empty() || !history.stateGuards.empty() || !history.tiles.empty())
+            {
+                addToGroup(std::move(history));
+            }
+            return;
+        }
         _pending.reset();
+    }
+
+    Group::Group()
+    {
+        if (_groupDepth++ == 0)
+        {
+            _group.reset();
+        }
+    }
+
+    Group::~Group()
+    {
+        if (_groupDepth == 0 || --_groupDepth != 0)
+        {
+            return;
+        }
+        finishGroup();
     }
 
     void clear()
     {
         _pending.reset();
+        _group.reset();
+        _groupDepth = 0;
         _history.reset();
         Ui::WindowManager::invalidate(Ui::WindowType::topToolbar);
     }
@@ -578,10 +734,23 @@ namespace OpenLoco::GameCommands::Undo
         }
         CargoDist::markGraphDirty();
 
-        CompanyManager::applyPaymentToCompany(history.company, -history.cost, history.expenditureType);
-        if (history.cost != 0 && history.company == CompanyManager::getControllingId())
+        int64_t moneyEffectAmount = 0;
+        Pos3 moneyEffectPosition{};
+        for (const auto& payment : history.payments)
         {
-            CompanyManager::spendMoneyEffect(history.position + Pos3{ 0, 0, 24 }, history.company, -history.cost);
+            CompanyManager::applyPaymentToCompany(payment.company, -payment.cost, payment.expenditureType);
+            if (payment.cost != 0 && payment.company == CompanyManager::getControllingId())
+            {
+                moneyEffectAmount -= payment.cost;
+                moneyEffectPosition = payment.position;
+            }
+        }
+        while (moneyEffectAmount != 0)
+        {
+            constexpr auto kMaxEffect = std::numeric_limits<currency32_t>::max();
+            const auto amount = static_cast<currency32_t>(std::clamp<int64_t>(moneyEffectAmount, -kMaxEffect, kMaxEffect));
+            CompanyManager::spendMoneyEffect(moneyEffectPosition + Pos3{ 0, 0, 24 }, CompanyManager::getControllingId(), amount);
+            moneyEffectAmount -= amount;
         }
         Gfx::invalidateScreen();
         Ui::WindowManager::invalidateAllWindowsAfterInput();

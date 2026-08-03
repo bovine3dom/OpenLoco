@@ -8,6 +8,7 @@
 #include "GameCommands/Road/RemoveRoadStation.h"
 #include "GameCommands/Track/CreateTrainStation.h"
 #include "GameCommands/Track/RemoveTrainStation.h"
+#include "GameCommands/Undo.h"
 #include "GameState.h"
 #include "Graphics/ImageIds.h"
 #include "Graphics/TextRenderer.h"
@@ -1071,6 +1072,7 @@ namespace OpenLoco::Ui::Windows::Construction::Station
 
         auto& cState = getConstructionState();
 
+        GameCommands::Undo::Group undoGroup;
         for (auto yPos = _toolPosInitial.y; yPos != _toolPosDrag.y + dirY; yPos += dirY)
         {
             for (auto xPos = _toolPosInitial.x; xPos != _toolPosDrag.x + dirX; xPos += dirX)
@@ -1088,7 +1090,6 @@ namespace OpenLoco::Ui::Windows::Construction::Station
                 GameCommands::setErrorSound(true);
             }
         }
-
         if (builtAnything)
         {
             WindowManager::close(WindowType::error);

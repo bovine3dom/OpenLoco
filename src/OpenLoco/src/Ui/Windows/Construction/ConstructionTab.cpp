@@ -4,6 +4,7 @@
 #include "GameCommands/Road/RemoveRoad.h"
 #include "GameCommands/Track/CreateTrack.h"
 #include "GameCommands/Track/RemoveTrack.h"
+#include "GameCommands/Undo.h"
 #include "GameState.h"
 #include "Graphics/ImageIds.h"
 #include "Graphics/RenderTarget.h"
@@ -2780,6 +2781,7 @@ namespace OpenLoco::Ui::Windows::Construction::Construction
 
         bool builtAnything = false;
 
+        GameCommands::Undo::Group undoGroup;
         for (auto yPos = _toolPosInitial.y; yPos != _toolPosDrag.y + dirY; yPos += dirY)
         {
             for (auto xPos = _toolPosInitial.x; xPos != _toolPosDrag.x + dirX; xPos += dirX)
@@ -2803,7 +2805,6 @@ namespace OpenLoco::Ui::Windows::Construction::Construction
                 cState.lastSelectedTrackPiece = piece;
             }
         }
-
         if (builtAnything)
         {
             WindowManager::close(WindowType::error);
