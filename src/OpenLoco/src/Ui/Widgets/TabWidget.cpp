@@ -1,4 +1,5 @@
 #include "Ui/Widgets/TabWidget.h"
+#include "Graphics/ImageIds.h"
 #include "Graphics/TextRenderer.h"
 #include "Localisation/Formatting.h"
 #include "Ui/Window.h"

@@ -13,9 +13,25 @@ loco_add_library(Version STATIC
         ${public_files}
 )
 
-target_compile_definitions(Version
-    PRIVATE
-        OPENLOCO_VERSION_TAG="${OPENLOCO_VERSION_TAG}"
-        OPENLOCO_BRANCH="${OPENLOCO_BRANCH}"
-        OPENLOCO_COMMIT_SHA1_SHORT="${OPENLOCO_COMMIT_SHA1_SHORT}"
+set(version_header "${CMAKE_CURRENT_BINARY_DIR}/generated/OpenLocoVersion.h")
+
+add_custom_target(VersionMetadata
+    COMMAND
+        "${CMAKE_COMMAND}"
+        "-DGIT_EXECUTABLE=${GIT_EXECUTABLE}"
+        "-DOPENLOCO_SOURCE_DIR=${CMAKE_SOURCE_DIR}"
+        "-DOPENLOCO_PROJECT_VERSION=${PROJECT_VERSION}"
+        "-DOPENLOCO_VERSION_OUTPUT=${version_header}"
+        -P "${CMAKE_SOURCE_DIR}/cmake/GenerateOpenLocoVersion.cmake"
+    BYPRODUCTS
+        "${version_header}"
+    COMMENT "Refreshing OpenLoco version metadata"
+    VERBATIM
 )
+
+target_include_directories(Version
+    PRIVATE
+        "${CMAKE_CURRENT_BINARY_DIR}/generated"
+)
+
+add_dependencies(Version VersionMetadata)

@@ -5,6 +5,7 @@
 #include "GameStateFlags.h"
 #include "Graphics/TextRenderer.h"
 #include "Localisation/Formatting.h"
+#include "Localisation/StringIds.h"
 #include "Localisation/StringManager.h"
 #include "Map/BuildingElement.h"
 #include "Map/SurfaceElement.h"

@@ -1,12 +1,11 @@
 #pragma once
 
-#include "StringManager.h"
+#include "StringId.h"
 
 #define UNUSED_STR(x) (x)
 
 namespace OpenLoco::StringIds
 {
-    constexpr StringId empty = 0;
     constexpr StringId empty_pop = 1;
     constexpr StringId new_company = 2;
     constexpr StringId new_owner = 3;
@@ -102,7 +101,6 @@ namespace OpenLoco::StringIds
     constexpr StringId arg16_stringid = 93;
     constexpr StringId arg18_stringid = 94;
     constexpr StringId arg20_stringid = 95;
-    constexpr StringId dropdown = 96;
     constexpr StringId unused_small_black_string = UNUSED_STR(97); // May have been for a tooltip
     constexpr StringId error_too_low = 98;
     constexpr StringId error_too_high = 99;
@@ -1846,8 +1844,6 @@ namespace OpenLoco::StringIds
     constexpr StringId options_mode_fullscreen_window = 2130;
     constexpr StringId default_audio_device_name = 2131;
     constexpr StringId window_scale_factor = 2132;
-    constexpr StringId stepper_plus = 2133;
-    constexpr StringId stepper_minus = 2134;
     constexpr StringId scale_formatted = 2135;
     constexpr StringId zoom_to_cursor = 2136;
     constexpr StringId zoom_to_cursor_tip = 2137;

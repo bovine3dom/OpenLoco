@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Graphics/ImageId.h"
-#include "Localisation/FormatArguments.hpp"
+#include "Localisation/FormatArgumentsBuffer.hpp"
 #include "Types.hpp"
 #include "Viewport.hpp"
 #include <OpenLoco/Core/EnumFlags.hpp>

@@ -1,33 +1,12 @@
 #pragma once
 
-#include <OpenLoco/Core/Exception.hpp>
-#include <array>
+#include "FormatArgumentsBuffer.hpp"
+#include <cstddef>
 #include <cstring>
-#include <sfl/small_vector.hpp>
+#include <iterator>
 
 namespace OpenLoco
 {
-    class FormatArgumentsBuffer
-    {
-        std::array<std::byte, 16> _buffer{};
-
-    public:
-        std::byte* data()
-        {
-            return _buffer.data();
-        }
-
-        const std::byte* data() const
-        {
-            return _buffer.data();
-        }
-
-        size_t capacity() const
-        {
-            return _buffer.size();
-        }
-    };
-
     class FormatArguments
     {
     private:
@@ -136,15 +115,7 @@ namespace OpenLoco
         }
 
     private:
-        std::byte* getNextOffset(const size_t size) const
-        {
-            std::byte* const nextOffset = reinterpret_cast<std::byte*>(reinterpret_cast<std::byte*>(_buffer) + size);
-            if (nextOffset > _bufferStart + _capacity)
-            {
-                throw Exception::OutOfRange("FormatArguments: attempting to advance outside of buffer");
-            }
-            return nextOffset;
-        }
+        std::byte* getNextOffset(size_t size) const;
     };
 
     class FormatArgumentsView

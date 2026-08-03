@@ -4,6 +4,7 @@
 #include "Object.h"
 #include "Speed.hpp"
 #include <OpenLoco/Core/EnumFlags.hpp>
+#include <OpenLoco/Types.hpp>
 #include <span>
 
 namespace OpenLoco

@@ -1,8 +1,9 @@
 #pragma once
 
 #include <cstddef>
-#include <fmt/core.h>
+#include <fmt/format.h>
 #include <iterator>
+#include <utility>
 
 namespace OpenLoco
 {

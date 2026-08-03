@@ -10,6 +10,7 @@
 #include "Graphics/TextRenderer.h"
 #include "Input.h"
 #include "Intro.h"
+#include "Localisation/StringIds.h"
 #include "Logging.h"
 #include "Map/MapSelection.h"
 #include "Map/Tile.h"

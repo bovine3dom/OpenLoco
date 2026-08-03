@@ -1,7 +1,7 @@
 #pragma once
 
+#include "StringId.h"
 #include <OpenLoco/Engine/Limits.h>
-#include <OpenLoco/Types.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
@@ -10,14 +10,6 @@
 #ifdef small
 #error "small is defined, likely by windows.h"
 #endif
-
-namespace OpenLoco
-{
-    namespace StringIds
-    {
-        constexpr StringId null = 0xFFFF;
-    }
-}
 
 namespace OpenLoco::StringManager
 {

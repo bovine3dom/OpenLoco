@@ -1,6 +1,7 @@
 #pragma once
 
 #include <OpenLoco/Engine/Types.hpp>
+#include <OpenLoco/Localisation/StringId.h>
 #include <cstdint>
 #include <limits>
 #include <type_traits>
@@ -32,7 +33,6 @@ namespace OpenLoco
     {
         null = std::numeric_limits<uint16_t>::max(),
     };
-    using StringId = uint16_t;
     using SoundObjectId_t = uint8_t;
 
     class FormatArguments;

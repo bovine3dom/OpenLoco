@@ -22,6 +22,18 @@
 
 using namespace OpenLoco::Diagnostics;
 
+namespace OpenLoco
+{
+    std::byte* FormatArguments::getNextOffset(const size_t size) const
+    {
+        if (size > _capacity - getLength())
+        {
+            throw Exception::OutOfRange("FormatArguments: attempting to advance outside of buffer");
+        }
+        return _buffer + size;
+    }
+}
+
 namespace OpenLoco::StringManager
 {
     static constexpr auto kDayToString = Utility::buildLookupTable<int32_t, StringId>({

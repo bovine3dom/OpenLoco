@@ -1,6 +1,7 @@
 #include "GameCommands/CompanyAi/AiTrackReplacement.h"
 #include "Economy/Economy.h"
 #include "GameState.h"
+#include "Localisation/StringIds.h"
 #include "Map/BuildingElement.h"
 #include "Map/RoadElement.h"
 #include "Map/SignalElement.h"

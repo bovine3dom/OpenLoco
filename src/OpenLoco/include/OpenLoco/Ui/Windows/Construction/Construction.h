@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Graphics/ImageIds.h"
+#include "Localisation/StringIds.h"
 #include "Map/Track/TrackModSection.h"
 #include "Ui/Widgets/CaptionWidget.h"
 #include "Ui/Widgets/FrameWidget.h"
@@ -7,7 +9,9 @@
 #include "Ui/Widgets/PanelWidget.h"
 #include "Ui/Widgets/TabWidget.h"
 #include "Ui/Window.h"
+#include <algorithm>
 #include <sfl/static_vector.hpp>
+#include <span>
 
 namespace OpenLoco::World
 {

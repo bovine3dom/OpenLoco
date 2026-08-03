@@ -1,12 +1,17 @@
 #pragma once
 
-#include <OpenLoco/Graphics/Gfx.h>
-#include <OpenLoco/Graphics/ImageIds.h>
-#include <OpenLoco/Localisation/FormatArguments.hpp>
-#include <OpenLoco/Localisation/StringIds.h>
-#include <OpenLoco/Localisation/StringManager.h>
+#include <OpenLoco/Engine/Ui/Point.hpp>
+#include <OpenLoco/Engine/Ui/Size.hpp>
+#include <OpenLoco/Graphics/Colour.h>
+#include <OpenLoco/Graphics/Font.h>
+#include <OpenLoco/Localisation/FormatArgumentsBuffer.hpp>
+#include <OpenLoco/Localisation/StringId.h>
 #include <array>
+#include <compare>
+#include <cstddef>
 #include <cstdint>
+#include <type_traits>
+#include <utility>
 
 namespace OpenLoco::Gfx
 {
@@ -178,7 +183,7 @@ namespace OpenLoco::Ui
         WidgetEventsList events;
         union
         {
-            uint32_t image{ ImageIds::null };
+            uint32_t image{ kContentNull };
             StringId text;
             uint32_t content;
         };

@@ -1,6 +1,7 @@
 #include "Ui/Chart.h"
 #include "Economy/Currency.h"
 #include "Graphics/TextRenderer.h"
+#include "Localisation/StringIds.h"
 #include "Ui/Window.h"
 
 namespace OpenLoco::Ui

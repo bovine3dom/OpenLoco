@@ -1,3 +1,4 @@
+#include "OpenLocoVersion.h"
 #include <OpenLoco/Version.hpp>
 
 // clang-format off
@@ -32,18 +33,6 @@
     #define OPENLOCO_PLATFORM "OpenBSD"
 #else
     #error "OPENLOCO_PLATFORM is undefined. Please add identification."
-#endif
-
-#ifndef OPENLOCO_VERSION_TAG
-    #define OPENLOCO_VERSION_TAG "unknown"
-#endif
-
-#ifndef OPENLOCO_BRANCH
-    #define OPENLOCO_BRANCH "unknown"
-#endif
-
-#ifndef OPENLOCO_COMMIT_SHA1_SHORT
-    #define OPENLOCO_COMMIT_SHA1_SHORT "unknown"
 #endif
 
 namespace OpenLoco::Version

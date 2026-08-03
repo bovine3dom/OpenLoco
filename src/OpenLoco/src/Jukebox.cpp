@@ -4,6 +4,7 @@
 #include "Date.h"
 #include "Environment.h"
 #include "Localisation/StringIds.h"
+#include <OpenLoco/Core/Exception.hpp>
 #include <numeric>
 
 using namespace OpenLoco::Environment;

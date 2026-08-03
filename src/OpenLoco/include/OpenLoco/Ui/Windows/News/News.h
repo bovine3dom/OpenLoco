@@ -1,11 +1,14 @@
 #pragma once
 
 #include "Graphics/Gfx.h"
+#include "Graphics/ImageIds.h"
+#include "Localisation/StringIds.h"
 #include "Ui/Widgets/ImageButtonWidget.h"
 #include "Ui/Widgets/NewsPanelWidget.h"
 #include "Ui/Widgets/ViewportWidget.h"
 #include "Ui/WindowManager.h"
 #include "World/Company.h"
+#include <span>
 
 namespace OpenLoco::Ui::Windows::NewsWindow
 {

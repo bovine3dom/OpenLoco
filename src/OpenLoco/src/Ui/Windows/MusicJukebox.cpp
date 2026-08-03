@@ -1,5 +1,6 @@
 #include "Audio/Audio.h"
 #include "Config.h"
+#include "Graphics/ImageIds.h"
 #include "Jukebox.h"
 #include "Localisation/StringIds.h"
 #include "Objects/InterfaceSkinObject.h"

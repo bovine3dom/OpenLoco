@@ -3,6 +3,7 @@
 #include <OpenLoco/Core/EnumFlags.hpp>
 #include <OpenLoco/Graphics/Colour.h>
 #include <OpenLoco/Graphics/Gfx.h>
+#include <OpenLoco/Localisation/FormatArguments.hpp>
 #include <OpenLoco/Map/Tile.h>
 #include <OpenLoco/Objects/Object.h>
 #include <OpenLoco/Types.hpp>

@@ -1,5 +1,6 @@
 #include "Localisation/StringBuffer.h"
 #include "Localisation/Formatting.h"
+#include <OpenLoco/Core/Exception.hpp>
 
 namespace OpenLoco
 {
