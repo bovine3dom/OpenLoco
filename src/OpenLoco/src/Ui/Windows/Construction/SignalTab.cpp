@@ -29,8 +29,12 @@ using namespace OpenLoco::World::TileManager;
 
 namespace OpenLoco::Ui::Windows::Construction::Signal
 {
-    static World::SignalMode _signalMode = World::SignalMode::block;
     static World::SignalMode _signalGhostMode = World::SignalMode::block;
+
+    static World::SignalMode getLastSignalMode()
+    {
+        return World::sanitiseSignalMode(Scenario::getConstruction().lastSignalMode());
+    }
 
     static constexpr auto widgets = makeWidgets(
         Common::makeCommonWidgets(138, 188, StringIds::stringid_2),
@@ -119,7 +123,7 @@ namespace OpenLoco::Ui::Windows::Construction::Signal
                 Dropdown::add(0, StringIds::signal_mode_block);
                 Dropdown::add(1, StringIds::signal_mode_path);
                 Dropdown::add(2, StringIds::signal_mode_one_way_path);
-                Dropdown::setHighlightedItem(static_cast<size_t>(_signalMode));
+                Dropdown::setHighlightedItem(static_cast<size_t>(getLastSignalMode()));
                 break;
 
             case Widx::kBothDirections:
@@ -147,7 +151,7 @@ namespace OpenLoco::Ui::Windows::Construction::Signal
         {
             if (itemIndex != -1)
             {
-                _signalMode = static_cast<World::SignalMode>(itemIndex);
+                Scenario::getConstruction().setLastSignalMode(static_cast<uint8_t>(itemIndex));
                 self.invalidate();
             }
             return;
@@ -206,7 +210,7 @@ namespace OpenLoco::Ui::Windows::Construction::Signal
         args.trackId = elTrack->trackId();
         args.index = elTrack->sequenceIndex();
         args.trackObjType = elTrack->trackObjectId();
-        args.mode = _signalMode;
+        args.mode = getLastSignalMode();
         if (isBothDirectons)
         {
             args.sides = 0xC000;
@@ -353,7 +357,7 @@ namespace OpenLoco::Ui::Windows::Construction::Signal
         auto trainSignalObject = ObjectManager::get<TrainSignalObject>(cState.lastSelectedSignal);
 
         self.widgets[widx::signal].text = trainSignalObject->name;
-        self.widgets[widx::signal_mode].text = getSignalModeString(_signalMode);
+        self.widgets[widx::signal_mode].text = getSignalModeString(getLastSignalMode());
 
         Common::repositionTabs(&self);
     }
@@ -407,7 +411,6 @@ namespace OpenLoco::Ui::Windows::Construction::Signal
 
     void tabReset(Window& self)
     {
-        _signalMode = World::SignalMode::block;
         self.callOnMouseDown(Signal::widx::both_directions, self.widgets[Signal::widx::both_directions].id);
     }
 

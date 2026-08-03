@@ -13,6 +13,7 @@
 #include <OpenLoco/Map/Track/TrackData.h>
 #include <OpenLoco/Map/TrackElement.h>
 #include <OpenLoco/Map/TreeElement.h>
+#include <OpenLoco/S5/S5GameState.h>
 #include <OpenLoco/S5/S5TileElement.h>
 #include <OpenLoco/Vehicles/OrderManager.h>
 #include <OpenLoco/Vehicles/PathSignals.h>
@@ -27,6 +28,7 @@
 #include <array>
 #include <cstring>
 #include <gtest/gtest.h>
+#include <memory>
 #include <vector>
 
 using namespace OpenLoco::World;
@@ -970,6 +972,18 @@ TEST_F(TileManagerTest, TrackSignalModesAreExportedToS5)
     const auto* savedTrack = saved.as<OpenLoco::S5::TrackElement>();
     ASSERT_NE(savedTrack, nullptr);
     EXPECT_EQ(savedTrack->signalModes(), track.signalModes());
+}
+
+TEST(SignalModePersistenceTest, LastSelectedModeRoundTripsThroughS5)
+{
+    auto gameState = std::make_unique<OpenLoco::GameState>();
+    gameState->scenarioConstruction.setLastSignalMode(static_cast<uint8_t>(SignalMode::path));
+
+    const auto saved = OpenLoco::S5::exportGameState(*gameState);
+    EXPECT_EQ(saved->general.scenarioConstruction.var_17A[0], static_cast<uint8_t>(SignalMode::path));
+
+    const auto restored = OpenLoco::S5::importGameState(*saved);
+    EXPECT_EQ(restored->scenarioConstruction.lastSignalMode(), static_cast<uint8_t>(SignalMode::path));
 }
 
 TEST_F(TileManagerTest, StandardPathSignalCanBePassedFromBehindButOneWayPathSignalCannot)
