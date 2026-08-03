@@ -9,8 +9,9 @@
 
 namespace OpenLoco::StationManager
 {
-    // If it exceeds this distance, it will not be considered a nearby station
-    constexpr int16_t kMaxStationNearbyDistance = 64;
+    // Construction can join station elements within this horizontal or vertical range.
+    constexpr int16_t kMaxStationNearbyTileDistance = 3;
+    constexpr int16_t kMaxStationNearbyDistance = kMaxStationNearbyTileDistance * World::kTileSize;
 
     void reset();
     FixedVector<Station, Limits::kMaxStations> stations();

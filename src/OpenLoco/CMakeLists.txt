@@ -810,6 +810,7 @@ set(test_files
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/SharedOrderTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/FormatArgumentsTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/SignalFuzzerTests.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/StationManagerTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/TileManagerTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/UndoTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/VehicleUnbunchingTests.cpp"

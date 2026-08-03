@@ -30,9 +30,9 @@ namespace OpenLoco::GameCommands
         auto* airportObj = ObjectManager::get<AirportObject>(airportObjectId);
         const auto [minExtent, maxExtent] = airportObj->getAirportExtents(World::toTileSpace(pos), rotation);
 
-        // Check area including a 2 tile border around the airport
-        const auto tilePosA = minExtent - World::TilePos2(2, 2);
-        const auto tilePosB = maxExtent + World::TilePos2(2, 2);
+        const auto nearbyRange = World::TilePos2(StationManager::kMaxStationNearbyTileDistance, StationManager::kMaxStationNearbyTileDistance);
+        const auto tilePosA = minExtent - nearbyRange;
+        const auto tilePosB = maxExtent + nearbyRange;
 
         auto minDistanceStation = StationId::null;
         auto minDistance = std::numeric_limits<int16_t>::max();

@@ -13,6 +13,7 @@ so far:
 - cargo visualisation
 - unbunching
 - shared orders (hold control while cloning or 'filter' vehicle list by matching orders then click the ghostly button
+- increase station join radius from 2 to 3 (and the equivalent for height)
 
 
 

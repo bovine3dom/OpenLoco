@@ -751,8 +751,9 @@ namespace OpenLoco::StationManager
     // 0x004901B0
     NearbyStation findNearbyStation(World::Pos3 pos, CompanyId companyId)
     {
-        const auto tilePosA = World::toTileSpace(pos) - World::TilePos2(2, 2);
-        const auto tilePosB = World::toTileSpace(pos) + World::TilePos2(2, 2);
+        const auto nearbyRange = World::TilePos2(kMaxStationNearbyTileDistance, kMaxStationNearbyTileDistance);
+        const auto tilePosA = World::toTileSpace(pos) - nearbyRange;
+        const auto tilePosB = World::toTileSpace(pos) + nearbyRange;
 
         auto minDistanceStation = StationId::null;
         auto minDistance = std::numeric_limits<int16_t>::max();
