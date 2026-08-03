@@ -4,6 +4,12 @@ so far:
 
 - cargo distribution inspired by JGR/OpenTTD. it kinda 'just works' like i expect it to
 - UI scale separate from world scale
+- path signals (one-way: cannot pass behind, normal: may pass behind. double signal: basically never use this it is a trap and you will get deadlock)
+- rail pathfinding for path signals
+- undo
+- water pathfinding
+- build while paused
+- ~30x faster partial rebuilds
 
 
 
