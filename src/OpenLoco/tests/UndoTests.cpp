@@ -43,6 +43,9 @@ namespace
             auto* company = CompanyManager::get(CompanyId(0));
             company->cash = currency48_t{ 10000 };
             company->expenditures[0][ExpenditureType::Construction] = 0;
+            company->activeEmotions[enumValue(Emotion::thinking)] = 0;
+            company->observationTimeout = 0;
+            getGameState().unkRng = {};
         }
 
         void TearDown() override
@@ -117,6 +120,67 @@ TEST_F(UndoTest, RestoresGroupedTileChangesAndRefundsTheirCombinedCost)
         EXPECT_EQ(TileManager::get(tilePositions[i]).surface()->baseZ(), originalBaseZ[i]);
     }
     EXPECT_EQ(CompanyManager::get(CompanyId(0))->cash, currency48_t{ 10000 });
+}
+
+TEST_F(UndoTest, GroupedMapUndoSurvivesTransientUpdates)
+{
+    constexpr std::array tilePositions{ TilePos2{ 20, 20 }, TilePos2{ 21, 20 } };
+    std::array<coord_t, tilePositions.size()> originalBaseZ{};
+    std::array<uint8_t, tilePositions.size()> originalTimers{};
+    for (size_t i = 0; i < tilePositions.size(); ++i)
+    {
+        const auto* surface = TileManager::get(tilePositions[i]).surface();
+        originalBaseZ[i] = surface->baseZ();
+        originalTimers[i] = surface->getUpdateTimer();
+    }
+
+    auto& random = getGameState().unkRng;
+    random = Core::Prng{ 1, 2 };
+    auto* company = CompanyManager::get(CompanyId(0));
+
+    {
+        Undo::Group undoGroup;
+        for (size_t i = 0; i < tilePositions.size(); ++i)
+        {
+            auto* surface = TileManager::get(tilePositions[i]).surface();
+            const auto regs = makeLandRegisters(tilePositions[i]);
+            Undo::prepare(GameCommand::raiseLand, CompanyId(0), regs, Flags::apply);
+            surface->setBaseZ(originalBaseZ[i] + 4);
+            surface->setClearZ(originalBaseZ[i] + 4);
+            if (i == 1)
+            {
+                surface->setUpdateTimer((originalTimers[i] + 1) & 0x7);
+            }
+            random.randNext();
+            company->activeEmotions[enumValue(Emotion::thinking)] = 7;
+            company->observationTimeout = 5;
+            Undo::commit(0, ExpenditureType::Construction, {});
+        }
+    }
+
+    random.randNext();
+    const auto expectedRandom = random;
+    company->activeEmotions[enumValue(Emotion::thinking)] = 6;
+    company->observationTimeout = 4;
+    std::array<uint8_t, tilePositions.size()> expectedTimers{};
+    for (size_t i = 0; i < tilePositions.size(); ++i)
+    {
+        auto* surface = TileManager::get(tilePositions[i]).surface();
+        expectedTimers[i] = (surface->getUpdateTimer() + 1) & 0x7;
+        surface->setUpdateTimer(expectedTimers[i]);
+    }
+
+    EXPECT_EQ(Undo::apply(), Undo::Result::success);
+    for (size_t i = 0; i < tilePositions.size(); ++i)
+    {
+        const auto* surface = TileManager::get(tilePositions[i]).surface();
+        EXPECT_EQ(surface->baseZ(), originalBaseZ[i]);
+        EXPECT_EQ(surface->getUpdateTimer(), i == 0 ? expectedTimers[i] : originalTimers[i]);
+    }
+    EXPECT_EQ(random.srand_0(), expectedRandom.srand_0());
+    EXPECT_EQ(random.srand_1(), expectedRandom.srand_1());
+    EXPECT_EQ(company->activeEmotions[enumValue(Emotion::thinking)], 6);
+    EXPECT_EQ(company->observationTimeout, 4);
 }
 
 TEST_F(UndoTest, RestoresPartialChangesFromFailedGroupedCommand)
@@ -262,7 +326,7 @@ TEST_F(UndoTest, RestoresNewStationState)
     EXPECT_TRUE(station.empty());
 }
 
-TEST_F(UndoTest, RestoresGroupedStationStateChanges)
+TEST_F(UndoTest, RestoresGroupedStationStateAfterDerivedChanges)
 {
     auto& station = getGameState().stations[0];
     station = {};
@@ -281,6 +345,13 @@ TEST_F(UndoTest, RestoresGroupedStationStateChanges)
         station.cargoStats[0].quantity = 1;
         Undo::commit(0, ExpenditureType::Construction, {});
     }
+
+    station.labelFrame.left[0] = 1;
+    station.noTilesTimeout = 1;
+    station.cargoStats[0].flags |= StationCargoStatsFlags::acceptedForConsumer;
+    station.cargoStats[0].industryId = IndustryId(1);
+    station.var_3B0 = 1;
+    station.var_3B1 = 1;
 
     EXPECT_EQ(Undo::apply(), Undo::Result::success);
     EXPECT_TRUE(station.empty());

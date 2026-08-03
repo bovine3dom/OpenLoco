@@ -14,6 +14,7 @@
 #include "SceneManager.h"
 #include "Ui/WindowManager.h"
 #include "World/CompanyManager.h"
+#include "World/StationManager.h"
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -86,6 +87,13 @@ namespace OpenLoco::GameCommands::Undo
         uint8_t after;
     };
 
+    struct StateByteMask
+    {
+        // Derived state may need restoring without making normal updates invalidate undo.
+        uint8_t capture;
+        uint8_t validate;
+    };
+
     struct HistoryGroup
     {
         HistoryEntry history{};
@@ -146,6 +154,85 @@ namespace OpenLoco::GameCommands::Undo
         return static_cast<size_t>(end - begin);
     }
 
+    static StateByteMask getStateByteMask(const size_t offset)
+    {
+        constexpr StateByteMask kDefaultMask{ 0xFF, 0xFF };
+        constexpr StateByteMask kIgnoredMask{ 0, 0 };
+        const auto& gameState = getGameState();
+        const auto* state = reinterpret_cast<const uint8_t*>(&gameState);
+        const auto getOffset = [state](const auto* member) {
+            return static_cast<size_t>(reinterpret_cast<const uint8_t*>(member) - state);
+        };
+
+        if (offset >= getOffset(&gameState.rng) && offset < getOffset(&gameState.flags))
+        {
+            return kIgnoredMask;
+        }
+
+        const auto companiesBegin = getOffset(&gameState.companies);
+        const auto companiesEnd = companiesBegin + sizeof(gameState.companies);
+        if (offset >= companiesBegin && offset < companiesEnd)
+        {
+            static const auto masks = [=] {
+                std::array<StateByteMask, sizeof(Company)> result;
+                result.fill(kDefaultMask);
+                const auto& company = getGameState().companies[0];
+                const auto* begin = reinterpret_cast<const uint8_t*>(&company);
+                const auto transientBegin = reinterpret_cast<const uint8_t*>(&company.activeEmotions) - begin;
+                const auto transientEnd = reinterpret_cast<const uint8_t*>(&company.ownerStatus) - begin;
+                std::fill(result.begin() + transientBegin, result.begin() + transientEnd, kIgnoredMask);
+                return result;
+            }();
+            return masks[(offset - companiesBegin) % sizeof(Company)];
+        }
+
+        const auto stationsBegin = getOffset(&gameState.stations);
+        const auto stationsEnd = stationsBegin + sizeof(gameState.stations);
+        if (offset >= stationsBegin && offset < stationsEnd)
+        {
+            static const auto masks = [=] {
+                std::array<StateByteMask, sizeof(Station)> result;
+                result.fill(kDefaultMask);
+                const auto& station = getGameState().stations[0];
+                const auto* begin = reinterpret_cast<const uint8_t*>(&station);
+                const auto ignoreValidation = [&](const auto& member) {
+                    const auto memberOffset = reinterpret_cast<const uint8_t*>(&member) - begin;
+                    for (size_t i = 0; i < sizeof(member); ++i)
+                    {
+                        result[memberOffset + i].validate = 0;
+                    }
+                };
+                ignoreValidation(station.labelFrame);
+                ignoreValidation(station.noTilesTimeout);
+                for (const auto& cargo : station.cargoStats)
+                {
+                    const auto flagsOffset = reinterpret_cast<const uint8_t*>(&cargo.flags) - begin;
+                    result[flagsOffset].validate &= ~enumValue(StationCargoStatsFlags::acceptedForConsumer);
+                    ignoreValidation(cargo.industryId);
+                }
+                ignoreValidation(station.var_3B0);
+                ignoreValidation(station.var_3B1);
+                return result;
+            }();
+            return masks[(offset - stationsBegin) % sizeof(Station)];
+        }
+
+        return kDefaultMask;
+    }
+
+    static bool stateMatches(const uint8_t* state, const uint32_t offset, const std::span<const uint8_t> expected)
+    {
+        for (size_t i = 0; i < expected.size(); ++i)
+        {
+            const auto mask = getStateByteMask(offset + i).validate;
+            if (((state[offset + i] ^ expected[i]) & mask) != 0)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
     static ElementSnapshot captureElement(const TileElementEntry& entry)
     {
         ElementSnapshot result{ entry.type(), {} };
@@ -166,6 +253,12 @@ namespace OpenLoco::GameCommands::Undo
         return result;
     }
 
+    static uint8_t getTileByteValidationMask(const ElementType type, const size_t index)
+    {
+        // The surface update timer advances independently of construction.
+        return type == ElementType::surface && index == 5 ? 0x1F : 0xFF;
+    }
+
     static bool tileMatches(const TilePos2& pos, const std::span<const ElementSnapshot> expected)
     {
         auto tile = TileManager::get(pos);
@@ -177,9 +270,18 @@ namespace OpenLoco::GameCommands::Undo
         size_t index = 0;
         for (const auto& entry : tile)
         {
-            if (captureElement(entry) != expected[index++])
+            const auto actual = captureElement(entry);
+            const auto& expectedElement = expected[index++];
+            if (actual.type != expectedElement.type)
             {
                 return false;
+            }
+            for (size_t i = 0; i < actual.data.size(); ++i)
+            {
+                if (((actual.data[i] ^ expectedElement.data[i]) & getTileByteValidationMask(actual.type, i)) != 0)
+                {
+                    return false;
+                }
             }
         }
         return true;
@@ -201,6 +303,10 @@ namespace OpenLoco::GameCommands::Undo
                 && ((offset >= entityListsBegin && offset < entityListsEnd)
                     || (offset >= entitiesBegin && offset < entitiesEnd));
         };
+        const auto hasChanged = [&](const size_t offset) {
+            return !shouldIgnore(offset)
+                && ((before[offset] ^ after[offset]) & getStateByteMask(offset).capture) != 0;
+        };
 
         std::vector<BytePatch> result;
         constexpr size_t kScanBlockSize = 256;
@@ -215,12 +321,12 @@ namespace OpenLoco::GameCommands::Undo
             auto offset = blockStart;
             while (offset < blockEnd)
             {
-                while (offset < blockEnd && (before[offset] == after[offset] || shouldIgnore(offset)))
+                while (offset < blockEnd && !hasChanged(offset))
                 {
                     ++offset;
                 }
                 const auto start = offset;
-                while (offset < blockEnd && before[offset] != after[offset] && !shouldIgnore(offset))
+                while (offset < blockEnd && hasChanged(offset))
                 {
                     ++offset;
                 }
@@ -428,14 +534,14 @@ namespace OpenLoco::GameCommands::Undo
         const auto* state = reinterpret_cast<const uint8_t*>(&getGameState());
         for (const auto& guard : _history->stateGuards)
         {
-            if (std::memcmp(state + guard.offset, guard.after.data(), guard.after.size()) != 0)
+            if (!stateMatches(state, guard.offset, guard.after))
             {
                 return false;
             }
         }
         for (const auto& patch : _history->state)
         {
-            if (std::memcmp(state + patch.offset, patch.after.data(), patch.after.size()) != 0)
+            if (!stateMatches(state, patch.offset, patch.after))
             {
                 return false;
             }
@@ -486,7 +592,13 @@ namespace OpenLoco::GameCommands::Undo
             }
             auto tile = TileManager::get(patch.pos);
             auto& surface = TileManager::resolveEntry(tile.surfaceEntry());
-            std::ranges::copy(patch.before.front().data, surface.rawData().begin());
+            auto surfaceData = surface.rawData();
+            const auto updateTimer = surfaceData[5] & 0xE0;
+            std::ranges::copy(patch.before.front().data, surfaceData.begin());
+            if (((patch.before.front().data[5] ^ patch.after.front().data[5]) & 0xE0) == 0)
+            {
+                surfaceData[5] = (surfaceData[5] & 0x1F) | updateTimer;
+            }
         }
 
         for (const auto& patch : patches)
@@ -722,6 +834,11 @@ namespace OpenLoco::GameCommands::Undo
         }
 
         auto* state = reinterpret_cast<uint8_t*>(&getGameState());
+        const auto stationsBegin = static_cast<size_t>(reinterpret_cast<uint8_t*>(&getGameState().stations) - state);
+        const auto stationsEnd = stationsBegin + sizeof(getGameState().stations);
+        const auto stationsChanged = std::ranges::any_of(history.state, [=](const auto& patch) {
+            return patch.offset < stationsEnd && patch.offset + patch.before.size() > stationsBegin;
+        });
         for (const auto& patch : history.state)
         {
             std::memcpy(state + patch.offset, patch.before.data(), patch.before.size());
@@ -733,6 +850,10 @@ namespace OpenLoco::GameCommands::Undo
             CargoDist::removeStation(station);
         }
         CargoDist::markGraphDirty();
+        if (stationsChanged)
+        {
+            StationManager::updateLabels();
+        }
 
         int64_t moneyEffectAmount = 0;
         Pos3 moneyEffectPosition{};
