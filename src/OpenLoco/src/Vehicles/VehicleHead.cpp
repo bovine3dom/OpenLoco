@@ -1634,8 +1634,7 @@ namespace OpenLoco::Vehicles
                 return true;
             }
 
-            // if one-way or two-way signal??
-            if (flags & (1 << 1))
+            if (flags & enumValue(SignalStateFlags::blockedNoRoute))
             {
                 if (vehType1->timeAtSignal >= kTrainOneWaySignalTimeout)
                 {
@@ -4476,7 +4475,7 @@ namespace OpenLoco::Vehicles
                     if (!PathSignals::tryReservePath(head, nextPos, connection))
                     {
                         setSignalState(nextPos, tad, head.trackType, 1);
-                        const auto waitFlags = static_cast<uint8_t>(*signalMode == World::SignalMode::oneWayPath ? enumValue(SignalStateFlags::occupiedOneWay) : 0);
+                        const auto waitFlags = static_cast<uint8_t>(*signalMode == World::SignalMode::oneWayPath ? enumValue(SignalStateFlags::blockedNoRoute) : 0);
                         return Sub4ACEE7Result{ 3, waitFlags, StationId::null };
                     }
                     setSignalState(nextPos, tad, head.trackType, 0);

@@ -177,7 +177,7 @@ namespace
             return head;
         }
 
-        static void addTrack(const Pos3& start, const uint8_t trackId, const uint8_t rotation, const bool hasSignal = false)
+        static void addTrack(const Pos3& start, const uint8_t trackId, const uint8_t rotation, const bool hasSignal = false, const SignalMode signalMode = SignalMode::block)
         {
             const auto pieces = TrackData::getTrackPiece(trackId);
             for (const auto& piece : pieces)
@@ -208,7 +208,7 @@ namespace
                 signal.getLeft() = SignalElement::Side{};
                 signal.getLeft().setHasSignal(true);
                 track.setHasSignal(true);
-                track.setLeftSignalMode(SignalMode::block);
+                track.setLeftSignalMode(signalMode);
             }
         }
 
@@ -1103,6 +1103,24 @@ TEST_F(PathSignalsTest, ReportsExactPathReservationEntries)
         EXPECT_EQ(notification.routing, OpenLoco::Vehicles::RoutingManager::getRouting(notification.handle));
         expectedPos += TrackData::getUnkTrack(notification.routing & OpenLoco::World::Track::AdditionalTaDFlags::basicTaDMask).pos;
     }
+}
+
+TEST_F(PathSignalsTest, OneWayPathFailureReportsOneWayWaitState)
+{
+    constexpr Pos3 currentPos{ 352, 320, 32 };
+    constexpr Pos3 blockedPos{ 288, 320, 32 };
+    addTrack(currentPos, 0, 0);
+    addTrack(kFirstPos, 0, 0, true, SignalMode::oneWayPath);
+    addTrack(blockedPos, 0, 0);
+    auto* waitingTrain = createTrain(currentPos, kStraightWest);
+    ASSERT_NE(waitingTrain, nullptr);
+    ASSERT_NE(createTrain(blockedPos, kStraightWest), nullptr);
+
+    const auto result = waitingTrain->sub_4ACEE7(0xD4CB00, 0xD4CB00, false);
+
+    EXPECT_EQ(result.status, 3);
+    EXPECT_NE(result.flags & OpenLoco::enumValue(OpenLoco::Vehicles::SignalStateFlags::blockedNoRoute), 0);
+    EXPECT_EQ(result.flags & OpenLoco::enumValue(OpenLoco::Vehicles::SignalStateFlags::occupiedOneWay), 0);
 }
 
 TEST_F(PathSignalsTest, ChoosesLongerRouteWhenShortRouteBeyondSignalIsOccupied)
