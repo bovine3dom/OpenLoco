@@ -14,6 +14,7 @@
 #include <OpenLoco/Platform/Platform.h>
 #include <OpenLoco/S5/S5.h>
 #include <OpenLoco/S5/SawyerStream.h>
+#include <OpenLoco/Vehicles/SignalFuzzer.h>
 #include <OpenLoco/Version.hpp>
 #include <SDL3/SDL_main.h>
 #include <fmt/chrono.h>
@@ -37,6 +38,8 @@ namespace OpenLoco
         std::cout << "                join [options] <address>" << std::endl;
         std::cout << "                uncompress [options] <path>" << std::endl;
         std::cout << "                simulate [options] <path> <ticks> [path]" << std::endl;
+        std::cout << "                signal-fuzz [options] <path>" << std::endl;
+        std::cout << "                signal-replay [options] <case.yml>" << std::endl;
         std::cout << "                compare [options] <path1> <path2>" << std::endl;
         std::cout << std::endl;
         std::cout << "options:" << std::endl;
@@ -46,6 +49,10 @@ namespace OpenLoco
         std::cout << "--help               -h     Print help" << std::endl;
         std::cout << "--version                   Print version" << std::endl;
         std::cout << "--intro                     Run the game intro" << std::endl;
+        std::cout << "--cases                     Signal fuzz cases (default: 100)" << std::endl;
+        std::cout << "--ticks                     Signal fuzz ticks per case (default: 20000)" << std::endl;
+        std::cout << "--seed                      Signal fuzz seed (default: 1)" << std::endl;
+        std::cout << "--focus-town                Signal fuzz focus town (default: Beachtown)" << std::endl;
         std::cout << "--log_levels                Comma separated list of log levels, applying a minus prefix" << std::endl;
         std::cout << "                            removes the level from a group such as 'all', valid levels:" << std::endl;
         std::cout << "                            - info, warning, error, verbose, all" << std::endl;
@@ -202,6 +209,33 @@ namespace OpenLoco
         return EXIT_SUCCESS;
     }
 
+    static int signalFuzz(const CommandLineOptions& options)
+    {
+        const auto cases = options.cases.value_or(100);
+        const auto ticks = options.ticks.value_or(20000);
+        const auto seed = options.seed.value_or(1);
+        if (cases <= 0 || ticks <= 0 || seed < 0)
+        {
+            Logging::error("Signal fuzz cases and ticks must be positive, and seed must be non-negative");
+            return EXIT_FAILURE;
+        }
+        Vehicles::SignalFuzzer::Options fuzzOptions{};
+        fuzzOptions.baseSave = fs::u8path(options.path);
+        fuzzOptions.outputDirectory = fs::u8path(options.outputPath);
+        fuzzOptions.focusTown = options.focusTown.empty() ? "Beachtown" : options.focusTown;
+        fuzzOptions.cases = cases;
+        fuzzOptions.ticks = ticks;
+        fuzzOptions.seed = seed;
+        const auto result = Vehicles::SignalFuzzer::run(fuzzOptions);
+        return result == Vehicles::SignalFuzzer::Result::completed ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+
+    static int signalReplay(const CommandLineOptions& options)
+    {
+        const auto result = Vehicles::SignalFuzzer::replay(fs::u8path(options.path), fs::u8path(options.outputPath));
+        return result == Vehicles::SignalFuzzer::Result::completed ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+
     static int compare(const CommandLineOptions& options)
     {
         auto file1 = fs::u8path(options.path);
@@ -271,6 +305,10 @@ namespace OpenLoco
                 return uncompressFile(options);
             case CommandLineAction::simulate:
                 return simulate(options);
+            case CommandLineAction::signalFuzz:
+                return signalFuzz(options);
+            case CommandLineAction::signalReplay:
+                return signalReplay(options);
             case CommandLineAction::compare:
                 return compare(options);
             default:

@@ -32,6 +32,7 @@ namespace OpenLoco::Vehicles::PathSignals
     // Prefer a clear detour of up to roughly sixteen straight track pieces.
     static constexpr uint32_t kClaimedRoutingPenalty = 512;
     static constexpr uint16_t kNoParent = std::numeric_limits<uint16_t>::max();
+    static ReservationCallback _reservationCallback;
 
     struct Resource
     {
@@ -136,19 +137,20 @@ namespace OpenLoco::Vehicles::PathSignals
         });
     }
 
-    static std::unordered_map<uint64_t, uint8_t> getClaimedResources()
+    template<typename TFunc>
+    static void forEachClaimedResource(TFunc&& func)
     {
-        std::unordered_map<uint64_t, uint8_t> claimed;
         std::vector<Resource> resources;
-        for (const auto* otherHead : VehicleManager::VehicleList())
+        for (const auto* head : VehicleManager::VehicleList())
         {
-            if (otherHead->mode != TransportMode::rail || otherHead->tileX == -1)
+            if (head->mode != TransportMode::rail || head->tileX == -1)
             {
                 continue;
             }
 
-            const Vehicle train(*otherHead);
+            const Vehicle train(*head);
             auto pos = Pos3{ train.tail->tileX, train.tail->tileY, train.tail->tileBaseZ * kSmallZStep };
+            auto occupied = true;
             for (const auto handle : RoutingManager::RingView(train.tail->routingHandle))
             {
                 const auto routing = RoutingManager::getRouting(handle);
@@ -156,12 +158,38 @@ namespace OpenLoco::Vehicles::PathSignals
                 appendResources(resources, pos, routing);
                 for (const auto& resource : resources)
                 {
-                    claimed[getResourceKey(resource.pos)] |= resource.quarters;
+                    func(*head, handle, pos, routing, resource, occupied);
                 }
                 pos += TrackData::getUnkTrack(routing & Track::AdditionalTaDFlags::basicTaDMask).pos;
+                if (handle == head->routingHandle)
+                {
+                    occupied = false;
+                }
             }
         }
+    }
+
+    static std::unordered_map<uint64_t, uint8_t> getClaimedResourceMask()
+    {
+        std::unordered_map<uint64_t, uint8_t> claimed;
+        forEachClaimedResource([&claimed](const auto&, const auto, const auto&, const auto, const auto& resource, const bool) {
+            claimed[getResourceKey(resource.pos)] |= resource.quarters;
+        });
         return claimed;
+    }
+
+    std::vector<ClaimedResource> getClaimedResources()
+    {
+        std::vector<ClaimedResource> result;
+        forEachClaimedResource([&result](const auto& head, const auto handle, const auto& routePos, const auto routing, const auto& resource, const bool occupied) {
+            result.push_back({ head.id, handle, routePos, resource.pos, routing, resource.quarters, occupied });
+        });
+        return result;
+    }
+
+    void setReservationCallback(const ReservationCallback callback)
+    {
+        _reservationCallback = callback;
     }
 
     static Target getTarget(const VehicleHead& head)
@@ -517,7 +545,7 @@ namespace OpenLoco::Vehicles::PathSignals
         const auto requiredMods = head.var_53;
         const auto queryMods = train.veh1->var_49;
         const auto target = getTarget(head);
-        const auto claimed = getClaimedResources();
+        const auto claimed = getClaimedResourceMask();
 
         std::vector<SearchNode> nodes;
         nodes.reserve(kMaxSearchNodes);
@@ -623,10 +651,16 @@ namespace OpenLoco::Vehicles::PathSignals
             }
         }
         handle = head.routingHandle;
+        auto pos = firstPos;
         for (const auto routing : best.routings)
         {
             handle.setIndex((handle.getIndex() + 1) & (Limits::kMaxRoutingsPerVehicle - 1));
             RoutingManager::setRouting(handle, routing);
+            if (_reservationCallback != nullptr)
+            {
+                _reservationCallback(head.id, handle, pos, routing);
+            }
+            pos += TrackData::getUnkTrack(routing & Track::AdditionalTaDFlags::basicTaDMask).pos;
         }
         return true;
     }

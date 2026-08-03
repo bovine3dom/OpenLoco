@@ -12,6 +12,7 @@
 #include "Objects/TrackObject.h"
 #include "Random.h"
 #include "Vehicles/VehicleBody.h"
+#include "Vehicles/VehicleCollision.h"
 #include "Vehicles/VehicleHead.h"
 
 #include <OpenLoco/Math/Trigonometry.hpp>
@@ -299,6 +300,7 @@ namespace OpenLoco::Vehicles
     // 0x004AA0DF
     void VehicleBogie::collision(const EntityId collideEntityId)
     {
+        VehicleCollision::notify(head, collideEntityId);
         destroyTrain();
         applyDestructionToComponent(*this);
         vehicleFlags |= VehicleFlags::unk_5;

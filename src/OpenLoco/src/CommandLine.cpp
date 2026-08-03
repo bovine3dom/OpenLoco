@@ -304,6 +304,10 @@ namespace OpenLoco
                           .registerOption("--help", "-h")
                           .registerOption("--version")
                           .registerOption("--intro")
+                          .registerOption("--cases", 1)
+                          .registerOption("--ticks", 1)
+                          .registerOption("--seed", 1)
+                          .registerOption("--focus-town", 1)
                           .registerOption("--log_levels", 1)
                           .registerOption("--all", "-a")
                           .registerOption("--locomotion_path", 1);
@@ -351,6 +355,20 @@ namespace OpenLoco
                 options.path = parser.getArg(1);
                 options.ticks = parser.getArg<int32_t>(2);
                 options.path2 = parser.getArg(3);
+            }
+            else if (firstArg == "signal-fuzz")
+            {
+                options.action = CommandLineAction::signalFuzz;
+                options.path = parser.getArg(1);
+                options.cases = parser.getArg<int32_t>("--cases");
+                options.ticks = parser.getArg<int32_t>("--ticks");
+                options.seed = parser.getArg<int32_t>("--seed");
+                options.focusTown = parser.getArg("--focus-town");
+            }
+            else if (firstArg == "signal-replay")
+            {
+                options.action = CommandLineAction::signalReplay;
+                options.path = parser.getArg(1);
             }
             else if (firstArg == "compare")
             {

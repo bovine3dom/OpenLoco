@@ -14,6 +14,8 @@ namespace OpenLoco
         join,
         uncompress,
         simulate,
+        signalFuzz,
+        signalReplay,
         compare,
         help,
         version,
@@ -27,6 +29,9 @@ namespace OpenLoco
         std::string path;
         std::string path2;
         std::optional<int32_t> ticks;
+        std::optional<int32_t> cases;
+        std::optional<int32_t> seed;
+        std::string focusTown;
         std::string outputPath;
         std::string bind;
         std::optional<uint16_t> port{};
