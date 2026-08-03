@@ -240,6 +240,51 @@ namespace OpenLoco::GameCommands
     static uint32_t loc_4314EA(const uint8_t flags);
     static uint32_t loc_4313C6(int esi, const registers& regs, const uint8_t flags);
 
+    static bool isConstructionCommand(const GameCommand command)
+    {
+        switch (command)
+        {
+            case GameCommand::createTrack:
+            case GameCommand::removeTrack:
+            case GameCommand::createSignal:
+            case GameCommand::removeSignal:
+            case GameCommand::createTrainStation:
+            case GameCommand::removeTrainStation:
+            case GameCommand::createTrackMod:
+            case GameCommand::removeTrackMod:
+            case GameCommand::removeTree:
+            case GameCommand::createTree:
+            case GameCommand::changeLandMaterial:
+            case GameCommand::raiseLand:
+            case GameCommand::lowerLand:
+            case GameCommand::lowerRaiseLandMountain:
+            case GameCommand::raiseWater:
+            case GameCommand::lowerWater:
+            case GameCommand::createWall:
+            case GameCommand::removeWall:
+            case GameCommand::createRoad:
+            case GameCommand::removeRoad:
+            case GameCommand::createRoadMod:
+            case GameCommand::removeRoadMod:
+            case GameCommand::createRoadStation:
+            case GameCommand::removeRoadStation:
+            case GameCommand::createBuilding:
+            case GameCommand::removeBuilding:
+            case GameCommand::createIndustry:
+            case GameCommand::buildCompanyHeadquarters:
+            case GameCommand::removeCompanyHeadquarters:
+            case GameCommand::createAirport:
+            case GameCommand::removeAirport:
+            case GameCommand::createPort:
+            case GameCommand::removePort:
+            case GameCommand::clearLand:
+                return true;
+
+            default:
+                return false;
+        }
+    }
+
     static bool commandRequiresUnpausingGame(GameCommand command, uint16_t flags)
     {
         if ((flags & (Flags::aiAllocated | Flags::ghost)) != 0)
@@ -248,7 +293,12 @@ namespace OpenLoco::GameCommands
         }
 
         auto& gameCommand = kGameCommandDefinitions[static_cast<uint32_t>(command)];
-        if (!gameCommand.unpausesGame || SceneManager::isPauseOverrideEnabled())
+        // Construction is synchronous, so a local player pause need not be lifted.
+        if (!gameCommand.unpausesGame
+            || SceneManager::isPauseOverrideEnabled()
+            || (!Network::isConnected()
+                && SceneManager::getPauseFlags() == PauseFlags::player
+                && isConstructionCommand(command)))
         {
             return false;
         }
@@ -295,7 +345,14 @@ namespace OpenLoco::GameCommands
 
         if (commandRequiresUnpausingGame(command, flags) && _updatingCompanyId == CompanyManager::getControllingId())
         {
-            if ((SceneManager::getPauseFlags() & PauseFlags::player) != PauseFlags::none)
+            const auto pauseFlags = SceneManager::getPauseFlags();
+            if (pauseFlags != PauseFlags::none && pauseFlags != PauseFlags::player)
+            {
+                _gGameCommandErrorText = StringIds::empty;
+                return GameCommands::kFailure;
+            }
+
+            if (pauseFlags == PauseFlags::player)
             {
                 SceneManager::unsetPauseFlag(PauseFlags::player);
                 Ui::Windows::PlayerInfoPanel::invalidateFrame();

@@ -1,10 +1,14 @@
 #include "Economy/Expenditures.h"
 #include "Entities/EntityManager.h"
+#include "GameCommands/Terraform/RemoveWall.h"
 #include "GameCommands/Undo.h"
 #include "GameState.h"
 #include "Map/SurfaceElement.h"
 #include "Map/TileManager.h"
 #include "Map/TreeElement.h"
+#include "Map/WallElement.h"
+#include "Scenario/ScenarioOptions.h"
+#include "SceneManager.h"
 #include "World/CompanyManager.h"
 #include <algorithm>
 #include <array>
@@ -181,6 +185,46 @@ TEST_F(UndoTest, GroupedMapUndoSurvivesTransientUpdates)
     EXPECT_EQ(random.srand_1(), expectedRandom.srand_1());
     EXPECT_EQ(company->activeEmotions[enumValue(Emotion::thinking)], 6);
     EXPECT_EQ(company->observationTimeout, 4);
+}
+
+TEST_F(UndoTest, ConstructionAndUndoPreservePlayerPause)
+{
+    constexpr TilePos2 tilePos{ 20, 20 };
+    constexpr auto baseZ = 4;
+    auto* wallEntry = TileManager::insertElement<WallElement>(toWorldSpace(tilePos), baseZ, 0xF);
+    ASSERT_NE(wallEntry, nullptr);
+    wallEntry->get<WallElement>().setRotation(0);
+
+    WallRemovalArgs args{};
+    args.pos = { toWorldSpace(tilePos), baseZ * kSmallZStep };
+    args.rotation = 0;
+    setUpdatingCompanyId(CompanyId(0));
+    const auto scenarioTicks = getGameState().scenarioTicks;
+    ASSERT_EQ(SceneManager::getPauseFlags(), PauseFlags::none);
+    const auto originalGameSpeed = SceneManager::getGameSpeed();
+    const auto originalMadeAnyChanges = Scenario::getOptions().madeAnyChanges;
+    SceneManager::setGameSpeed(GameSpeed::ExtraFastForward);
+    SceneManager::setPauseFlag(PauseFlags::player);
+    SceneManager::setPauseFlag(PauseFlags::objectSelection);
+
+    EXPECT_EQ(doCommand(args, Flags::apply), kFailure);
+    EXPECT_EQ(SceneManager::getPauseFlags(), PauseFlags::player | PauseFlags::objectSelection);
+    EXPECT_EQ(TileManager::get(tilePos).size(), 2);
+    SceneManager::unsetPauseFlag(PauseFlags::objectSelection);
+
+    EXPECT_EQ(doCommand(args, Flags::apply), 0);
+    EXPECT_EQ(SceneManager::getPauseFlags(), PauseFlags::player);
+    EXPECT_EQ(SceneManager::getGameSpeed(), GameSpeed::ExtraFastForward);
+    EXPECT_EQ(getGameState().scenarioTicks, scenarioTicks);
+    EXPECT_EQ(TileManager::get(tilePos).size(), 1);
+    EXPECT_EQ(Undo::apply(), Undo::Result::success);
+    EXPECT_EQ(SceneManager::getPauseFlags(), PauseFlags::player);
+    EXPECT_EQ(getGameState().scenarioTicks, scenarioTicks);
+    EXPECT_EQ(TileManager::get(tilePos).size(), 2);
+
+    SceneManager::unsetPauseFlag(PauseFlags::player);
+    SceneManager::setGameSpeed(originalGameSpeed);
+    Scenario::getOptions().madeAnyChanges = originalMadeAnyChanges;
 }
 
 TEST_F(UndoTest, RestoresPartialChangesFromFailedGroupedCommand)
