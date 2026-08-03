@@ -2524,3 +2524,7 @@ strings:
   2469: "Block signal"
   2470: "Path signal"
   2471: "One-way path signal"
+  2472: "Undo"
+  2473: "{SMALLFONT}{COLOUR BLACK}Undo the last construction, terrain change, or vehicle purchase for a full refund"
+  2474: "Can't undo..."
+  2475: "The affected world state has changed since that action"

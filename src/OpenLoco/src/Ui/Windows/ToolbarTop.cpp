@@ -4,6 +4,7 @@
 #include "Game.h"
 #include "GameCommands/GameCommands.h"
 #include "GameCommands/General/LoadSaveQuit.h"
+#include "GameCommands/Undo.h"
 #include "GameState.h"
 #include "Graphics/Colour.h"
 #include "Graphics/DrawingContext.h"
@@ -26,6 +27,7 @@
 #include "Ui/Screenshot.h"
 #include "Ui/ToolManager.h"
 #include "Ui/Widget.h"
+#include "Ui/Widgets/ButtonWidget.h"
 #include "Ui/Widgets/ToolbarButtonWidget.h"
 #include "Ui/WindowManager.h"
 #include "Ui/Windows/ToolbarTopCommon.h"
@@ -74,7 +76,9 @@ namespace OpenLoco::Ui::Windows::ToolbarTop::Game
 
         Widgets::ToolbarButton(Common::Widx::kVehiclesMenu, { 490, 0 }, { 30, 28 }, WindowColour::quaternary),
         Widgets::ToolbarButton(Common::Widx::kStationsMenu, { 520, 0 }, { 30, 28 }, WindowColour::quaternary),
-        Widgets::ToolbarButton(Common::Widx::kTownsMenu, { 460, 0 }, { 30, 28 }, WindowColour::quaternary)
+        Widgets::ToolbarButton(Common::Widx::kTownsMenu, { 460, 0 }, { 30, 28 }, WindowColour::quaternary),
+
+        Widgets::Button(Common::Widx::kUndo, { 90, 0 }, { 30, 28 }, WindowColour::primary, StringIds::undo, StringIds::tooltip_undo_last_action)
 
     );
 
@@ -943,6 +947,11 @@ namespace OpenLoco::Ui::Windows::ToolbarTop::Game
 
         const bool cheatsOn = Config::get().cheatsMenuEnabled;
         window.widgets[widx::cheats_menu].hidden = !cheatsOn;
+        window.disabledWidgets &= ~(1ULL << Common::widx::undo);
+        if (!GameCommands::Undo::isAvailable())
+        {
+            window.disabledWidgets |= 1ULL << Common::widx::undo;
+        }
 
         const auto& refWidget = window.widgets[cheatsOn ? enumValue(widx::cheats_menu) : enumValue(Common::widx::audio_menu)];
         const auto offsetWidget = [&window, refWidget](uint8_t widgetIndex, uint8_t index) {
@@ -1003,6 +1012,7 @@ namespace OpenLoco::Ui::Windows::ToolbarTop::Game
     }
 
     static constexpr WindowEventList kEvents = {
+        .onMouseUp = Common::onMouseUp,
         .onResize = Common::onResize,
         .onMouseHover = onMouseHover,
         .onMouseDown = onMouseDown,

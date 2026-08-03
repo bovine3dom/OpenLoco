@@ -23,12 +23,15 @@ namespace OpenLoco::Ui::Windows::ToolbarTop::Common
         vehicles_menu,
         stations_menu,
         towns_menu,
+
+        undo,
     };
 
     namespace Widx
     {
         constexpr WidgetId kLoadsaveMenu{ "loadsave_menu" };
         constexpr WidgetId kAudioMenu{ "audio_menu" };
+        constexpr WidgetId kUndo{ "undo" };
         constexpr WidgetId kZoomMenu{ "zoom_menu" };
         constexpr WidgetId kRotateMenu{ "rotate_menu" };
         constexpr WidgetId kViewMenu{ "view_menu" };
@@ -64,6 +67,7 @@ namespace OpenLoco::Ui::Windows::ToolbarTop::Common
     void onUpdate(Window& window);
     void onResize(Window& window);
     void onMouseDown(Window* window, WidgetIndex_t widgetIndex);
+    void onMouseUp(Window& window, WidgetIndex_t widgetIndex, const WidgetId id);
     void onDropdown(Window* window, WidgetIndex_t widgetIndex, int16_t itemIndex);
 
     void centreToolbar(Window& self);

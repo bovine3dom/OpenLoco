@@ -3,6 +3,7 @@
 #include "Config.h"
 #include "Entities/EntityManager.h"
 #include "GameCommands/GameCommands.h"
+#include "GameCommands/Undo.h"
 #include "GameState.h"
 #include "Graphics/Colour.h"
 #include "Graphics/DrawingContext.h"
@@ -547,6 +548,24 @@ namespace OpenLoco::Ui::Windows::ToolbarTop::Common
         }
     }
 
+    void onMouseUp([[maybe_unused]] Window& window, [[maybe_unused]] WidgetIndex_t widgetIndex, const WidgetId id)
+    {
+        if (id != Widx::kUndo)
+        {
+            return;
+        }
+
+        const auto result = GameCommands::Undo::apply();
+        if (result == GameCommands::Undo::Result::stateChanged)
+        {
+            Error::open(StringIds::cannot_undo, StringIds::undo_world_state_changed);
+        }
+        else if (result == GameCommands::Undo::Result::unavailable)
+        {
+            Error::open(StringIds::cannot_undo);
+        }
+    }
+
     void onOpen([[maybe_unused]] Window& window)
     {
         _zoomTicks = 0;
@@ -621,7 +640,7 @@ namespace OpenLoco::Ui::Windows::ToolbarTop::Common
 
         // Left-hand side
         uint32_t x = std::max(0, (Ui::width() - totalWidth) / 2);
-        x = Common::leftAlignButtons(self, x, { Common::widx::loadsave_menu, Common::widx::audio_menu, widx::w2 });
+        x = Common::leftAlignButtons(self, x, { Common::widx::loadsave_menu, Common::widx::audio_menu, widx::w2, Common::widx::undo });
         x += 11;
         x = Common::leftAlignButtons(self, x, { Common::widx::zoom_menu, Common::widx::rotate_menu, Common::widx::view_menu });
 
@@ -636,7 +655,7 @@ namespace OpenLoco::Ui::Windows::ToolbarTop::Common
     {
         // Left-hand side
         uint32_t x = 0;
-        x = Common::leftAlignButtons(self, x, { Common::widx::loadsave_menu, Common::widx::audio_menu, widx::w2 });
+        x = Common::leftAlignButtons(self, x, { Common::widx::loadsave_menu, Common::widx::audio_menu, widx::w2, Common::widx::undo });
         x += 11;
         x = Common::leftAlignButtons(self, x, { Common::widx::zoom_menu, Common::widx::rotate_menu, Common::widx::view_menu });
 

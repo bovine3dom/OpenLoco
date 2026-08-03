@@ -55,6 +55,7 @@
 #include "GameCommands/Track/RemoveTrack.h"
 #include "GameCommands/Track/RemoveTrackMod.h"
 #include "GameCommands/Track/RemoveTrainStation.h"
+#include "GameCommands/Undo.h"
 #include "GameCommands/Vehicles/CloneVehicle.h"
 #include "GameCommands/Vehicles/CreateVehicle.h"
 #include "GameCommands/Vehicles/RenameVehicle.h"
@@ -386,12 +387,21 @@ namespace OpenLoco::GameCommands
             return ebx;
         }
 
+        if (_gameCommandNestLevel == 1)
+        {
+            Undo::prepare(static_cast<GameCommand>(esi), _updatingCompanyId, regs, flags);
+        }
+
         registers fnRegs2 = regs;
         callGameCommandFunction(esi, fnRegs2, flags);
         int32_t ebx2 = fnRegs2.ebx;
 
         if (ebx2 == static_cast<int32_t>(GameCommands::kFailure))
         {
+            if (_gameCommandNestLevel == 1)
+            {
+                Undo::cancel();
+            }
             return loc_4314EA(flags);
         }
 
@@ -403,6 +413,11 @@ namespace OpenLoco::GameCommands
         if (ebx2 < ebx)
         {
             ebx = ebx2;
+        }
+
+        if (_gameCommandNestLevel == 1)
+        {
+            Undo::commit(ebx, getExpenditureType(), getPosition());
         }
 
         _gameCommandNestLevel--;

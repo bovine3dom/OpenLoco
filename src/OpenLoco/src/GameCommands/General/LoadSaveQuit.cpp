@@ -2,6 +2,7 @@
 #include "Audio/Audio.h"
 #include "Game.h"
 #include "GameCommands/GameCommands.h"
+#include "GameCommands/Undo.h"
 #include "SceneManager.h"
 #include "Tutorial.h"
 #include "Ui/WindowManager.h"
@@ -53,6 +54,7 @@ namespace OpenLoco::GameCommands
         }
 
         // 0x0043BFE3
+        Undo::clear();
         switch (loadOrQuitMode)
         {
             case LoadOrQuitMode::loadGamePrompt:

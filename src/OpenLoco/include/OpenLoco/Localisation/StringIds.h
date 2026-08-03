@@ -2185,6 +2185,10 @@ namespace OpenLoco::StringIds
     constexpr StringId signal_mode_block = 2469;
     constexpr StringId signal_mode_path = 2470;
     constexpr StringId signal_mode_one_way_path = 2471;
+    constexpr StringId undo = 2472;
+    constexpr StringId tooltip_undo_last_action = 2473;
+    constexpr StringId cannot_undo = 2474;
+    constexpr StringId undo_world_state_changed = 2475;
 
     constexpr StringId temporary_object_load_str_0 = 8192;
     constexpr StringId temporary_object_load_str_1 = 8193;

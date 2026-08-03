@@ -46,6 +46,7 @@ set(OLOCO_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/GameCommands/Docks/CreatePort.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/GameCommands/Docks/RemovePort.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/GameCommands/GameCommands.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/GameCommands/Undo.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/GameCommands/General/LoadSaveQuit.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/GameCommands/General/RenameStation.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/GameCommands/General/SetCargoDistMode.cpp"
@@ -437,6 +438,7 @@ set(OLOCO_HEADERS
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/GameCommands/Docks/CreatePort.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/GameCommands/Docks/RemovePort.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/GameCommands/GameCommands.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/GameCommands/Undo.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/GameCommands/General/LoadSaveQuit.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/GameCommands/General/RenameStation.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/GameCommands/General/SetCargoDistMode.h"
@@ -788,6 +790,7 @@ set(test_files
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/CargoDistSaveTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/CargoDistSimulationTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/TileManagerTests.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/UndoTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/ViewportTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/WaterPathfindingTests.cpp"
 )

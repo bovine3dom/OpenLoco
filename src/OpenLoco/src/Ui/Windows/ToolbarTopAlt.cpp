@@ -5,6 +5,7 @@
 #include "Game.h"
 #include "GameCommands/GameCommands.h"
 #include "GameCommands/General/LoadSaveQuit.h"
+#include "GameCommands/Undo.h"
 #include "GameState.h"
 #include "Graphics/Colour.h"
 #include "Graphics/Gfx.h"
@@ -22,6 +23,7 @@
 #include "Ui/Screenshot.h"
 #include "Ui/ToolManager.h"
 #include "Ui/Widget.h"
+#include "Ui/Widgets/ButtonWidget.h"
 #include "Ui/Widgets/ToolbarButtonWidget.h"
 #include "Ui/WindowManager.h"
 #include "Ui/Windows/ToolbarTopCommon.h"
@@ -57,9 +59,11 @@ namespace OpenLoco::Ui::Windows::ToolbarTop::Editor
         Widgets::ToolbarButton(Common::Widx::kPortMenu, { 0, 0 }, { 1, 1 }, WindowColour::primary),           // 9
         Widgets::ToolbarButton(Common::Widx::kBuildVehiclesMenu, { 0, 0 }, { 1, 1 }, WindowColour::primary),  // 10
 
-        Widgets::ToolbarButton(Common::Widx::kVehiclesMenu, { 0, 0 }, { 1, 1 }, WindowColour::primary),    // 11
-        Widgets::ToolbarButton(Common::Widx::kStationsMenu, { 0, 0 }, { 1, 1 }, WindowColour::primary),    // 12
-        Widgets::ToolbarButton(Common::Widx::kTownsMenu, { 460, 0 }, { 30, 28 }, WindowColour::quaternary) // 13
+        Widgets::ToolbarButton(Common::Widx::kVehiclesMenu, { 0, 0 }, { 1, 1 }, WindowColour::primary),     // 11
+        Widgets::ToolbarButton(Common::Widx::kStationsMenu, { 0, 0 }, { 1, 1 }, WindowColour::primary),     // 12
+        Widgets::ToolbarButton(Common::Widx::kTownsMenu, { 460, 0 }, { 30, 28 }, WindowColour::quaternary), // 13
+
+        Widgets::Button(Common::Widx::kUndo, { 90, 0 }, { 30, 28 }, WindowColour::primary, StringIds::undo, StringIds::tooltip_undo_last_action) // 14
     );
 
     static const WindowEventList& getEvents();
@@ -317,6 +321,12 @@ namespace OpenLoco::Ui::Windows::ToolbarTop::Editor
 
         // Left-hand side
         window.widgets[widx::map_generation_menu].hidden = !isLandscapeEditor;
+        window.widgets[Common::widx::undo].hidden = !isLandscapeEditor;
+        window.disabledWidgets &= ~(1ULL << Common::widx::undo);
+        if (!GameCommands::Undo::isAvailable())
+        {
+            window.disabledWidgets |= 1ULL << Common::widx::undo;
+        }
         window.widgets[Common::widx::zoom_menu].hidden = !isLandscapeEditor;
         window.widgets[Common::widx::rotate_menu].hidden = !isLandscapeEditor;
         window.widgets[Common::widx::view_menu].hidden = !isLandscapeEditor;
@@ -366,6 +376,7 @@ namespace OpenLoco::Ui::Windows::ToolbarTop::Editor
     }
 
     static constexpr WindowEventList kEvents = {
+        .onMouseUp = Common::onMouseUp,
         .onResize = Common::onResize,
         .onMouseHover = onMouseHover,
         .onMouseDown = onMouseDown,
