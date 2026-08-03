@@ -411,7 +411,7 @@ namespace OpenLoco::Ui::Windows::Construction::Signal
 
     void tabReset(Window& self)
     {
-        self.callOnMouseDown(Signal::widx::both_directions, self.widgets[Signal::widx::both_directions].id);
+        self.callOnMouseDown(Signal::widx::single_direction, self.widgets[Signal::widx::single_direction].id);
     }
 
     static constexpr WindowEventList kEvents = {
