@@ -308,6 +308,7 @@ namespace OpenLoco
                           .registerOption("--ticks", 1)
                           .registerOption("--seed", 1)
                           .registerOption("--focus-town", 1)
+                          .registerOption("--layout", 1)
                           .registerOption("--log_levels", 1)
                           .registerOption("--all", "-a")
                           .registerOption("--locomotion_path", 1);
@@ -364,6 +365,7 @@ namespace OpenLoco
                 options.ticks = parser.getArg<int32_t>("--ticks");
                 options.seed = parser.getArg<int32_t>("--seed");
                 options.focusTown = parser.getArg("--focus-town");
+                options.signalFuzzLayout = parser.getArg("--layout");
             }
             else if (firstArg == "signal-replay")
             {

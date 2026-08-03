@@ -10,10 +10,20 @@
 
 namespace OpenLoco::Vehicles::SignalFuzzer
 {
+    enum class Layout : uint8_t
+    {
+        fixture,
+        flatMerge,
+        flatFan,
+        flatInterchange,
+        flatAll,
+    };
+
     struct Case
     {
         fs::path baseSave;
         std::string focusTown = "Beachtown";
+        Layout layout = Layout::fixture;
         uint32_t seed{};
         uint32_t caseIndex{};
         uint32_t ticks{};
@@ -27,6 +37,7 @@ namespace OpenLoco::Vehicles::SignalFuzzer
         fs::path baseSave;
         fs::path outputDirectory;
         std::string focusTown = "Beachtown";
+        Layout layout = Layout::fixture;
         uint32_t cases = 100;
         uint32_t ticks = 20000;
         uint32_t seed = 1;
@@ -43,6 +54,8 @@ namespace OpenLoco::Vehicles::SignalFuzzer
     };
 
     Case makeCase(const Options& options, uint32_t caseIndex, std::span<const EntityId> candidates);
+    std::string_view layoutName(Layout layout);
+    std::optional<Layout> parseLayout(std::string_view value);
     std::string serialiseCase(const Case& fuzzCase);
     std::optional<Case> deserialiseCase(std::string_view yaml);
 

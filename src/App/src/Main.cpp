@@ -53,6 +53,8 @@ namespace OpenLoco
         std::cout << "--ticks                     Signal fuzz ticks per case (default: 20000)" << std::endl;
         std::cout << "--seed                      Signal fuzz seed (default: 1)" << std::endl;
         std::cout << "--focus-town                Signal fuzz focus town (default: Beachtown)" << std::endl;
+        std::cout << "--layout                    Signal fuzz layout: fixture, flat-merge, flat-fan," << std::endl;
+        std::cout << "                            flat-interchange, or flat-all (default: fixture)" << std::endl;
         std::cout << "--log_levels                Comma separated list of log levels, applying a minus prefix" << std::endl;
         std::cout << "                            removes the level from a group such as 'all', valid levels:" << std::endl;
         std::cout << "                            - info, warning, error, verbose, all" << std::endl;
@@ -223,6 +225,16 @@ namespace OpenLoco
         fuzzOptions.baseSave = fs::u8path(options.path);
         fuzzOptions.outputDirectory = fs::u8path(options.outputPath);
         fuzzOptions.focusTown = options.focusTown.empty() ? "Beachtown" : options.focusTown;
+        if (!options.signalFuzzLayout.empty())
+        {
+            const auto layout = Vehicles::SignalFuzzer::parseLayout(options.signalFuzzLayout);
+            if (!layout.has_value())
+            {
+                Logging::error("Unknown signal fuzz layout '{}'", options.signalFuzzLayout);
+                return EXIT_FAILURE;
+            }
+            fuzzOptions.layout = *layout;
+        }
         fuzzOptions.cases = cases;
         fuzzOptions.ticks = ticks;
         fuzzOptions.seed = seed;

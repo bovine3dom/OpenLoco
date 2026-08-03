@@ -32,6 +32,7 @@ namespace OpenLoco
         std::optional<int32_t> cases;
         std::optional<int32_t> seed;
         std::string focusTown;
+        std::string signalFuzzLayout;
         std::string outputPath;
         std::string bind;
         std::optional<uint16_t> port{};

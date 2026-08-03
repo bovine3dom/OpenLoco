@@ -17,6 +17,7 @@
 #include "Scenes/GameScene.h"
 #include "Vehicles/PathSignals.h"
 #include "Vehicles/RoutingManager.h"
+#include "Vehicles/SignalFuzzerLayout.h"
 #include "Vehicles/Vehicle.h"
 #include "Vehicles/Vehicle1.h"
 #include "Vehicles/Vehicle2.h"
@@ -49,6 +50,13 @@ namespace OpenLoco::Vehicles::SignalFuzzer
     {
         constexpr auto kFocusRadius = 160 * World::kTileSize;
         constexpr size_t kTraceLength = 256;
+        constexpr std::array kGeneratedLayouts{ Layout::flatMerge, Layout::flatFan, Layout::flatInterchange };
+
+        struct FocusArea
+        {
+            World::Pos2 centre;
+            int32_t radius;
+        };
 
         struct Collision
         {
@@ -128,6 +136,12 @@ namespace OpenLoco::Vehicles::SignalFuzzer
             std::deque<TraceFrame> trace;
         };
 
+        struct PreparedCase
+        {
+            FocusArea focus;
+            std::vector<EntityId> candidates;
+        };
+
         static RunContext* _runContext;
         static std::map<uint16_t, TrackedReservation> _pathReservations;
 
@@ -197,9 +211,9 @@ namespace OpenLoco::Vehicles::SignalFuzzer
             return nullptr;
         }
 
-        static bool isNear(const VehicleHead& head, const Town& town)
+        static bool isNear(const VehicleHead& head, const FocusArea& focus)
         {
-            return std::abs(static_cast<int32_t>(head.tileX) - town.x) + std::abs(static_cast<int32_t>(head.tileY) - town.y) <= kFocusRadius;
+            return std::abs(static_cast<int32_t>(head.tileX) - focus.centre.x) + std::abs(static_cast<int32_t>(head.tileY) - focus.centre.y) <= focus.radius;
         }
 
         static std::vector<EntityId> getRailVehicles()
@@ -280,7 +294,7 @@ namespace OpenLoco::Vehicles::SignalFuzzer
 
         static std::optional<RouteConflict> findRouteConflict(
             const uint32_t tick,
-            const Town& town,
+            const FocusArea& focus,
             const std::optional<std::pair<EntityId, EntityId>>& vehiclePair = std::nullopt)
         {
             struct Claim
@@ -302,7 +316,7 @@ namespace OpenLoco::Vehicles::SignalFuzzer
                 {
                     activeReservations.insert(resource.handle._data);
                 }
-                if (std::abs(static_cast<int32_t>(resource.pos.x) - town.x) + std::abs(static_cast<int32_t>(resource.pos.y) - town.y) > kFocusRadius)
+                if (std::abs(static_cast<int32_t>(resource.pos.x) - focus.centre.x) + std::abs(static_cast<int32_t>(resource.pos.y) - focus.centre.y) > focus.radius)
                 {
                     continue;
                 }
@@ -360,12 +374,12 @@ namespace OpenLoco::Vehicles::SignalFuzzer
             return unprotectedConflict;
         }
 
-        static TraceFrame captureTrace(const uint32_t tick, const Town& town)
+        static TraceFrame captureTrace(const uint32_t tick, const FocusArea& focus)
         {
             TraceFrame result{ tick, {} };
             for (const auto* head : VehicleManager::VehicleList())
             {
-                if (head->mode != TransportMode::rail || head->tileX == -1 || !isNear(*head, town))
+                if (head->mode != TransportMode::rail || head->tileX == -1 || !isNear(*head, focus))
                 {
                     continue;
                 }
@@ -389,9 +403,9 @@ namespace OpenLoco::Vehicles::SignalFuzzer
             return result;
         }
 
-        static bool canInject(const VehicleHead& head, const Town& town)
+        static bool canInject(const VehicleHead& head, const FocusArea& focus)
         {
-            if (!isNear(head, town) || (head.status != Status::travelling && head.status != Status::approaching))
+            if (!isNear(head, focus) || (head.status != Status::travelling && head.status != Status::approaching))
             {
                 return false;
             }
@@ -428,7 +442,47 @@ namespace OpenLoco::Vehicles::SignalFuzzer
             }
         }
 
-        static CaseResult runCase(const Case& fuzzCase, Town& town)
+        static Layout resolveLayout(const Layout layout, const uint32_t caseIndex)
+        {
+            if (layout != Layout::flatAll)
+            {
+                return layout;
+            }
+            return kGeneratedLayouts[caseIndex % kGeneratedLayouts.size()];
+        }
+
+        static std::optional<PreparedCase> prepareCase(const Case& fuzzCase)
+        {
+            if (fuzzCase.layout == Layout::fixture)
+            {
+                const auto* town = findTown(fuzzCase.focusTown);
+                if (town == nullptr)
+                {
+                    Logging::error("Unable to find focus town '{}'", fuzzCase.focusTown);
+                    return std::nullopt;
+                }
+
+                const FocusArea focus{ { town->x, town->y }, kFocusRadius };
+                size_t stationCount = 0;
+                for (const auto& station : StationManager::stations())
+                {
+                    stationCount += station.town == town->id() ? 1 : 0;
+                }
+                auto candidates = getRailVehicles();
+                Logging::info("Signal fuzz focus: {} at ({}, {}), {} stations, {} rail vehicles", formatName(town->name), town->x, town->y, stationCount, candidates.size());
+                return PreparedCase{ focus, std::move(candidates) };
+            }
+
+            auto layout = Layouts::generate(fuzzCase.layout);
+            if (!layout.has_value())
+            {
+                return std::nullopt;
+            }
+            Logging::info("Signal fuzz layout: {} at ({}, {}) with {} rail vehicles", layoutName(fuzzCase.layout), layout->centre.x, layout->centre.y, layout->vehicles.size());
+            return PreparedCase{ { layout->centre, layout->radius }, std::move(layout->vehicles) };
+        }
+
+        static CaseResult runCase(const Case& fuzzCase, const FocusArea& focus)
         {
             CaseResult result{};
             RunContext context{};
@@ -441,11 +495,11 @@ namespace OpenLoco::Vehicles::SignalFuzzer
                 {
                     result.trace.pop_front();
                 }
-                result.trace.push_back(captureTrace(tick, town));
+                result.trace.push_back(captureTrace(tick, focus));
 
                 if (!result.reservationConflict.has_value())
                 {
-                    const auto conflict = findRouteConflict(tick, town);
+                    const auto conflict = findRouteConflict(tick, focus);
                     if (conflict.has_value())
                     {
                         if (conflict->isPathReservationConflict())
@@ -462,7 +516,7 @@ namespace OpenLoco::Vehicles::SignalFuzzer
                 if (fuzzCase.injectBreakdown && !result.breakdownInjected && tick >= fuzzCase.earliestBreakdownTick)
                 {
                     auto* target = EntityManager::get<VehicleHead>(fuzzCase.targetVehicle);
-                    if (target != nullptr && canInject(*target, town))
+                    if (target != nullptr && canInject(*target, focus))
                     {
                         result.breakdownInjected = injectBreakdown(*target);
                         if (result.breakdownInjected)
@@ -480,10 +534,10 @@ namespace OpenLoco::Vehicles::SignalFuzzer
                     {
                         result.trace.pop_front();
                     }
-                    result.trace.push_back(captureTrace(tick + 1, town));
+                    result.trace.push_back(captureTrace(tick + 1, focus));
                     const auto collisionConflict = findRouteConflict(
                         tick + 1,
-                        town,
+                        focus,
                         std::pair{ context.collision->source, context.collision->target });
                     context.collision->pathReservationIncursion = collisionConflict.has_value() && collisionConflict->involvesPathReservation();
                     context.collision->overlappingPathReservations = collisionConflict.has_value() && collisionConflict->isPathReservationConflict();
@@ -682,29 +736,9 @@ namespace OpenLoco::Vehicles::SignalFuzzer
             config.autosaveFrequency = 0;
             config.breakdownsDisabled = false;
 
-            auto* town = findTown(options.focusTown);
-            if (town == nullptr)
-            {
-                Logging::error("Unable to find focus town '{}'", options.focusTown);
-                return Result::invalidInput;
-            }
-
-            const auto candidates = getRailVehicles();
-            if (candidates.empty())
-            {
-                Logging::error("No running rail vehicles found in signal fuzz save");
-                return Result::invalidInput;
-            }
-
-            size_t stationCount = 0;
-            for (const auto& station : StationManager::stations())
-            {
-                stationCount += station.town == town->id() ? 1 : 0;
-            }
-            Logging::info("Signal fuzz focus: {} at ({}, {}), {} stations, {} rail vehicles", formatName(town->name), town->x, town->y, stationCount, candidates.size());
-
             const auto outputDirectory = options.outputDirectory.empty() ? fs::temp_directory_path() / "openloco-signal-fuzz" : options.outputDirectory;
             const auto caseCount = replayCase.has_value() ? 1U : options.cases;
+            std::set<Layout> exportedLayouts;
             uint32_t injectedCount = 0;
             uint32_t collisionCount = 0;
             uint32_t routeOverlapCount = 0;
@@ -715,16 +749,35 @@ namespace OpenLoco::Vehicles::SignalFuzzer
                 {
                     return Result::loadFailure;
                 }
-                town = findTown(options.focusTown);
-                if (town == nullptr)
+                auto fuzzCase = replayCase.has_value() ? *replayCase : makeCase(options, index, std::span<const EntityId>{});
+                fuzzCase.layout = resolveLayout(fuzzCase.layout, fuzzCase.caseIndex);
+                auto prepared = prepareCase(fuzzCase);
+                if (!prepared.has_value())
                 {
-                    return Result::loadFailure;
+                    return Result::invalidInput;
+                }
+                if (prepared->candidates.empty())
+                {
+                    Logging::error("No running rail vehicles found for signal fuzz layout '{}'", layoutName(fuzzCase.layout));
+                    return Result::invalidInput;
+                }
+                if (!replayCase.has_value())
+                {
+                    fuzzCase = makeCase(options, index, prepared->candidates);
                 }
 
-                const auto fuzzCase = replayCase.value_or(makeCase(options, index, candidates));
+                if (fuzzCase.layout != Layout::fixture && exportedLayouts.insert(fuzzCase.layout).second)
+                {
+                    const auto layoutDirectory = outputDirectory / "layouts";
+                    fs::create_directories(layoutDirectory);
+                    const auto layoutPath = layoutDirectory / (std::string(layoutName(fuzzCase.layout)) + ".SV5");
+                    S5::exportGameStateToFile(layoutPath, S5::SaveFlags::none);
+                    Logging::info("Generated signal fuzz layout written to {}", layoutPath.u8string());
+                }
+
                 clearCaseArtifacts(getCaseDirectory(outputDirectory, fuzzCase.caseIndex));
-                Logging::info("Signal fuzz case {}/{} (seed {}, target {}, earliest tick {})", index + 1, caseCount, fuzzCase.seed, enumValue(fuzzCase.targetVehicle), fuzzCase.earliestBreakdownTick);
-                auto result = runCase(fuzzCase, *town);
+                Logging::info("Signal fuzz case {}/{} (layout {}, seed {}, target {}, earliest tick {})", index + 1, caseCount, layoutName(fuzzCase.layout), fuzzCase.seed, enumValue(fuzzCase.targetVehicle), fuzzCase.earliestBreakdownTick);
+                auto result = runCase(fuzzCase, prepared->focus);
                 injectedCount += result.breakdownInjected ? 1 : 0;
                 auto writeArtifacts = false;
                 if (result.routeOverlap.has_value())
@@ -759,15 +812,48 @@ namespace OpenLoco::Vehicles::SignalFuzzer
         }
     }
 
+    std::string_view layoutName(const Layout layout)
+    {
+        switch (layout)
+        {
+            case Layout::fixture:
+                return "fixture";
+            case Layout::flatMerge:
+                return "flat-merge";
+            case Layout::flatFan:
+                return "flat-fan";
+            case Layout::flatInterchange:
+                return "flat-interchange";
+            case Layout::flatAll:
+                return "flat-all";
+        }
+        return {};
+    }
+
+    std::optional<Layout> parseLayout(const std::string_view value)
+    {
+        constexpr std::array layouts{ Layout::fixture, Layout::flatMerge, Layout::flatFan, Layout::flatInterchange, Layout::flatAll };
+        for (const auto layout : layouts)
+        {
+            if (value == layoutName(layout))
+            {
+                return layout;
+            }
+        }
+        return std::nullopt;
+    }
+
     Case makeCase(const Options& options, const uint32_t caseIndex, const std::span<const EntityId> candidates)
     {
         Case result{};
         result.baseSave = fs::absolute(options.baseSave);
         result.focusTown = options.focusTown;
+        result.layout = resolveLayout(options.layout, caseIndex);
         result.seed = options.seed;
         result.caseIndex = caseIndex;
         result.ticks = options.ticks;
-        if (caseIndex == 0 || candidates.empty())
+        const auto isBaseline = caseIndex == 0 || (options.layout == Layout::flatAll && caseIndex < kGeneratedLayouts.size());
+        if (isBaseline || candidates.empty())
         {
             return result;
         }
@@ -783,9 +869,10 @@ namespace OpenLoco::Vehicles::SignalFuzzer
     {
         YAML::Emitter out;
         out << YAML::BeginMap
-            << YAML::Key << "version" << YAML::Value << 1
+            << YAML::Key << "version" << YAML::Value << 2
             << YAML::Key << "base_save" << YAML::Value << fuzzCase.baseSave.u8string()
             << YAML::Key << "focus_town" << YAML::Value << fuzzCase.focusTown
+            << YAML::Key << "layout" << YAML::Value << std::string(layoutName(fuzzCase.layout))
             << YAML::Key << "seed" << YAML::Value << std::to_string(fuzzCase.seed)
             << YAML::Key << "case_index" << YAML::Value << std::to_string(fuzzCase.caseIndex)
             << YAML::Key << "ticks" << YAML::Value << std::to_string(fuzzCase.ticks)
@@ -801,13 +888,23 @@ namespace OpenLoco::Vehicles::SignalFuzzer
         try
         {
             const auto node = YAML::Load(std::string(yaml));
-            if (node["version"].as<uint32_t>(0) != 1)
+            const auto version = node["version"].as<uint32_t>(0);
+            if (version < 1 || version > 2)
             {
                 return std::nullopt;
             }
             Case result{};
             result.baseSave = fs::u8path(node["base_save"].as<std::string>());
             result.focusTown = node["focus_town"].as<std::string>("Beachtown");
+            if (version >= 2)
+            {
+                const auto layout = parseLayout(node["layout"].as<std::string>());
+                if (!layout.has_value())
+                {
+                    return std::nullopt;
+                }
+                result.layout = *layout;
+            }
             result.seed = node["seed"].as<uint32_t>();
             result.caseIndex = node["case_index"].as<uint32_t>();
             result.ticks = node["ticks"].as<uint32_t>();
@@ -824,7 +921,7 @@ namespace OpenLoco::Vehicles::SignalFuzzer
 
     Result run(const Options& options)
     {
-        if (options.baseSave.empty() || options.focusTown.empty() || options.cases == 0 || options.ticks == 0)
+        if (options.baseSave.empty() || (options.layout == Layout::fixture && options.focusTown.empty()) || options.cases == 0 || options.ticks == 0)
         {
             return Result::invalidInput;
         }
@@ -852,7 +949,7 @@ namespace OpenLoco::Vehicles::SignalFuzzer
             std::stringstream contents;
             contents << stream.rdbuf();
             const auto fuzzCase = deserialiseCase(contents.str());
-            if (!fuzzCase.has_value() || fuzzCase->baseSave.empty() || fuzzCase->focusTown.empty() || fuzzCase->ticks == 0
+            if (!fuzzCase.has_value() || fuzzCase->baseSave.empty() || (fuzzCase->layout == Layout::fixture && fuzzCase->focusTown.empty()) || fuzzCase->ticks == 0
                 || (fuzzCase->injectBreakdown && fuzzCase->targetVehicle == EntityId::null))
             {
                 return Result::invalidInput;
@@ -861,6 +958,7 @@ namespace OpenLoco::Vehicles::SignalFuzzer
             options.baseSave = fuzzCase->baseSave;
             options.outputDirectory = outputDirectory;
             options.focusTown = fuzzCase->focusTown;
+            options.layout = fuzzCase->layout;
             options.cases = 1;
             options.ticks = fuzzCase->ticks;
             options.seed = fuzzCase->seed;

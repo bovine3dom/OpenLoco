@@ -366,6 +366,7 @@ set(OLOCO_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Vehicles/Routing.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Vehicles/RoutingManager.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Vehicles/SignalFuzzer.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/Vehicles/SignalFuzzerLayout.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Vehicles/Vehicle.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Vehicles/Vehicle1.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Vehicles/Vehicle2.cpp"
