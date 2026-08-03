@@ -1188,6 +1188,44 @@ TEST_F(PathSignalsTest, ExcludesRouteWithConflictInsideImmediateReservation)
     EXPECT_EQ(getSecondReservedRouting(*reservingTrain), kTurnNorth);
 }
 
+TEST_F(PathSignalsTest, AdjacentDiagonalTrackDoesNotBlockReservation)
+{
+    constexpr uint16_t diagonalSouthWest = 1 << 3;
+    constexpr uint16_t diagonalNorthEast = diagonalSouthWest | (1 << 2);
+    constexpr Pos3 currentPos{ 352, 288, 32 };
+    constexpr Pos3 firstPos{ 320, 320, 32 };
+    constexpr Pos3 secondPos{ 288, 352, 32 };
+    constexpr Pos3 adjacentTrackStart{ 320, 352, 32 };
+    constexpr Pos3 adjacentTrainPos{ 288, 384, 32 };
+
+    addTrack(currentPos, 1, 0);
+    addTrack(firstPos, 1, 0);
+    addTrack(secondPos, 1, 0);
+    addTrack(adjacentTrackStart, 1, 0);
+    auto* reservingTrain = createTrain(currentPos, diagonalSouthWest);
+    ASSERT_NE(reservingTrain, nullptr);
+    ASSERT_NE(createTrain(adjacentTrainPos, diagonalNorthEast), nullptr);
+
+    EXPECT_TRUE(OpenLoco::Vehicles::PathSignals::tryReservePath(*reservingTrain, firstPos, diagonalSouthWest));
+}
+
+TEST_F(PathSignalsTest, SameDiagonalTrackBlocksReservation)
+{
+    constexpr uint16_t diagonalSouthWest = 1 << 3;
+    constexpr Pos3 currentPos{ 352, 288, 32 };
+    constexpr Pos3 firstPos{ 320, 320, 32 };
+    constexpr Pos3 blockedPos{ 288, 352, 32 };
+
+    addTrack(currentPos, 1, 0);
+    addTrack(firstPos, 1, 0);
+    addTrack(blockedPos, 1, 0);
+    auto* reservingTrain = createTrain(currentPos, diagonalSouthWest);
+    ASSERT_NE(reservingTrain, nullptr);
+    ASSERT_NE(createTrain(blockedPos, diagonalSouthWest), nullptr);
+
+    EXPECT_FALSE(OpenLoco::Vehicles::PathSignals::tryReservePath(*reservingTrain, firstPos, diagonalSouthWest));
+}
+
 TEST_F(PathSignalsTest, ChoosesShorterRouteWhenBothRoutesAreClear)
 {
     addTwoRouteJunction();

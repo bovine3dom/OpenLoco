@@ -299,9 +299,9 @@ namespace OpenLoco::Vehicles::SignalFuzzer
         {
             struct Claim
             {
-                uint8_t quarters{};
-                uint8_t occupiedQuarters{};
-                uint8_t pathReservedQuarters{};
+                uint32_t mask{};
+                uint32_t occupiedMask{};
+                uint32_t pathReservedMask{};
             };
             std::map<std::tuple<coord_t, coord_t, coord_t>, std::map<EntityId, Claim>> claims;
             std::set<uint16_t> activeReservations;
@@ -321,9 +321,9 @@ namespace OpenLoco::Vehicles::SignalFuzzer
                     continue;
                 }
                 auto& claim = claims[{ resource.pos.x, resource.pos.y, resource.pos.z }][resource.vehicle];
-                claim.quarters |= resource.quarters;
-                claim.occupiedQuarters |= resource.occupied ? resource.quarters : 0;
-                claim.pathReservedQuarters |= pathReserved ? resource.quarters : 0;
+                claim.mask |= resource.conflictMask;
+                claim.occupiedMask |= resource.occupied ? resource.conflictMask : 0;
+                claim.pathReservedMask |= pathReserved ? resource.conflictMask : 0;
             }
             std::erase_if(_pathReservations, [&activeReservations](const auto& reservation) {
                 return !activeReservations.contains(reservation.first);
@@ -342,7 +342,12 @@ namespace OpenLoco::Vehicles::SignalFuzzer
                         {
                             continue;
                         }
-                        const auto overlappingQuarters = static_cast<uint8_t>(first->second.quarters & second->second.quarters);
+                        const auto overlapMask = first->second.mask & second->second.mask;
+                        uint8_t overlappingQuarters = 0;
+                        for (uint8_t connection = 0; connection < 8; ++connection)
+                        {
+                            overlappingQuarters |= static_cast<uint8_t>((overlapMask >> (connection * 4)) & 0xF);
+                        }
                         if (overlappingQuarters == 0)
                         {
                             continue;
@@ -354,10 +359,10 @@ namespace OpenLoco::Vehicles::SignalFuzzer
                             { x, y, z },
                             overlappingQuarters,
                             tick,
-                            (first->second.occupiedQuarters & overlappingQuarters) != 0,
-                            (second->second.occupiedQuarters & overlappingQuarters) != 0,
-                            (first->second.pathReservedQuarters & overlappingQuarters) != 0,
-                            (second->second.pathReservedQuarters & overlappingQuarters) != 0,
+                            (first->second.occupiedMask & overlapMask) != 0,
+                            (second->second.occupiedMask & overlapMask) != 0,
+                            (first->second.pathReservedMask & overlapMask) != 0,
+                            (second->second.pathReservedMask & overlapMask) != 0,
                         };
                         if (conflict.isPathReservationConflict())
                         {

@@ -20,7 +20,7 @@ namespace OpenLoco::Vehicles::PathSignals
         World::Pos3 routePos;
         World::Pos3 pos;
         uint16_t routing;
-        uint8_t quarters;
+        uint32_t conflictMask; // Four occupied-quarter bits per track connection flag.
         bool occupied;
     };
 

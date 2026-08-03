@@ -37,8 +37,10 @@ namespace OpenLoco::Vehicles::PathSignals
     struct Resource
     {
         Pos3 pos;
-        uint8_t quarters;
+        uint32_t conflictMask;
     };
+
+    using ResourceMasks = std::unordered_map<uint64_t, uint32_t>;
 
     struct SearchNode
     {
@@ -92,6 +94,20 @@ namespace OpenLoco::Vehicles::PathSignals
             | (static_cast<uint64_t>(static_cast<uint16_t>(pos.z)) << 32);
     }
 
+    // Pack quarters by connection flag so adjacent diagonal tracks remain distinct.
+    static uint32_t getConflictMask(const uint8_t quarters, const uint8_t connectFlags)
+    {
+        uint32_t mask = 0;
+        for (uint8_t connection = 0; connection < 8; ++connection)
+        {
+            if ((connectFlags & (1U << connection)) != 0)
+            {
+                mask |= static_cast<uint32_t>(quarters) << (connection * 4);
+            }
+        }
+        return mask;
+    }
+
     static Pos3 getTrackStart(Pos3 pos, const TrackAndDirection::_TrackAndDirection tad)
     {
         if (tad.isReversed())
@@ -121,7 +137,8 @@ namespace OpenLoco::Vehicles::PathSignals
             {
                 quarters = 0xF;
             }
-            if (!func(Resource{ piecePos, quarters }))
+            const auto conflictMask = getConflictMask(quarters, piece.connectFlags[tad.cardinalDirection()]);
+            if (!func(Resource{ piecePos, conflictMask }))
             {
                 return false;
             }
@@ -169,11 +186,11 @@ namespace OpenLoco::Vehicles::PathSignals
         }
     }
 
-    static std::unordered_map<uint64_t, uint8_t> getClaimedResourceMask()
+    static ResourceMasks getClaimedResourceMask()
     {
-        std::unordered_map<uint64_t, uint8_t> claimed;
+        ResourceMasks claimed;
         forEachClaimedResource([&claimed](const auto&, const auto, const auto&, const auto, const auto& resource, const bool) {
-            claimed[getResourceKey(resource.pos)] |= resource.quarters;
+            claimed[getResourceKey(resource.pos)] |= resource.conflictMask;
         });
         return claimed;
     }
@@ -182,7 +199,7 @@ namespace OpenLoco::Vehicles::PathSignals
     {
         std::vector<ClaimedResource> result;
         forEachClaimedResource([&result](const auto& head, const auto handle, const auto& routePos, const auto routing, const auto& resource, const bool occupied) {
-            result.push_back({ head.id, handle, routePos, resource.pos, routing, resource.quarters, occupied });
+            result.push_back({ head.id, handle, routePos, resource.pos, routing, resource.conflictMask, occupied });
         });
         return result;
     }
@@ -251,9 +268,9 @@ namespace OpenLoco::Vehicles::PathSignals
         return path;
     }
 
-    static bool hasConflict(const std::vector<uint16_t>& path, const Pos3& firstPos, const std::unordered_map<uint64_t, uint8_t>& claimed)
+    static bool hasConflict(const std::vector<uint16_t>& path, const Pos3& firstPos, const ResourceMasks& claimed)
     {
-        std::unordered_map<uint64_t, uint8_t> pathResources;
+        ResourceMasks pathResources;
         std::vector<Resource> resources;
         auto pos = firstPos;
         for (const auto routing : path)
@@ -264,27 +281,27 @@ namespace OpenLoco::Vehicles::PathSignals
             {
                 const auto key = getResourceKey(resource.pos);
                 const auto existing = claimed.find(key);
-                if (existing != claimed.end() && (existing->second & resource.quarters) != 0)
+                if (existing != claimed.end() && (existing->second & resource.conflictMask) != 0)
                 {
                     return true;
                 }
-                if ((pathResources[key] & resource.quarters) != 0)
+                if ((pathResources[key] & resource.conflictMask) != 0)
                 {
                     return true;
                 }
-                pathResources[key] |= resource.quarters;
+                pathResources[key] |= resource.conflictMask;
             }
             pos += TrackData::getUnkTrack(routing & Track::AdditionalTaDFlags::basicTaDMask).pos;
         }
         return false;
     }
 
-    static bool isClaimed(const Pos3& pos, const uint16_t routing, const std::unordered_map<uint64_t, uint8_t>& claimed)
+    static bool isClaimed(const Pos3& pos, const uint16_t routing, const ResourceMasks& claimed)
     {
         auto hasClaim = false;
         forEachResource(pos, routing, [&claimed, &hasClaim](const auto& resource) {
             const auto existing = claimed.find(getResourceKey(resource.pos));
-            hasClaim = existing != claimed.end() && (existing->second & resource.quarters) != 0;
+            hasClaim = existing != claimed.end() && (existing->second & resource.conflictMask) != 0;
             return !hasClaim;
         });
         return hasClaim;
@@ -295,7 +312,7 @@ namespace OpenLoco::Vehicles::PathSignals
         return static_cast<uint32_t>(std::min<uint64_t>(static_cast<uint64_t>(lhs) + rhs, std::numeric_limits<uint32_t>::max()));
     }
 
-    static uint32_t getRoutingWeighting(const Pos3& pos, const uint16_t routing, const uint8_t trackType, const bool includeTrackWeighting, const std::unordered_map<uint64_t, uint8_t>& claimed)
+    static uint32_t getRoutingWeighting(const Pos3& pos, const uint16_t routing, const uint8_t trackType, const bool includeTrackWeighting, const ResourceMasks& claimed)
     {
         TrackAndDirection::_TrackAndDirection tad{ 0, 0 };
         tad._data = routing & Track::AdditionalTaDFlags::basicTaDMask;
@@ -343,7 +360,8 @@ namespace OpenLoco::Vehicles::PathSignals
                 for (const auto& target : targetResources)
                 {
                     const auto conflict = std::ranges::find_if(routeResources, [&target](const auto& resource) {
-                        return resource.pos == target.pos && (resource.quarters & target.quarters) != 0;
+                        return resource.pos == target.pos
+                            && (resource.conflictMask & target.conflictMask) != 0;
                     });
                     if (conflict != routeResources.end())
                     {
@@ -390,7 +408,7 @@ namespace OpenLoco::Vehicles::PathSignals
         const uint8_t requiredMods,
         const uint8_t queryMods,
         const Target& target,
-        const std::unordered_map<uint64_t, uint8_t>& claimed)
+        const ResourceMasks& claimed)
     {
         struct PendingNode
         {
