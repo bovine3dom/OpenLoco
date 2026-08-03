@@ -8,8 +8,11 @@ so far:
 - rail pathfinding for path signals
 - undo
 - water pathfinding
-- build while paused
-- ~30x faster partial rebuilds
+- construction while paused
+- ~30x faster partial development (coding...) rebuilds
+- cargo visualisation
+- unbunching
+- shared orders (hold control while cloning or 'filter' vehicle list by matching orders then click the ghostly button
 
 
 
