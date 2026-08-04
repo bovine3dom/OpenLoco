@@ -5,6 +5,7 @@
 #include "S5/S5GameState.h"
 #include "S5/S5TileElement.h"
 #include <OpenLoco/CargoDist/CargoDist.h>
+#include <OpenLoco/Vehicles/RoutingManager.h>
 #include <OpenLoco/Vehicles/SharedOrderManager.h>
 #include <optional>
 
@@ -21,5 +22,6 @@ namespace OpenLoco::S5
         std::vector<std::pair<ObjectHeader, std::vector<std::byte>>> packedObjects;
         std::optional<CargoDist::State> cargoDistState;
         std::optional<Vehicles::SharedOrderManager::State> sharedOrderState;
+        std::optional<Vehicles::RoutingManager::State> pathReservationState;
     };
 }

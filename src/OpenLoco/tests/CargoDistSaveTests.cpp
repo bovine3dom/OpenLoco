@@ -99,7 +99,8 @@ namespace
         MemoryStream& stream,
         const State* cargoDistState,
         bool legacyExtension = false,
-        const Vehicles::SharedOrderManager::State* sharedOrderState = nullptr)
+        const Vehicles::SharedOrderManager::State* sharedOrderState = nullptr,
+        const Vehicles::RoutingManager::State* pathReservationState = nullptr)
     {
         SawyerStreamWriter writer(stream);
         S5::Header header{};
@@ -115,11 +116,11 @@ namespace
 
         std::array<std::byte, sizeof(S5::TileElement)> tile{};
         writer.writeChunk(SawyerEncoding::uncompressed, tile.data(), tile.size());
-        if (cargoDistState != nullptr || sharedOrderState != nullptr)
+        if (cargoDistState != nullptr || sharedOrderState != nullptr || pathReservationState != nullptr)
         {
             const auto encoded = legacyExtension
                 ? encodeState(*cargoDistState)
-                : S5::SaveExtension::encode({ cargoDistState, sharedOrderState });
+                : S5::SaveExtension::encode({ cargoDistState, sharedOrderState, pathReservationState });
             writer.writeChunk(SawyerEncoding::uncompressed, encoded.data(), encoded.size());
         }
         writer.writeChecksum();
@@ -232,8 +233,10 @@ TEST(CargoDistSave, S5TailRoundTripsExtension)
     const auto original = populatedState();
     Vehicles::SharedOrderManager::State sharedOrders;
     sharedOrders.groups = { { { entity(3), entity(8) } } };
+    Vehicles::RoutingManager::State pathReservations;
+    pathReservations.pathReservedRoutings[7] = uint64_t{ 1 } << 3;
     MemoryStream stream;
-    writeMinimalSave(stream, &original, false, &sharedOrders);
+    writeMinimalSave(stream, &original, false, &sharedOrders, &pathReservations);
 
     const auto save = S5::loadSave(stream);
 
@@ -241,6 +244,8 @@ TEST(CargoDistSave, S5TailRoundTripsExtension)
     expectStatesEqual(original, *save->cargoDistState);
     ASSERT_TRUE(save->sharedOrderState.has_value());
     EXPECT_EQ(*save->sharedOrderState, sharedOrders);
+    ASSERT_TRUE(save->pathReservationState.has_value());
+    EXPECT_EQ(*save->pathReservationState, pathReservations);
 }
 
 TEST(CargoDistSave, LegacyS5WithoutExtensionStillLoads)

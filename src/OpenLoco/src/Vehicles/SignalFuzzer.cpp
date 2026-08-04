@@ -119,13 +119,6 @@ namespace OpenLoco::Vehicles::SignalFuzzer
             std::optional<Collision> collision;
         };
 
-        struct TrackedReservation
-        {
-            EntityId vehicle;
-            World::Pos3 pos;
-            uint16_t routing;
-        };
-
         struct CaseResult
         {
             std::optional<Collision> collision;
@@ -143,7 +136,6 @@ namespace OpenLoco::Vehicles::SignalFuzzer
         };
 
         static RunContext* _runContext;
-        static std::map<uint16_t, TrackedReservation> _pathReservations;
 
         static void onCollision(const EntityId sourceHead, const EntityId collidedComponent)
         {
@@ -161,27 +153,18 @@ namespace OpenLoco::Vehicles::SignalFuzzer
             _runContext->collision = Collision{ sourceHead, targetHead, _runContext->tick };
         }
 
-        static void onPathReservation(const EntityId vehicle, const RoutingHandle handle, const World::Pos3 pos, const uint16_t routing)
-        {
-            _pathReservations.insert_or_assign(handle._data, TrackedReservation{ vehicle, pos, routing });
-        }
-
         struct RunMonitor
         {
             explicit RunMonitor(RunContext& context)
             {
-                _pathReservations.clear();
                 _runContext = &context;
                 VehicleCollision::setCallback(onCollision);
-                PathSignals::setReservationCallback(onPathReservation);
             }
 
             ~RunMonitor()
             {
-                PathSignals::setReservationCallback(nullptr);
                 VehicleCollision::setCallback(nullptr);
                 _runContext = nullptr;
-                _pathReservations.clear();
             }
         };
 
@@ -304,18 +287,9 @@ namespace OpenLoco::Vehicles::SignalFuzzer
                 uint32_t pathReservedMask{};
             };
             std::map<std::tuple<coord_t, coord_t, coord_t>, std::map<EntityId, Claim>> claims;
-            std::set<uint16_t> activeReservations;
             for (const auto& resource : PathSignals::getClaimedResources())
             {
-                const auto reservation = _pathReservations.find(resource.handle._data);
-                const auto pathReserved = reservation != _pathReservations.end()
-                    && reservation->second.vehicle == resource.vehicle
-                    && reservation->second.pos == resource.routePos
-                    && reservation->second.routing == resource.routing;
-                if (pathReserved)
-                {
-                    activeReservations.insert(resource.handle._data);
-                }
+                const auto pathReserved = RoutingManager::isPathReserved(resource.handle);
                 if (std::abs(static_cast<int32_t>(resource.pos.x) - focus.centre.x) + std::abs(static_cast<int32_t>(resource.pos.y) - focus.centre.y) > focus.radius)
                 {
                     continue;
@@ -325,9 +299,6 @@ namespace OpenLoco::Vehicles::SignalFuzzer
                 claim.occupiedMask |= resource.occupied ? resource.conflictMask : 0;
                 claim.pathReservedMask |= pathReserved ? resource.conflictMask : 0;
             }
-            std::erase_if(_pathReservations, [&activeReservations](const auto& reservation) {
-                return !activeReservations.contains(reservation.first);
-            });
 
             std::optional<RouteConflict> unprotectedConflict;
             for (const auto& [pos, claimsAtPosition] : claims)

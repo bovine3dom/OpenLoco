@@ -3926,6 +3926,7 @@ namespace OpenLoco::Vehicles
         else
         {
             // 0x004AD782
+            RoutingManager::clearPathReservations(routingHandle);
             var_38 |= Flags38::unk_2;
             veh1.var_38 |= Flags38::unk_2;
 
@@ -4506,6 +4507,7 @@ namespace OpenLoco::Vehicles
         auto routings = RoutingManager::RingView(head.routingHandle);
         uint16_t connection = tc.connections[0];
         const auto reservedRouting = RoutingManager::getRouting(*++routings.begin());
+        std::optional<TrackAndDirection::_TrackAndDirection> deferredCurrentPathSignal;
         if (reservedRouting != RoutingManager::kAllocatedButFreeRouting)
         {
             const auto reservedBasicTad = reservedRouting & World::Track::AdditionalTaDFlags::basicTaDMask;
@@ -4529,6 +4531,52 @@ namespace OpenLoco::Vehicles
                 Sub4AC3D3State state{};
                 connection = trackPathing(head, nextPos, tc, requiredMods, queryMods, false, state);
             }
+        }
+        if (reservedRouting == RoutingManager::kAllocatedButFreeRouting)
+        {
+            TrackAndDirection::_TrackAndDirection currentTad{ 0, 0 };
+            const auto currentRouting = RoutingManager::getRouting(head.routingHandle);
+            if ((currentRouting & World::Track::AdditionalTaDFlags::hasSignal) != 0)
+            {
+                currentTad._data = currentRouting & World::Track::AdditionalTaDFlags::basicTaDMask;
+                const auto signalMode = getSignalMode(pos, currentTad, head.trackType, 0);
+                if (signalMode.has_value() && *signalMode != World::SignalMode::block)
+                {
+                    if ((connection & World::Track::AdditionalTaDFlags::hasSignal) != 0 && tc.connections.size() == 1)
+                    {
+                        setSignalState(pos, currentTad, head.trackType, 1);
+                        deferredCurrentPathSignal = currentTad;
+                    }
+                    else
+                    {
+                        const auto preferredConnection = connection & World::Track::AdditionalTaDFlags::basicTaDMask;
+                        auto reserved = PathSignals::tryReservePath(head, nextPos, connection);
+                        for (const auto candidate : tc.connections)
+                        {
+                            if (reserved || (candidate & World::Track::AdditionalTaDFlags::basicTaDMask) == preferredConnection)
+                            {
+                                continue;
+                            }
+                            reserved = PathSignals::tryReservePath(head, nextPos, candidate);
+                            if (reserved)
+                            {
+                                connection = candidate;
+                            }
+                        }
+                        if (!reserved)
+                        {
+                            setSignalState(pos, currentTad, head.trackType, 1);
+                            const auto waitFlags = static_cast<uint8_t>(*signalMode == World::SignalMode::oneWayPath ? enumValue(SignalStateFlags::blockedNoRoute) : 0);
+                            return Sub4ACEE7Result{ 3, waitFlags, StationId::null };
+                        }
+                        setSignalState(pos, currentTad, head.trackType, 0);
+                    }
+                }
+            }
+        }
+        if (PathSignals::hasPathReservationConflict(head.id, nextPos, connection))
+        {
+            return Sub4ACEE7Result{ 1, 0, StationId::null };
         }
         if (tc.connections.size() > 1)
         {
@@ -4687,6 +4735,10 @@ namespace OpenLoco::Vehicles
                     }
                 }
             }
+        }
+        if (deferredCurrentPathSignal.has_value())
+        {
+            setSignalState(pos, *deferredCurrentPathSignal, head.trackType, 0);
         }
         // 0x004AD5F1
         // Mostly the same as ROAD but with track equivalent functions

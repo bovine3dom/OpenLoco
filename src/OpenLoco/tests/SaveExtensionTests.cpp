@@ -128,6 +128,25 @@ TEST(SaveExtension, RoundTripsSharedOrdersOnly)
     EXPECT_EQ(*decoded.sharedOrderState, shared);
 }
 
+TEST(SaveExtension, RoundTripsPathReservations)
+{
+    Vehicles::RoutingManager::State reservations;
+    reservations.pathReservedRoutings[7] = (uint64_t{ 1 } << 3) | (uint64_t{ 1 } << 63);
+    reservations.pathReservedRoutings[42] = uint64_t{ 1 } << 9;
+
+    const auto encoded = S5::SaveExtension::encode({ nullptr, nullptr, &reservations });
+    const auto decoded = S5::SaveExtension::decode(encoded);
+
+    EXPECT_FALSE(decoded.cargoDistState.has_value());
+    EXPECT_FALSE(decoded.sharedOrderState.has_value());
+    ASSERT_TRUE(decoded.pathReservationState.has_value());
+    EXPECT_EQ(*decoded.pathReservationState, reservations);
+    EXPECT_EQ(S5::SaveExtension::encode(decoded), encoded);
+    expectTag(encoded, 16, "PRES");
+    EXPECT_EQ(readU16(encoded, 20), 1);
+    EXPECT_EQ(readU16(encoded, 22), 1);
+}
+
 TEST(SaveExtension, DecodesLegacyCargoDist)
 {
     const auto cargo = cargoDistState();

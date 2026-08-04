@@ -17,17 +17,13 @@ namespace OpenLoco::Vehicles::PathSignals
     {
         EntityId vehicle;
         RoutingHandle handle;
-        World::Pos3 routePos;
         World::Pos3 pos;
-        uint16_t routing;
         uint32_t conflictMask; // Four occupied-quarter bits per track connection flag.
         bool occupied;
     };
 
-    using ReservationCallback = void (*)(EntityId vehicle, RoutingHandle handle, World::Pos3 pos, uint16_t routing);
-
     bool tryReservePath(VehicleHead& head, const World::Pos3& firstPos, uint16_t firstRouting);
     bool isPathReserved(const World::Pos3& pos, uint16_t routing);
+    bool hasPathReservationConflict(EntityId vehicle, const World::Pos3& pos, uint16_t routing);
     std::vector<ClaimedResource> getClaimedResources();
-    void setReservationCallback(ReservationCallback callback);
 }

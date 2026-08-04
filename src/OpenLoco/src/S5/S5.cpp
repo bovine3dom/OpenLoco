@@ -41,6 +41,7 @@
 #include "Ui/ProgressBar.h"
 #include "Ui/WindowManager.h"
 #include "Vehicles/OrderManager.h"
+#include "Vehicles/RoutingManager.h"
 #include "Vehicles/SharedOrderManager.h"
 #include "World/CompanyManager.h"
 #include "World/IndustryManager.h"
@@ -562,9 +563,19 @@ namespace OpenLoco::S5
                 {
                     throw Exception::RuntimeError("Invalid shared vehicle order state");
                 }
-                extensionData = sharedOrderState.groups.empty()
+                const auto pathReservationState = Vehicles::RoutingManager::captureState();
+                if (!Vehicles::RoutingManager::validateState(pathReservationState))
+                {
+                    throw Exception::RuntimeError("Invalid path reservation state");
+                }
+                const auto hasPathReservations = std::ranges::any_of(pathReservationState.pathReservedRoutings, [](const auto mask) { return mask != 0; });
+                extensionData = sharedOrderState.groups.empty() && !hasPathReservations
                     ? CargoDist::encodeState(CargoDist::getStateConst())
-                    : SaveExtension::encode({ &CargoDist::getStateConst(), &sharedOrderState });
+                    : SaveExtension::encode({
+                          &CargoDist::getStateConst(),
+                          sharedOrderState.groups.empty() ? nullptr : &sharedOrderState,
+                          hasPathReservations ? &pathReservationState : nullptr,
+                      });
             }
 
             SawyerStreamWriter fs(stream);
@@ -736,6 +747,7 @@ namespace OpenLoco::S5
                 auto extensionState = SaveExtension::decode(extensionData);
                 file->cargoDistState = std::move(extensionState.cargoDistState);
                 file->sharedOrderState = std::move(extensionState.sharedOrderState);
+                file->pathReservationState = std::move(extensionState.pathReservationState);
             }
             if (stream.getPosition() != checksumPosition)
             {
@@ -931,6 +943,11 @@ namespace OpenLoco::S5
             {
                 throw LoadException("Invalid shared vehicle order state", StringIds::error_file_contains_invalid_data);
             }
+            if (file->pathReservationState.has_value() && !hasLoadFlags(flags, LoadFlags::titleSequence)
+                && !Vehicles::RoutingManager::validateState(*file->pathReservationState, *importedGameState))
+            {
+                throw LoadException("Invalid path reservation state", StringIds::error_file_contains_invalid_data);
+            }
 
             // Load required objects
             auto loadObjectResult = ObjectManager::loadAll(file->requiredObjects);
@@ -1084,6 +1101,11 @@ namespace OpenLoco::S5
                     && !Vehicles::SharedOrderManager::restoreState(*file->sharedOrderState))
                 {
                     throw Exception::RuntimeError("Invalid shared vehicle order state");
+                }
+                if (file->pathReservationState.has_value()
+                    && !Vehicles::RoutingManager::restoreState(*file->pathReservationState))
+                {
+                    throw Exception::RuntimeError("Invalid path reservation state");
                 }
                 if (file->cargoDistState.has_value())
                 {

@@ -47,6 +47,12 @@ namespace OpenLoco::S5::SaveExtension
             std::byte{ 'O' },
             std::byte{ 'R' },
         };
+        constexpr std::array<std::byte, 4> kPathReservationsTag = {
+            std::byte{ 'P' },
+            std::byte{ 'R' },
+            std::byte{ 'E' },
+            std::byte{ 'S' },
+        };
         constexpr uint16_t kVersion = 1;
         constexpr uint16_t kHeaderSize = 16;
         constexpr uint16_t kSectionVersion = 1;
@@ -224,6 +230,28 @@ namespace OpenLoco::S5::SaveExtension
             return state;
         }
 
+        std::vector<std::byte> encodePathReservations(const Vehicles::RoutingManager::State& state)
+        {
+            Writer payload;
+            for (const auto mask : state.pathReservedRoutings)
+            {
+                payload.write(mask);
+            }
+            return payload.take();
+        }
+
+        Vehicles::RoutingManager::State decodePathReservations(std::span<const std::byte> data)
+        {
+            require(data.size() == Limits::kMaxVehicles * sizeof(uint64_t), "Invalid path reservation data size");
+            Reader input(data);
+            Vehicles::RoutingManager::State state;
+            for (auto& mask : state.pathReservedRoutings)
+            {
+                mask = input.read<uint64_t>();
+            }
+            return state;
+        }
+
         bool hasMagic(std::span<const std::byte> data, std::span<const std::byte, 8> magic)
         {
             return data.size() >= magic.size() && std::ranges::equal(data.first(magic.size()), magic);
@@ -235,6 +263,7 @@ namespace OpenLoco::S5::SaveExtension
         return encode(StateView{
             state.cargoDistState ? &*state.cargoDistState : nullptr,
             state.sharedOrderState ? &*state.sharedOrderState : nullptr,
+            state.pathReservationState ? &*state.pathReservationState : nullptr,
         });
     }
 
@@ -250,6 +279,11 @@ namespace OpenLoco::S5::SaveExtension
         {
             const auto sharedOrders = encodeSharedOrders(*state.sharedOrderState);
             appendSection(payload, kSharedOrdersTag, sharedOrders, kSectionRequired);
+        }
+        if (state.pathReservationState != nullptr)
+        {
+            const auto pathReservations = encodePathReservations(*state.pathReservationState);
+            appendSection(payload, kPathReservationsTag, pathReservations, kSectionRequired);
         }
 
         require(payload.size() <= std::numeric_limits<uint32_t>::max(), "Save extension is too large");
@@ -284,6 +318,7 @@ namespace OpenLoco::S5::SaveExtension
         State state;
         bool hasCargoDist = false;
         bool hasSharedOrders = false;
+        bool hasPathReservations = false;
         while (!sections.empty())
         {
             const auto tag = sections.readBytes(4);
@@ -306,6 +341,14 @@ namespace OpenLoco::S5::SaveExtension
                 hasSharedOrders = true;
                 require(version == kSectionVersion, "Unsupported shared order section version");
                 state.sharedOrderState = decodeSharedOrders(sectionData);
+            }
+            else if (std::ranges::equal(tag, kPathReservationsTag))
+            {
+                require((flags & ~kKnownSectionFlags) == 0, "Invalid path reservation section flags");
+                require(!hasPathReservations, "Duplicate path reservation save extension section");
+                hasPathReservations = true;
+                require(version == kSectionVersion, "Unsupported path reservation section version");
+                state.pathReservationState = decodePathReservations(sectionData);
             }
             else
             {

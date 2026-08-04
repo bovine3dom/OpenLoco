@@ -32,7 +32,6 @@ namespace OpenLoco::Vehicles::PathSignals
     // Prefer a clear detour of up to roughly sixteen straight track pieces.
     static constexpr uint32_t kClaimedRoutingPenalty = 512;
     static constexpr uint16_t kNoParent = std::numeric_limits<uint16_t>::max();
-    static ReservationCallback _reservationCallback;
 
     struct Resource
     {
@@ -175,7 +174,7 @@ namespace OpenLoco::Vehicles::PathSignals
                 appendResources(resources, pos, routing);
                 for (const auto& resource : resources)
                 {
-                    func(*head, handle, pos, routing, resource, occupied);
+                    func(*head, handle, resource, occupied);
                 }
                 pos += TrackData::getUnkTrack(routing & Track::AdditionalTaDFlags::basicTaDMask).pos;
                 if (handle == head->routingHandle)
@@ -189,7 +188,7 @@ namespace OpenLoco::Vehicles::PathSignals
     static ResourceMasks getClaimedResourceMask()
     {
         ResourceMasks claimed;
-        forEachClaimedResource([&claimed](const auto&, const auto, const auto&, const auto, const auto& resource, const bool) {
+        forEachClaimedResource([&claimed](const auto&, const auto, const auto& resource, const bool) {
             claimed[getResourceKey(resource.pos)] |= resource.conflictMask;
         });
         return claimed;
@@ -198,15 +197,10 @@ namespace OpenLoco::Vehicles::PathSignals
     std::vector<ClaimedResource> getClaimedResources()
     {
         std::vector<ClaimedResource> result;
-        forEachClaimedResource([&result](const auto& head, const auto handle, const auto& routePos, const auto routing, const auto& resource, const bool occupied) {
-            result.push_back({ head.id, handle, routePos, resource.pos, routing, resource.conflictMask, occupied });
+        forEachClaimedResource([&result](const auto& head, const auto handle, const auto& resource, const bool occupied) {
+            result.push_back({ head.id, handle, resource.pos, resource.conflictMask, occupied });
         });
         return result;
-    }
-
-    void setReservationCallback(const ReservationCallback callback)
-    {
-        _reservationCallback = callback;
     }
 
     static Target getTarget(const VehicleHead& head)
@@ -372,6 +366,47 @@ namespace OpenLoco::Vehicles::PathSignals
             }
         }
         return false;
+    }
+
+    bool hasPathReservationConflict(const EntityId vehicle, const Pos3& pos, const uint16_t routing)
+    {
+        if (!RoutingManager::hasPathReservations())
+        {
+            return false;
+        }
+        std::vector<Resource> targetResources;
+        appendResources(targetResources, pos, routing);
+        auto hasConflict = false;
+        for (const auto* head : VehicleManager::VehicleList())
+        {
+            if (head->id == vehicle || head->mode != TransportMode::rail || head->tileX == -1
+                || !RoutingManager::hasPathReservations(head->routingHandle))
+            {
+                continue;
+            }
+
+            const Vehicle train(*head);
+            auto routePos = Pos3{ train.tail->tileX, train.tail->tileY, train.tail->tileBaseZ * kSmallZStep };
+            for (const auto handle : RoutingManager::RingView(train.tail->routingHandle))
+            {
+                const auto claimedRouting = RoutingManager::getRouting(handle);
+                if (RoutingManager::isPathReserved(handle))
+                {
+                    forEachResource(routePos, claimedRouting, [&](const auto& resource) {
+                        hasConflict = std::ranges::any_of(targetResources, [&resource](const auto& target) {
+                            return resource.pos == target.pos && (resource.conflictMask & target.conflictMask) != 0;
+                        });
+                        return !hasConflict;
+                    });
+                    if (hasConflict)
+                    {
+                        return true;
+                    }
+                }
+                routePos += TrackData::getUnkTrack(claimedRouting & Track::AdditionalTaDFlags::basicTaDMask).pos;
+            }
+        }
+        return hasConflict;
     }
 
     static bool isBetterCandidate(const Candidate& candidate, const Candidate& current)
@@ -573,7 +608,8 @@ namespace OpenLoco::Vehicles::PathSignals
 
         const auto considerCandidate = [&](const uint16_t tailIndex, const Pos3& endpoint, const bool reachedTarget, const uint32_t weighting, std::optional<std::pair<Pos3, uint16_t>> continuation) {
             auto path = getPath(nodes, tailIndex);
-            if (path.empty() || path.size() > maxPathLength || hasConflict(path, firstPos, claimed))
+            if (path.empty() || path.size() > maxPathLength || hasConflict(path, firstPos, claimed)
+                || (continuation.has_value() && isClaimed(continuation->first, continuation->second, claimed)))
             {
                 return;
             }
@@ -669,16 +705,11 @@ namespace OpenLoco::Vehicles::PathSignals
             }
         }
         handle = head.routingHandle;
-        auto pos = firstPos;
         for (const auto routing : best.routings)
         {
             handle.setIndex((handle.getIndex() + 1) & (Limits::kMaxRoutingsPerVehicle - 1));
             RoutingManager::setRouting(handle, routing);
-            if (_reservationCallback != nullptr)
-            {
-                _reservationCallback(head.id, handle, pos, routing);
-            }
-            pos += TrackData::getUnkTrack(routing & Track::AdditionalTaDFlags::basicTaDMask).pos;
+            RoutingManager::markPathReserved(handle);
         }
         return true;
     }

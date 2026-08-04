@@ -2,6 +2,7 @@
 #pragma once
 
 #include <OpenLoco/CargoDist/Save.h>
+#include <OpenLoco/Vehicles/RoutingManager.h>
 #include <OpenLoco/Vehicles/SharedOrderManager.h>
 #include <cstddef>
 #include <optional>
@@ -16,12 +17,14 @@ namespace OpenLoco::S5::SaveExtension
     {
         std::optional<CargoDist::State> cargoDistState;
         std::optional<Vehicles::SharedOrderManager::State> sharedOrderState;
+        std::optional<Vehicles::RoutingManager::State> pathReservationState;
     };
 
     struct StateView
     {
         const CargoDist::State* cargoDistState{};
         const Vehicles::SharedOrderManager::State* sharedOrderState{};
+        const Vehicles::RoutingManager::State* pathReservationState{};
     };
 
     std::vector<std::byte> encode(const State& state);

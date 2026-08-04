@@ -1,10 +1,17 @@
 #include "Vehicles/RoutingManager.h"
 #include "GameState.h"
 #include <algorithm>
+#include <bit>
 
 namespace OpenLoco::Vehicles::RoutingManager
 {
     static auto& routings() { return getGameState().routings; }
+    static auto& pathReservedRoutings() { return getGameState().pathReservedRoutings; }
+
+    static uint64_t getRoutingMask(const RoutingHandle handle)
+    {
+        return uint64_t{ 1 } << handle.getIndex();
+    }
 
     static std::optional<uint16_t> findFreeRoutingVehicleRef()
     {
@@ -21,6 +28,7 @@ namespace OpenLoco::Vehicles::RoutingManager
     {
         auto& vehRoutingArr = routings()[handle.getVehicleRef()];
         std::fill(std::begin(vehRoutingArr), std::end(vehRoutingArr), kAllocatedButFreeRouting);
+        clearPathReservations(handle);
     }
 
     bool isEmptyRoutingSlotAvailable()
@@ -36,6 +44,7 @@ namespace OpenLoco::Vehicles::RoutingManager
         {
             auto& vehRoutingArr = routings()[*vehicleRef];
             std::fill(std::begin(vehRoutingArr), std::end(vehRoutingArr), kAllocatedButFreeRouting);
+            pathReservedRoutings()[*vehicleRef] = 0;
             return { RoutingHandle(*vehicleRef, 0) };
         }
         return std::nullopt;
@@ -49,6 +58,10 @@ namespace OpenLoco::Vehicles::RoutingManager
     void setRouting(const RoutingHandle handle, uint16_t routing)
     {
         routings()[handle.getVehicleRef()][handle.getIndex()] = routing;
+        if (routing == kAllocatedButFreeRouting || routing == kRoutingNull)
+        {
+            pathReservedRoutings()[handle.getVehicleRef()] &= ~getRoutingMask(handle);
+        }
     }
 
     void freeRouting(const RoutingHandle handle)
@@ -56,17 +69,84 @@ namespace OpenLoco::Vehicles::RoutingManager
         setRouting(handle, kAllocatedButFreeRouting);
     }
 
+    void markPathReserved(const RoutingHandle handle)
+    {
+        pathReservedRoutings()[handle.getVehicleRef()] |= getRoutingMask(handle);
+    }
+
+    bool isPathReserved(const RoutingHandle handle)
+    {
+        return (pathReservedRoutings()[handle.getVehicleRef()] & getRoutingMask(handle)) != 0;
+    }
+
+    bool hasPathReservations()
+    {
+        return std::ranges::any_of(pathReservedRoutings(), [](const auto mask) { return mask != 0; });
+    }
+
+    bool hasPathReservations(const RoutingHandle handle)
+    {
+        return pathReservedRoutings()[handle.getVehicleRef()] != 0;
+    }
+
+    void clearPathReservations(const RoutingHandle handle)
+    {
+        pathReservedRoutings()[handle.getVehicleRef()] = 0;
+    }
+
     // 0x004B1E77
     void freeRoutingHandle(const RoutingHandle handle)
     {
         auto& vehRoutingArr = routings()[handle.getVehicleRef()];
         std::fill(std::begin(vehRoutingArr), std::end(vehRoutingArr), kRoutingNull);
+        clearPathReservations(handle);
     }
 
     // 0x004A8810
     void resetRoutingTable()
     {
         std::fill_n(&routings()[0][0], Limits::kMaxVehicles * Limits::kMaxRoutingsPerVehicle, kRoutingNull);
+        std::fill(std::begin(pathReservedRoutings()), std::end(pathReservedRoutings()), 0);
+    }
+
+    State captureState()
+    {
+        State state;
+        std::ranges::copy(pathReservedRoutings(), state.pathReservedRoutings.begin());
+        return state;
+    }
+
+    bool validateState(const State& state)
+    {
+        return validateState(state, getGameState());
+    }
+
+    bool validateState(const State& state, const GameState& gameState)
+    {
+        for (size_t vehicleRef = 0; vehicleRef < state.pathReservedRoutings.size(); ++vehicleRef)
+        {
+            auto reservationMask = state.pathReservedRoutings[vehicleRef];
+            while (reservationMask != 0)
+            {
+                const auto routing = gameState.routings[vehicleRef][std::countr_zero(reservationMask)];
+                if (routing == kAllocatedButFreeRouting || routing == kRoutingNull)
+                {
+                    return false;
+                }
+                reservationMask &= reservationMask - 1;
+            }
+        }
+        return true;
+    }
+
+    bool restoreState(const State& state)
+    {
+        if (!validateState(state))
+        {
+            return false;
+        }
+        std::ranges::copy(state.pathReservedRoutings, std::begin(pathReservedRoutings()));
+        return true;
     }
 
     RingView::Iterator::Iterator(const RoutingHandle& begin, bool isEnd, Direction direction)

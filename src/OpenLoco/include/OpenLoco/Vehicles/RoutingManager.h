@@ -2,16 +2,29 @@
 
 #include "Routing.h"
 
+#include <array>
 #include <iterator>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
+namespace OpenLoco
+{
+    struct GameState;
+}
+
 namespace OpenLoco::Vehicles::RoutingManager
 {
     constexpr uint16_t kAllocatedButFreeRouting = 0xFFFEU; // Indicates that this array entry is allocated to a vehicle but no routing has been set.
     constexpr uint16_t kRoutingNull = 0xFFFFU;             // Indicates that this array entry is unallocated to any vehicle.
+
+    struct State
+    {
+        std::array<uint64_t, Limits::kMaxVehicles> pathReservedRoutings{};
+
+        bool operator==(const State&) const = default;
+    };
 
     std::optional<RoutingHandle> getAndAllocateFreeRoutingHandle();
     void freeRoutingHandle(const RoutingHandle handle);
@@ -20,10 +33,19 @@ namespace OpenLoco::Vehicles::RoutingManager
     uint16_t getRouting(const RoutingHandle handle);
     void setRouting(const RoutingHandle handle, uint16_t routing);
     void freeRouting(const RoutingHandle handle);
+    void markPathReserved(const RoutingHandle handle);
+    bool isPathReserved(const RoutingHandle handle);
+    bool hasPathReservations();
+    bool hasPathReservations(const RoutingHandle handle);
+    void clearPathReservations(const RoutingHandle handle);
     // Equivalent of calling freeRouting on all routings for a single vehicle
     void resetRoutings(const RoutingHandle handle);
     bool isEmptyRoutingSlotAvailable();
     void resetRoutingTable();
+    State captureState();
+    bool validateState(const State& state);
+    bool validateState(const State& state, const GameState& gameState);
+    bool restoreState(const State& state);
 
     struct RingView
     {

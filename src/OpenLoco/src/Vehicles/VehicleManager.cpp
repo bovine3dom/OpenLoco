@@ -16,6 +16,7 @@
 #include "Ui/WindowManager.h"
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/Orders.h"
+#include "Vehicles/PathSignals.h"
 #include "Vehicles/RoutingManager.h"
 #include "Vehicles/Vehicle.h"
 #include "Vehicles/Vehicle1.h"
@@ -163,7 +164,8 @@ namespace OpenLoco::VehicleManager
         Vehicles::TrackAndDirection reverseTad = trackAndDirection;
         if (head->mode != TransportMode::road)
         {
-            if (Vehicles::sub_4A2A58(pos, trackAndDirection.track, head->owner, head->trackType) & (1U << 0))
+            if (Vehicles::PathSignals::hasPathReservationConflict(head->id, pos, trackAndDirection.track._data)
+                || (Vehicles::sub_4A2A58(pos, trackAndDirection.track, head->owner, head->trackType) & (1U << 0)))
             {
                 return PlaceDownResult::Unk1;
             }
@@ -220,7 +222,8 @@ namespace OpenLoco::VehicleManager
         }
         else
         {
-            if (Vehicles::sub_4A2A58(reversePos, reverseTad.track, head->owner, head->trackType) & (1U << 0))
+            if (Vehicles::PathSignals::hasPathReservationConflict(head->id, reversePos, reverseTad.track._data)
+                || (Vehicles::sub_4A2A58(reversePos, reverseTad.track, head->owner, head->trackType) & (1U << 0)))
             {
                 return PlaceDownResult::Unk1;
             }
