@@ -5,7 +5,7 @@ so far:
 - cargo distribution inspired by JGR/OpenTTD. it kinda 'just works' like i expect it to
 - UI scale separate from world scale
 - path signals (one-way: cannot pass behind, normal: may pass behind. double signal: basically never use this it is a trap and you will get deadlock)
-- rail pathfinding for path signals
+- rail pathfinding for path signals (nb: pretty buggy. trains take passengers on involuntary rail tours)
 - undo
 - water pathfinding
 - construction while paused
@@ -14,6 +14,11 @@ so far:
 - unbunching
 - shared orders (hold control while cloning or 'filter' vehicle list by matching orders then click the ghostly button
 - increase station join radius from 2 to 3 (and the equivalent for height)
+- some perf improvements (but mostly to my own bad stuff)
+- two more zoom levels
+- rail pathfinding looks ahead one stop/waypoint to improve platform selection
+- vehicle auto-renewal (in company menu. only for exact matches at the moment)
+- ctrl-click on a vehicle to start/stop it. fake £1 emitted/consumed for visual feedback
 
 
 
