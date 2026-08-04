@@ -1414,11 +1414,7 @@ namespace OpenLoco::Vehicles
     // 0x004A8DB7
     bool VehicleHead::sub_4A8DB7()
     {
-        sub_4AD778();
-        if (status == Status::approaching)
-        {
-            status = Status::travelling;
-        }
+        discardFutureRouting();
         return true;
     }
 
@@ -3995,6 +3991,15 @@ namespace OpenLoco::Vehicles
         veh1.moveTo(veh2.position);
     }
 
+    void VehicleHead::discardFutureRouting()
+    {
+        sub_4AD778();
+        if (status == Status::approaching)
+        {
+            status = Status::travelling;
+        }
+    }
+
     // 0x004AA625
     void VehicleHead::landCrashedUpdate()
     {
@@ -4608,26 +4613,15 @@ namespace OpenLoco::Vehicles
                     }
                     else
                     {
-                        const auto preferredConnection = connection & World::Track::AdditionalTaDFlags::basicTaDMask;
-                        auto reserved = PathSignals::tryReservePath(head, nextPos, connection);
-                        for (const auto candidate : tc.connections)
-                        {
-                            if (reserved || (candidate & World::Track::AdditionalTaDFlags::basicTaDMask) == preferredConnection)
-                            {
-                                continue;
-                            }
-                            reserved = PathSignals::tryReservePath(head, nextPos, candidate);
-                            if (reserved)
-                            {
-                                connection = candidate;
-                            }
-                        }
-                        if (!reserved)
+                        const auto reservedConnection = PathSignals::tryReservePath(
+                            head, nextPos, connection, std::span<const uint16_t>{ tc.connections.data(), tc.connections.size() });
+                        if (!reservedConnection.has_value())
                         {
                             setSignalState(pos, currentTad, head.trackType, 1);
                             const auto waitFlags = static_cast<uint8_t>(*signalMode == World::SignalMode::oneWayPath ? enumValue(SignalStateFlags::blockedNoRoute) : 0);
                             return Sub4ACEE7Result{ 3, waitFlags, StationId::null };
                         }
+                        connection = *reservedConnection;
                         setSignalState(pos, currentTad, head.trackType, 0);
                     }
                 }
@@ -6240,11 +6234,7 @@ namespace OpenLoco::Vehicles
                 component.body->invalidateSprite();
             }
         }
-        sub_4AD778();
-        if (status == Status::approaching)
-        {
-            status = Status::travelling;
-        }
+        discardFutureRouting();
 
         if (mode == TransportMode::road)
         {

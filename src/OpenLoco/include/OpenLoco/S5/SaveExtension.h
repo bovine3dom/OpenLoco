@@ -19,6 +19,7 @@ namespace OpenLoco::S5::SaveExtension
         std::optional<CargoDist::State> cargoDistState;
         std::optional<Vehicles::SharedOrderManager::State> sharedOrderState;
         std::optional<Vehicles::RoutingManager::State> pathReservationState;
+        bool discardPathReservationsOnLoad{};
         std::optional<Vehicles::VehicleAutoRenewal::State> vehicleAutoRenewalState;
     };
 
@@ -28,6 +29,7 @@ namespace OpenLoco::S5::SaveExtension
         const Vehicles::SharedOrderManager::State* sharedOrderState{};
         const Vehicles::RoutingManager::State* pathReservationState{};
         const Vehicles::VehicleAutoRenewal::State* vehicleAutoRenewalState{};
+        bool discardPathReservationsOnLoad{};
     };
 
     std::vector<std::byte> encode(const State& state);

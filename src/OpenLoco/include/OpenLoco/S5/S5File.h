@@ -24,6 +24,7 @@ namespace OpenLoco::S5
         std::optional<CargoDist::State> cargoDistState;
         std::optional<Vehicles::SharedOrderManager::State> sharedOrderState;
         std::optional<Vehicles::RoutingManager::State> pathReservationState;
+        bool discardPathReservationsOnLoad{};
         std::optional<Vehicles::VehicleAutoRenewal::State> vehicleAutoRenewalState;
     };
 }

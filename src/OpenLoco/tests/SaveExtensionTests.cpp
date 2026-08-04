@@ -150,10 +150,36 @@ TEST(SaveExtension, RoundTripsPathReservations)
     EXPECT_FALSE(decoded.sharedOrderState.has_value());
     ASSERT_TRUE(decoded.pathReservationState.has_value());
     EXPECT_EQ(*decoded.pathReservationState, reservations);
+    EXPECT_FALSE(decoded.discardPathReservationsOnLoad);
     EXPECT_EQ(S5::SaveExtension::encode(decoded), encoded);
     expectTag(encoded, 16, "PRES");
-    EXPECT_EQ(readU16(encoded, 20), 1);
+    EXPECT_EQ(readU16(encoded, 20), 2);
     EXPECT_EQ(readU16(encoded, 22), 1);
+}
+
+TEST(SaveExtension, DecodesVersionOnePathReservationsForRecalculation)
+{
+    Vehicles::RoutingManager::State reservations;
+    reservations.pathReservedRoutings[7] = uint64_t{ 1 } << 3;
+    auto encoded = S5::SaveExtension::encode({ nullptr, nullptr, &reservations });
+    writeU16(encoded, 20, 1);
+
+    const auto decoded = S5::SaveExtension::decode(encoded);
+
+    ASSERT_TRUE(decoded.pathReservationState.has_value());
+    EXPECT_EQ(*decoded.pathReservationState, reservations);
+    EXPECT_TRUE(decoded.discardPathReservationsOnLoad);
+    EXPECT_EQ(S5::SaveExtension::encode(decoded), encoded);
+}
+
+TEST(SaveExtension, RejectsUnknownPathReservationVersion)
+{
+    Vehicles::RoutingManager::State reservations;
+    reservations.pathReservedRoutings[7] = uint64_t{ 1 } << 3;
+    auto encoded = S5::SaveExtension::encode({ nullptr, nullptr, &reservations });
+    writeU16(encoded, 20, 3);
+
+    EXPECT_THROW(S5::SaveExtension::decode(encoded), std::runtime_error);
 }
 
 TEST(SaveExtension, RoundTripsVehicleAutoRenewal)

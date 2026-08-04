@@ -44,6 +44,8 @@
 #include "Vehicles/RoutingManager.h"
 #include "Vehicles/SharedOrderManager.h"
 #include "Vehicles/VehicleAutoRenewal.h"
+#include "Vehicles/VehicleHead.h"
+#include "Vehicles/VehicleManager.h"
 #include "World/CompanyManager.h"
 #include "World/IndustryManager.h"
 #include "World/StationManager.h"
@@ -94,6 +96,21 @@ namespace OpenLoco::S5
             {
                 throw Exception::RuntimeError("CargoDist mode references unloaded cargo");
             }
+        }
+    }
+
+    static void discardLegacyPathReservations(const Vehicles::RoutingManager::State& state)
+    {
+        for (auto* head : VehicleManager::VehicleList())
+        {
+            const auto vehicleRef = head->routingHandle.getVehicleRef();
+            if (head->mode != TransportMode::rail || !head->isPlaced()
+                || vehicleRef >= state.pathReservedRoutings.size()
+                || state.pathReservedRoutings[vehicleRef] == 0)
+            {
+                continue;
+            }
+            head->discardFutureRouting();
         }
     }
 
@@ -756,6 +773,7 @@ namespace OpenLoco::S5
                 file->cargoDistState = std::move(extensionState.cargoDistState);
                 file->sharedOrderState = std::move(extensionState.sharedOrderState);
                 file->pathReservationState = std::move(extensionState.pathReservationState);
+                file->discardPathReservationsOnLoad = extensionState.discardPathReservationsOnLoad;
                 file->vehicleAutoRenewalState = std::move(extensionState.vehicleAutoRenewalState);
             }
             if (stream.getPosition() != checksumPosition)
@@ -1117,8 +1135,11 @@ namespace OpenLoco::S5
                 {
                     throw Exception::RuntimeError("Invalid shared vehicle order state");
                 }
-                if (file->pathReservationState.has_value()
-                    && !Vehicles::RoutingManager::restoreState(*file->pathReservationState))
+                if (file->pathReservationState.has_value() && file->discardPathReservationsOnLoad)
+                {
+                    discardLegacyPathReservations(*file->pathReservationState);
+                }
+                else if (file->pathReservationState.has_value() && !Vehicles::RoutingManager::restoreState(*file->pathReservationState))
                 {
                     throw Exception::RuntimeError("Invalid path reservation state");
                 }

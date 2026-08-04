@@ -62,6 +62,8 @@ namespace OpenLoco::S5::SaveExtension
         constexpr uint16_t kVersion = 1;
         constexpr uint16_t kHeaderSize = 16;
         constexpr uint16_t kSectionVersion = 1;
+        // Version 1 reservations may contain routes that bypass their active waypoint.
+        constexpr uint16_t kPathReservationsSectionVersion = 2;
         constexpr uint16_t kSectionRequired = 1U << 0;
         constexpr uint16_t kKnownSectionFlags = kSectionRequired;
         constexpr size_t kSectionHeaderSize = 12;
@@ -144,12 +146,12 @@ namespace OpenLoco::S5::SaveExtension
             size_t _position{};
         };
 
-        void appendSection(Writer& output, std::span<const std::byte, 4> tag, std::span<const std::byte> payload, uint16_t flags = 0)
+        void appendSection(Writer& output, std::span<const std::byte, 4> tag, std::span<const std::byte> payload, uint16_t flags = 0, uint16_t version = kSectionVersion)
         {
             require(payload.size() <= std::numeric_limits<uint32_t>::max(), "Save extension section is too large");
             require(kSectionHeaderSize <= kMaxDataSize - output.size() && payload.size() <= kMaxDataSize - output.size() - kSectionHeaderSize, "Save extension is too large");
             output.writeBytes(tag);
-            output.write(kSectionVersion);
+            output.write(version);
             output.write(flags);
             output.write(static_cast<uint32_t>(payload.size()));
             output.writeBytes(payload);
@@ -301,6 +303,7 @@ namespace OpenLoco::S5::SaveExtension
             state.sharedOrderState ? &*state.sharedOrderState : nullptr,
             state.pathReservationState ? &*state.pathReservationState : nullptr,
             state.vehicleAutoRenewalState ? &*state.vehicleAutoRenewalState : nullptr,
+            state.discardPathReservationsOnLoad,
         });
     }
 
@@ -320,7 +323,8 @@ namespace OpenLoco::S5::SaveExtension
         if (state.pathReservationState != nullptr)
         {
             const auto pathReservations = encodePathReservations(*state.pathReservationState);
-            appendSection(payload, kPathReservationsTag, pathReservations, kSectionRequired);
+            const auto version = state.discardPathReservationsOnLoad ? kSectionVersion : kPathReservationsSectionVersion;
+            appendSection(payload, kPathReservationsTag, pathReservations, kSectionRequired, version);
         }
         if (state.vehicleAutoRenewalState != nullptr)
         {
@@ -390,8 +394,9 @@ namespace OpenLoco::S5::SaveExtension
                 require((flags & ~kKnownSectionFlags) == 0, "Invalid path reservation section flags");
                 require(!hasPathReservations, "Duplicate path reservation save extension section");
                 hasPathReservations = true;
-                require(version == kSectionVersion, "Unsupported path reservation section version");
+                require(version == kSectionVersion || version == kPathReservationsSectionVersion, "Unsupported path reservation section version");
                 state.pathReservationState = decodePathReservations(sectionData);
+                state.discardPathReservationsOnLoad = version == kSectionVersion;
             }
             else if (std::ranges::equal(tag, kVehicleAutoRenewalTag))
             {

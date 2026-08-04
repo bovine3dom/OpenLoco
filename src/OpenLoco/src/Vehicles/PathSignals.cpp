@@ -666,12 +666,12 @@ namespace OpenLoco::Vehicles::PathSignals
         return count > kRequiredFreeSlots ? count - kRequiredFreeSlots : 0;
     }
 
-    bool tryReservePath(VehicleHead& head, const Pos3& firstPos, const uint16_t firstRouting)
+    std::optional<uint16_t> tryReservePath(VehicleHead& head, const Pos3& firstPos, const uint16_t preferredRouting, const std::span<const uint16_t> firstRoutings)
     {
         const auto maxPathLength = getAvailableRoutingSlots(head);
         if (maxPathLength == 0)
         {
-            return false;
+            return std::nullopt;
         }
 
         const Vehicle train(head);
@@ -682,133 +682,160 @@ namespace OpenLoco::Vehicles::PathSignals
         const auto claimed = getClaimedResourceMask();
         const ResourceMasks noClaims;
 
-        std::vector<SearchNode> nodes;
-        nodes.reserve(kMaxSearchNodes);
-        nodes.push_back({ firstPos, firstRouting, kNoParent, 1, 0, 0 });
-        std::vector<uint16_t> pending{ 0 };
         std::vector<Candidate> candidates;
+        const auto appendCandidates = [&](const uint16_t firstRouting) {
+            std::vector<SearchNode> nodes;
+            nodes.reserve(kMaxSearchNodes);
+            nodes.push_back({ firstPos, firstRouting, kNoParent, 1, 0, 0 });
+            std::vector<uint16_t> pending{ 0 };
+            const auto firstCandidate = candidates.size();
 
-        const auto considerCandidate = [&](const uint16_t tailIndex, const Pos3& endpoint, const uint8_t numTargetsReached, const uint32_t weighting, std::optional<std::pair<Pos3, uint16_t>> continuation) {
-            auto path = getPath(nodes, tailIndex);
-            if (path.empty() || path.size() > maxPathLength || hasConflict(path, firstPos, noClaims))
+            const auto considerCandidate = [&](const uint16_t tailIndex, const Pos3& endpoint, const uint8_t numTargetsReached, const uint32_t weighting, std::optional<std::pair<Pos3, uint16_t>> continuation) {
+                auto path = getPath(nodes, tailIndex);
+                if (path.empty() || path.size() > maxPathLength || hasConflict(path, firstPos, noClaims))
+                {
+                    return;
+                }
+                const auto distance = getDistanceToActiveTarget(endpoint, target, nextTargetPtr, numTargetsReached);
+                const auto conflictsWithClaim = hasConflict(path, firstPos, claimed)
+                    || (continuation.has_value() && isClaimed(continuation->first, continuation->second, claimed));
+                candidates.push_back({ std::move(path), numTargetsReached, distance, weighting, continuation, numTargetsReached, distance, weighting, conflictsWithClaim });
+            };
+
+            while (!pending.empty())
             {
-                return;
-            }
-            const auto distance = getDistanceToActiveTarget(endpoint, target, nextTargetPtr, numTargetsReached);
-            const auto conflictsWithClaim = hasConflict(path, firstPos, claimed)
-                || (continuation.has_value() && isClaimed(continuation->first, continuation->second, claimed));
-            candidates.push_back({ std::move(path), numTargetsReached, distance, weighting, continuation, numTargetsReached, distance, weighting, conflictsWithClaim });
-        };
+                const auto index = pending.back();
+                pending.pop_back();
+                auto node = nodes[index];
 
-        while (!pending.empty())
-        {
-            const auto index = pending.back();
-            pending.pop_back();
-            auto node = nodes[index];
+                TrackAndDirection::_TrackAndDirection tad{ 0, 0 };
+                tad._data = node.routing & Track::AdditionalTaDFlags::basicTaDMask;
+                if (index != 0 && getSignalMode(node.pos, tad, head.trackType, 0).has_value())
+                {
+                    considerCandidate(node.parent, node.pos, node.numTargetsReached, nodes[node.parent].weighting, std::pair{ node.pos, node.routing });
+                    continue;
+                }
 
-            TrackAndDirection::_TrackAndDirection tad{ 0, 0 };
-            tad._data = node.routing & Track::AdditionalTaDFlags::basicTaDMask;
-            if (index != 0 && getSignalMode(node.pos, tad, head.trackType, 0).has_value())
-            {
-                considerCandidate(node.parent, node.pos, node.numTargetsReached, nodes[node.parent].weighting, std::pair{ node.pos, node.routing });
-                continue;
-            }
+                node.numTargetsReached = advanceWaypointTarget(node.pos, node.routing, target, nextTargetPtr, node.numTargetsReached);
+                node.weighting += TrackData::getTrackMiscData(tad.id()).unkWeighting;
+                nodes[index] = node;
 
-            node.numTargetsReached = advanceWaypointTarget(node.pos, node.routing, target, nextTargetPtr, node.numTargetsReached);
-            node.weighting += TrackData::getTrackMiscData(tad.id()).unkWeighting;
-            nodes[index] = node;
-
-            const auto [nextPos, nextRotation] = Track::getTrackConnectionEnd(node.pos, tad._data);
-            const auto connections = Track::getTrackConnections(nextPos, nextRotation, head.owner, head.trackType, requiredMods, queryMods);
-            const auto numTargetsReached = advanceStationTarget(connections.stationId, target, nextTargetPtr, node.numTargetsReached);
-            if (connections.connections.empty())
-            {
-                considerCandidate(index, nextPos, numTargetsReached, node.weighting, std::nullopt);
-                continue;
-            }
-            // The terminating signal is not part of the reserved path, so inspect one extra connection.
-            if (node.depth > maxPathLength || nodes.size() >= kMaxSearchNodes)
-            {
-                continue;
-            }
-
-            for (auto iter = connections.connections.rbegin(); iter != connections.connections.rend(); ++iter)
-            {
-                const auto routing = *iter;
-                TrackAndDirection::_TrackAndDirection nextTad{ 0, 0 };
-                nextTad._data = routing & Track::AdditionalTaDFlags::basicTaDMask;
-                const auto nextSignalMode = getSignalMode(nextPos, nextTad, head.trackType, 0);
-                if ((!nextSignalMode.has_value() && getSignalState(nextPos, nextTad, head.trackType, 0) != SignalStateFlags::none)
-                    || containsAncestor(nodes, index, nextPos, routing))
+                const auto [nextPos, nextRotation] = Track::getTrackConnectionEnd(node.pos, tad._data);
+                const auto connections = Track::getTrackConnections(nextPos, nextRotation, head.owner, head.trackType, requiredMods, queryMods);
+                const auto numTargetsReached = advanceStationTarget(connections.stationId, target, nextTargetPtr, node.numTargetsReached);
+                if (connections.connections.empty())
+                {
+                    considerCandidate(index, nextPos, numTargetsReached, node.weighting, std::nullopt);
+                    continue;
+                }
+                // The terminating signal is not part of the reserved path, so inspect one extra connection.
+                if (node.depth > maxPathLength || nodes.size() >= kMaxSearchNodes)
                 {
                     continue;
                 }
-                nodes.push_back({ nextPos, routing, index, static_cast<uint8_t>(node.depth + 1), node.weighting, numTargetsReached });
-                pending.push_back(static_cast<uint16_t>(nodes.size() - 1));
-                if (nodes.size() == kMaxSearchNodes)
+
+                for (auto iter = connections.connections.rbegin(); iter != connections.connections.rend(); ++iter)
                 {
-                    break;
+                    const auto routing = *iter;
+                    TrackAndDirection::_TrackAndDirection nextTad{ 0, 0 };
+                    nextTad._data = routing & Track::AdditionalTaDFlags::basicTaDMask;
+                    const auto nextSignalMode = getSignalMode(nextPos, nextTad, head.trackType, 0);
+                    if ((!nextSignalMode.has_value() && getSignalState(nextPos, nextTad, head.trackType, 0) != SignalStateFlags::none)
+                        || containsAncestor(nodes, index, nextPos, routing))
+                    {
+                        continue;
+                    }
+                    nodes.push_back({ nextPos, routing, index, static_cast<uint8_t>(node.depth + 1), node.weighting, numTargetsReached });
+                    pending.push_back(static_cast<uint16_t>(nodes.size() - 1));
+                    if (nodes.size() == kMaxSearchNodes)
+                    {
+                        break;
+                    }
                 }
             }
-        }
 
-        if (candidates.empty())
-        {
-            return false;
-        }
+            std::sort(candidates.begin() + firstCandidate, candidates.end(), isBetterCandidate);
+            if (candidates.size() - firstCandidate > kMaxReservationCandidates)
+            {
+                candidates.erase(candidates.begin() + firstCandidate + kMaxReservationCandidates, candidates.end());
+            }
+        };
 
-        std::ranges::sort(candidates, isBetterCandidate);
-        if (candidates.size() > kMaxReservationCandidates)
-        {
-            candidates.resize(kMaxReservationCandidates);
-        }
+        const auto scoreCandidates = [&](const size_t firstCandidate) {
+            for (auto& candidate : std::span{ candidates }.subspan(firstCandidate))
+            {
+                if (!candidate.continuation.has_value())
+                {
+                    continue;
+                }
 
-        for (auto& candidate : candidates)
-        {
-            if (!candidate.continuation.has_value())
+                const auto& [continuationPos, continuationRouting] = *candidate.continuation;
+                // Compare routes to the current order, or to the next order after entering a station.
+                const auto* baselineNextTarget = candidate.baselineTargetsReached == 0 ? nullptr : nextTargetPtr;
+                if (getActiveTarget(target, baselineNextTarget, candidate.baselineTargetsReached) != nullptr || !target.hasTarget)
+                {
+                    const auto baselineScore = getLookaheadScore(continuationPos, continuationRouting, head, requiredMods, queryMods, target, baselineNextTarget, candidate.baselineTargetsReached, nullptr);
+                    candidate.baselineTargetsReached = baselineScore.numTargetsReached;
+                    candidate.baselineDistance = baselineScore.distance;
+                    candidate.baselineWeighting = addWeighting(candidate.baselineWeighting, baselineScore.weighting);
+                }
+                if (!candidate.reservationConflict
+                    && (getActiveTarget(target, nextTargetPtr, candidate.numTargetsReached) != nullptr || !target.hasTarget))
+                {
+                    const auto score = getLookaheadScore(continuationPos, continuationRouting, head, requiredMods, queryMods, target, nextTargetPtr, candidate.numTargetsReached, &claimed);
+                    candidate.numTargetsReached = score.numTargetsReached;
+                    candidate.distance = score.distance;
+                    candidate.weighting = addWeighting(candidate.weighting, score.weighting);
+                }
+            }
+        };
+
+        const auto findBestCandidate = [&]() -> const Candidate* {
+            if (candidates.empty())
             {
-                continue;
+                return nullptr;
             }
 
-            const auto& [continuationPos, continuationRouting] = *candidate.continuation;
-            // Compare routes to the current order, or to the next order after entering a station.
-            const auto* baselineNextTarget = candidate.baselineTargetsReached == 0 ? nullptr : nextTargetPtr;
-            if (getActiveTarget(target, baselineNextTarget, candidate.baselineTargetsReached) != nullptr || !target.hasTarget)
+            const auto& preferred = *std::ranges::min_element(candidates, isBetterBaselineCandidate);
+            const auto preferredCost = addWeighting(preferred.baselineWeighting, preferred.baselineDistance);
+            const Candidate* best = nullptr;
+            for (const auto& candidate : candidates)
             {
-                const auto baselineScore = getLookaheadScore(continuationPos, continuationRouting, head, requiredMods, queryMods, target, baselineNextTarget, candidate.baselineTargetsReached, nullptr);
-                candidate.baselineTargetsReached = baselineScore.numTargetsReached;
-                candidate.baselineDistance = baselineScore.distance;
-                candidate.baselineWeighting = addWeighting(candidate.baselineWeighting, baselineScore.weighting);
+                const auto candidateCost = addWeighting(candidate.baselineWeighting, candidate.baselineDistance);
+                if (candidate.reservationConflict
+                    || candidate.baselineTargetsReached != preferred.baselineTargetsReached
+                    || candidateCost > addWeighting(preferredCost, kMaxReservationDetourWeighting))
+                {
+                    continue;
+                }
+                if (best == nullptr || isBetterCandidate(candidate, *best))
+                {
+                    best = &candidate;
+                }
             }
-            if (!candidate.reservationConflict
-                && (getActiveTarget(target, nextTargetPtr, candidate.numTargetsReached) != nullptr || !target.hasTarget))
-            {
-                const auto score = getLookaheadScore(continuationPos, continuationRouting, head, requiredMods, queryMods, target, nextTargetPtr, candidate.numTargetsReached, &claimed);
-                candidate.numTargetsReached = score.numTargetsReached;
-                candidate.distance = score.distance;
-                candidate.weighting = addWeighting(candidate.weighting, score.weighting);
-            }
-        }
-        const auto& preferred = *std::ranges::min_element(candidates, isBetterBaselineCandidate);
-        const auto preferredCost = addWeighting(preferred.baselineWeighting, preferred.baselineDistance);
-        const Candidate* best = nullptr;
-        for (const auto& candidate : candidates)
-        {
-            const auto candidateCost = addWeighting(candidate.baselineWeighting, candidate.baselineDistance);
-            if (candidate.reservationConflict
-                || candidate.baselineTargetsReached != preferred.baselineTargetsReached
-                || candidateCost > addWeighting(preferredCost, kMaxReservationDetourWeighting))
-            {
-                continue;
-            }
-            if (best == nullptr || isBetterCandidate(candidate, *best))
-            {
-                best = &candidate;
-            }
-        }
+            return best;
+        };
+
+        appendCandidates(preferredRouting);
+        scoreCandidates(0);
+        auto* best = findBestCandidate();
         if (best == nullptr)
         {
-            return false;
+            const auto firstAlternateCandidate = candidates.size();
+            const auto preferredBasicTaD = preferredRouting & Track::AdditionalTaDFlags::basicTaDMask;
+            for (const auto firstRouting : firstRoutings)
+            {
+                if ((firstRouting & Track::AdditionalTaDFlags::basicTaDMask) != preferredBasicTaD)
+                {
+                    appendCandidates(firstRouting);
+                }
+            }
+            scoreCandidates(firstAlternateCandidate);
+            best = findBestCandidate();
+            if (best == nullptr)
+            {
+                return std::nullopt;
+            }
         }
 
         auto handle = head.routingHandle;
@@ -817,7 +844,7 @@ namespace OpenLoco::Vehicles::PathSignals
             handle.setIndex((handle.getIndex() + 1) & (Limits::kMaxRoutingsPerVehicle - 1));
             if (RoutingManager::getRouting(handle) != RoutingManager::kAllocatedButFreeRouting)
             {
-                return false;
+                return std::nullopt;
             }
         }
         handle = head.routingHandle;
@@ -827,6 +854,11 @@ namespace OpenLoco::Vehicles::PathSignals
             RoutingManager::setRouting(handle, routing);
             RoutingManager::markPathReserved(handle);
         }
-        return true;
+        return best->routings.front();
+    }
+
+    bool tryReservePath(VehicleHead& head, const Pos3& firstPos, const uint16_t firstRouting)
+    {
+        return tryReservePath(head, firstPos, firstRouting, {}).has_value();
     }
 }

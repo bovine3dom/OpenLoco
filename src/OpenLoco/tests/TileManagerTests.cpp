@@ -1447,6 +1447,29 @@ TEST_F(PathSignalsTest, CurrentPathSignalTriesAlternateJunctionBranch)
     EXPECT_EQ(OpenLoco::Vehicles::RoutingManager::getRouting(nextHandle) & OpenLoco::World::Track::AdditionalTaDFlags::basicTaDMask, kTurnNorth);
 }
 
+TEST_F(PathSignalsTest, CurrentPathSignalWaitsInsteadOfIgnoringWaypoint)
+{
+    constexpr Pos3 currentPos{ 352, 320, 32 };
+    constexpr Pos3 waypointPos{ 288, 320, 32 };
+    addTrack(currentPos, 0, 0, true, SignalMode::path);
+    addTrack(kFirstPos, 0, 0);
+    addTrack(kFirstPos, 2, 0);
+    addTrack(waypointPos, 0, 0);
+    addTrack({ 256, 320, 32 }, 0, 0);
+    auto* train = createTrain(currentPos, kStraightWest | OpenLoco::World::Track::AdditionalTaDFlags::hasSignal);
+    ASSERT_NE(train, nullptr);
+    const OpenLoco::Vehicles::OrderRouteWaypoint waypoint{ toTileSpace(waypointPos), waypointPos.z / 8, 0, 0 };
+    OpenLoco::Vehicles::OrderManager::insertOrder(train, 0, &waypoint);
+    ASSERT_NE(createTrain({ 256, 320, 32 }, kStraightWest), nullptr);
+
+    const auto result = train->sub_4ACEE7(0xD4CB00, 0xD4CB00, false);
+
+    EXPECT_EQ(result.status, 3);
+    auto nextHandle = train->routingHandle;
+    nextHandle.setIndex(nextHandle.getIndex() + 1);
+    EXPECT_EQ(OpenLoco::Vehicles::RoutingManager::getRouting(nextHandle), OpenLoco::Vehicles::RoutingManager::kAllocatedButFreeRouting);
+}
+
 TEST_F(PathSignalsTest, RejectsRouteWhenNextSignalTrackIsOccupied)
 {
     constexpr Pos3 currentPos{ 352, 320, 32 };
