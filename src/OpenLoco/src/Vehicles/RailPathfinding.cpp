@@ -16,6 +16,7 @@ namespace OpenLoco::Vehicles::RailPathfinding
 
     // Bound work at complex junctions while allowing routes across the full map.
     static constexpr size_t kMaxSearchNodes = 4096;
+    static constexpr uint32_t kMaxSignalAvoidanceWeighting = 320;
 
     struct SearchNode
     {
@@ -111,6 +112,18 @@ namespace OpenLoco::Vehicles::RailPathfinding
         }
         const bool candidateReachedTarget = candidate.bestDistToTarget == 0;
         const bool baseReachedTarget = base.bestDistToTarget == 0;
+        if (candidateReachedTarget && baseReachedTarget
+            && candidate.signalState != base.signalState)
+        {
+            if (addWeighting(candidate.bestTrackWeighting, kMaxSignalAvoidanceWeighting) < base.bestTrackWeighting)
+            {
+                return true;
+            }
+            if (addWeighting(base.bestTrackWeighting, kMaxSignalAvoidanceWeighting) < candidate.bestTrackWeighting)
+            {
+                return false;
+            }
+        }
         if (candidateReachedTarget && candidate.signalState == SignalState::signalBlockedOneWay)
         {
             if (base.signalState <= SignalState::signalClear && base.bestTrackWeighting > 288)

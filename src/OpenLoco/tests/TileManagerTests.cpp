@@ -1388,6 +1388,20 @@ TEST_F(PathSignalsTest, ChoosesShorterRouteWhenBothRoutesAreClear)
     EXPECT_EQ(getSecondReservedRouting(*reservingTrain), kStraightWest);
 }
 
+TEST(RailPathfindingResultTest, BoundsDetoursTakenToAvoidBlockedSignals)
+{
+    using namespace OpenLoco::Vehicles::RailPathfinding;
+
+    const RouteResult blockedRoute{ 0, 320, SignalState::signalBlockedTwoWay };
+    const RouteResult localClearDetour{ 0, 640, SignalState::signalClear };
+    const RouteResult excessiveClearDetour{ 0, 672, SignalState::signalClear };
+
+    EXPECT_TRUE(isBetterRoute(blockedRoute, localClearDetour));
+    EXPECT_FALSE(isBetterRoute(localClearDetour, blockedRoute));
+    EXPECT_FALSE(isBetterRoute(blockedRoute, excessiveClearDetour));
+    EXPECT_TRUE(isBetterRoute(excessiveClearDetour, blockedRoute));
+}
+
 TEST_F(RailPathfindingTest, FindsLongStationRouteThatInitiallyMovesAwayFromTarget)
 {
     constexpr Pos3 junction{ 320 * kTileSize, 200 * kTileSize, 32 };
