@@ -16,7 +16,7 @@ namespace OpenLoco::Network
 
     constexpr port_t kDefaultPort = 11754;
     constexpr uint16_t kMaxPacketSize = 4096;
-    constexpr uint16_t kNetworkVersion = 4;
+    constexpr uint16_t kNetworkVersion = 5;
 
     void openServer();
     bool joinServer(std::string_view host);

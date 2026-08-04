@@ -2,6 +2,7 @@
 #include <OpenLoco/S5/SaveExtension.h>
 
 #include <OpenLoco/CargoDist/Save.h>
+#include <OpenLoco/Vehicles/VehicleAutoRenewal.h>
 #include <algorithm>
 #include <cstdint>
 #include <gtest/gtest.h>
@@ -41,6 +42,14 @@ namespace
                 members.push_back(entity(id));
             }
         }
+        return state;
+    }
+
+    Vehicles::VehicleAutoRenewal::State vehicleAutoRenewalState()
+    {
+        Vehicles::VehicleAutoRenewal::State state;
+        state.companies[2] = { true, 35 };
+        state.companies[8] = { false, 70 };
         return state;
     }
 
@@ -147,6 +156,37 @@ TEST(SaveExtension, RoundTripsPathReservations)
     EXPECT_EQ(readU16(encoded, 22), 1);
 }
 
+TEST(SaveExtension, RoundTripsVehicleAutoRenewal)
+{
+    const auto renewal = vehicleAutoRenewalState();
+
+    const auto encoded = S5::SaveExtension::encode({ nullptr, nullptr, nullptr, &renewal });
+    const auto decoded = S5::SaveExtension::decode(encoded);
+
+    EXPECT_FALSE(decoded.cargoDistState.has_value());
+    EXPECT_FALSE(decoded.sharedOrderState.has_value());
+    EXPECT_FALSE(decoded.pathReservationState.has_value());
+    ASSERT_TRUE(decoded.vehicleAutoRenewalState.has_value());
+    EXPECT_EQ(*decoded.vehicleAutoRenewalState, renewal);
+    EXPECT_EQ(S5::SaveExtension::encode(decoded), encoded);
+    expectTag(encoded, 16, "VREN");
+    EXPECT_EQ(readU16(encoded, 20), 1);
+    EXPECT_EQ(readU16(encoded, 22), 1);
+    EXPECT_EQ(readU32(encoded, 24), Limits::kMaxCompanies * 2);
+}
+
+TEST(SaveExtension, VehicleAutoRenewalEncodingIsDeterministic)
+{
+    auto first = vehicleAutoRenewalState();
+    auto second = Vehicles::VehicleAutoRenewal::State{};
+    second.companies[8] = { false, 70 };
+    second.companies[2] = { true, 35 };
+
+    EXPECT_EQ(
+        S5::SaveExtension::encode({ nullptr, nullptr, nullptr, &first }),
+        S5::SaveExtension::encode({ nullptr, nullptr, nullptr, &second }));
+}
+
 TEST(SaveExtension, DecodesLegacyCargoDist)
 {
     const auto cargo = cargoDistState();
@@ -157,6 +197,7 @@ TEST(SaveExtension, DecodesLegacyCargoDist)
     ASSERT_TRUE(decoded.cargoDistState.has_value());
     EXPECT_EQ(CargoDist::encodeState(*decoded.cargoDistState), encoded);
     EXPECT_FALSE(decoded.sharedOrderState.has_value());
+    EXPECT_FALSE(decoded.vehicleAutoRenewalState.has_value());
 
     auto versionOne = CargoDist::encodeState(CargoDist::State{});
     versionOne[8] = std::byte{ 1 };
@@ -165,6 +206,34 @@ TEST(SaveExtension, DecodesLegacyCargoDist)
     const auto decodedVersionOne = S5::SaveExtension::decode(versionOne);
     ASSERT_TRUE(decodedVersionOne.cargoDistState.has_value());
     EXPECT_FALSE(decodedVersionOne.sharedOrderState.has_value());
+    EXPECT_FALSE(decodedVersionOne.vehicleAutoRenewalState.has_value());
+}
+
+TEST(SaveExtension, RejectsInvalidVehicleAutoRenewalState)
+{
+    const auto renewal = vehicleAutoRenewalState();
+    auto invalidEnabled = S5::SaveExtension::encode({ nullptr, nullptr, nullptr, &renewal });
+    invalidEnabled[28] = std::byte{ 2 };
+    EXPECT_THROW(S5::SaveExtension::decode(invalidEnabled), std::runtime_error);
+
+    auto invalidThreshold = S5::SaveExtension::encode({ nullptr, nullptr, nullptr, &renewal });
+    invalidThreshold[29] = std::byte{ 101 };
+    EXPECT_THROW(S5::SaveExtension::decode(invalidThreshold), std::runtime_error);
+
+    auto invalidLength = S5::SaveExtension::encode({ nullptr, nullptr, nullptr, &renewal });
+    writeU32(invalidLength, 24, readU32(invalidLength, 24) - 1);
+    EXPECT_THROW(S5::SaveExtension::decode(invalidLength), std::runtime_error);
+}
+
+TEST(SaveExtension, RejectsDuplicateVehicleAutoRenewalSection)
+{
+    const auto renewal = vehicleAutoRenewalState();
+    auto encoded = S5::SaveExtension::encode({ nullptr, nullptr, nullptr, &renewal });
+    const std::vector duplicate(encoded.begin() + 16, encoded.end());
+    encoded.insert(encoded.end(), duplicate.begin(), duplicate.end());
+    writeU32(encoded, 12, static_cast<uint32_t>(encoded.size() - 16));
+
+    EXPECT_THROW(S5::SaveExtension::decode(encoded), std::runtime_error);
 }
 
 TEST(SaveExtension, RejectsMalformedLengths)

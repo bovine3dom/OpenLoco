@@ -1,5 +1,6 @@
 #include "Vehicles/VehicleBogie.h"
 #include "Audio/Audio.h"
+#include "Date.h"
 #include "Effects/ExplosionEffect.h"
 #include "Effects/SplashEffect.h"
 #include "Effects/VehicleCrashEffect.h"
@@ -22,6 +23,22 @@ using namespace OpenLoco::Literals;
 
 namespace OpenLoco::Vehicles
 {
+    uint16_t calculateInitialReliability(const VehicleObject& vehicleObject)
+    {
+        int32_t reliability = vehicleObject.reliability * 256;
+        if (vehicleObject.designed + 2 > getCurrentYear())
+        {
+            // Preserve the original first-design-years reliability behaviour.
+            reliability -= reliability / 8;
+            reliability -= reliability / 8;
+        }
+        if (reliability != 0)
+        {
+            reliability += 255;
+        }
+        return reliability;
+    }
+
     template<typename T>
     void applyDestructionToComponent(T& component)
     {

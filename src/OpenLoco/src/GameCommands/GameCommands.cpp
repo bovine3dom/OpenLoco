@@ -13,6 +13,7 @@
 #include "GameCommands/Company/RemoveCompanyHeadquarters.h"
 #include "GameCommands/Company/RenameCompanyName.h"
 #include "GameCommands/Company/RenameCompanyOwner.h"
+#include "GameCommands/Company/SetVehicleAutoRenewal.h"
 #include "GameCommands/Company/UpdateOwnerStatus.h"
 #include "GameCommands/CompanyAi/AiCreateRoadAndStation.h"
 #include "GameCommands/CompanyAi/AiCreateTrackAndStation.h"
@@ -149,7 +150,7 @@ namespace OpenLoco::GameCommands
     static constexpr StringId kErrorBelongsToOther = 0xFFFEU;
 
     // clang-format off
-    static constexpr GameCommandInfo kGameCommandDefinitions[88] = {
+    static constexpr GameCommandInfo kGameCommandDefinitions[89] = {
         { GameCommand::vehicleRearrange,             vehicleRearrange,          0x004AF1DF, true  },
         { GameCommand::vehiclePlace,                 vehiclePlace,              0x004B01B6, true  },
         { GameCommand::vehiclePickup,                vehiclePickup,             0x004B0826, true  },
@@ -238,6 +239,7 @@ namespace OpenLoco::GameCommands
         { GameCommand::setCargoDistMode,             setCargoDistMode,          0,          false },
         { GameCommand::vehicleOrderToggleUnbunching, vehicleOrderToggleUnbunching, 0,       false },
         { GameCommand::vehicleOrderShare,            vehicleOrderShare,         0,          false },
+        { GameCommand::setVehicleAutoRenewal,        setVehicleAutoRenewal,     0,          false },
     };
     // clang-format on
 

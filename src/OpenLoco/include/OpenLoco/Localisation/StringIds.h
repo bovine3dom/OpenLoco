@@ -2219,6 +2219,10 @@ namespace OpenLoco::StringIds
     constexpr StringId more_vehicles = 2507;
     constexpr StringId replace_with_shared_orders_prompt = 2508;
     constexpr StringId share_orders = 2509;
+    constexpr StringId vehicle_auto_renewal = 2510;
+    constexpr StringId vehicle_auto_renewal_threshold = 2511;
+    constexpr StringId vehicle_auto_renewal_threshold_value = 2512;
+    constexpr StringId tooltip_vehicle_auto_renewal = 2513;
 
     constexpr StringId temporary_object_load_str_0 = 8192;
     constexpr StringId temporary_object_load_str_1 = 8193;

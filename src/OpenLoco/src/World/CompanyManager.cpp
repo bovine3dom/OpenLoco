@@ -35,6 +35,7 @@
 #include "Ui/ViewportInteraction.h"
 #include "Ui/WindowManager.h"
 #include "Vehicles/Vehicle.h"
+#include "Vehicles/VehicleAutoRenewal.h"
 #include "Vehicles/VehicleManager.h"
 #include "World/CompanyAi/CompanyAi.h"
 #include "World/CompanyRecords.h"
@@ -64,6 +65,8 @@ namespace OpenLoco::CompanyManager
     // 0x0042F7F8
     void reset()
     {
+        Vehicles::VehicleAutoRenewal::reset();
+
         // First, empty all non-empty companies.
         for (auto& company : companies())
         {
@@ -565,6 +568,7 @@ namespace OpenLoco::CompanyManager
         {
             return CompanyId::null;
         }
+        Vehicles::VehicleAutoRenewal::reset(chosenCompanyId);
 
         auto* competitorObj = ObjectManager::get<CompetitorObject>(competitorId);
         company->competitorId = competitorId;
@@ -1455,6 +1459,7 @@ namespace OpenLoco::CompanyManager
         Ui::Windows::CompanyList::removeCompany(id);
         MessageManager::removeAllSubjectRefs(enumValue(id), MessageItemArgumentType::company);
         removeCompaniesRecords(id);
+        Vehicles::VehicleAutoRenewal::reset(id);
         StringManager::emptyUserString(company->name);
         company->name = StringIds::empty;
         StringManager::emptyUserString(company->ownerName);

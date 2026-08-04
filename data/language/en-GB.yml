@@ -2562,3 +2562,7 @@ strings:
   2507: "More vehicles..."
   2508: "This vehicle's existing orders will be replaced. Continue?"
   2509: "Share orders"
+  2510: "Automatically renew vehicles"
+  2511: "Renew below reliability"
+  2512: "{INT16}%"
+  2513: "{SMALLFONT}{COLOUR BLACK}Renew complete vehicles at matching 'Stop at' orders when reliability is below the selected threshold and sufficient funds are available"

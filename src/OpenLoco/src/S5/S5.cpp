@@ -43,6 +43,7 @@
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/RoutingManager.h"
 #include "Vehicles/SharedOrderManager.h"
+#include "Vehicles/VehicleAutoRenewal.h"
 #include "World/CompanyManager.h"
 #include "World/IndustryManager.h"
 #include "World/StationManager.h"
@@ -569,12 +570,19 @@ namespace OpenLoco::S5
                     throw Exception::RuntimeError("Invalid path reservation state");
                 }
                 const auto hasPathReservations = std::ranges::any_of(pathReservationState.pathReservedRoutings, [](const auto mask) { return mask != 0; });
-                extensionData = sharedOrderState.groups.empty() && !hasPathReservations
+                const auto vehicleAutoRenewalState = Vehicles::VehicleAutoRenewal::captureState();
+                if (!Vehicles::VehicleAutoRenewal::validateState(vehicleAutoRenewalState))
+                {
+                    throw Exception::RuntimeError("Invalid vehicle auto-renewal state");
+                }
+                const auto hasVehicleAutoRenewal = !Vehicles::VehicleAutoRenewal::isDefault(vehicleAutoRenewalState);
+                extensionData = sharedOrderState.groups.empty() && !hasPathReservations && !hasVehicleAutoRenewal
                     ? CargoDist::encodeState(CargoDist::getStateConst())
                     : SaveExtension::encode({
                           &CargoDist::getStateConst(),
                           sharedOrderState.groups.empty() ? nullptr : &sharedOrderState,
                           hasPathReservations ? &pathReservationState : nullptr,
+                          hasVehicleAutoRenewal ? &vehicleAutoRenewalState : nullptr,
                       });
             }
 
@@ -748,6 +756,7 @@ namespace OpenLoco::S5
                 file->cargoDistState = std::move(extensionState.cargoDistState);
                 file->sharedOrderState = std::move(extensionState.sharedOrderState);
                 file->pathReservationState = std::move(extensionState.pathReservationState);
+                file->vehicleAutoRenewalState = std::move(extensionState.vehicleAutoRenewalState);
             }
             if (stream.getPosition() != checksumPosition)
             {
@@ -948,6 +957,11 @@ namespace OpenLoco::S5
             {
                 throw LoadException("Invalid path reservation state", StringIds::error_file_contains_invalid_data);
             }
+            if (file->vehicleAutoRenewalState.has_value() && !hasLoadFlags(flags, LoadFlags::titleSequence)
+                && !Vehicles::VehicleAutoRenewal::validateState(*file->vehicleAutoRenewalState, *importedGameState))
+            {
+                throw LoadException("Invalid vehicle auto-renewal state", StringIds::error_file_contains_invalid_data);
+            }
 
             // Load required objects
             auto loadObjectResult = ObjectManager::loadAll(file->requiredObjects);
@@ -984,6 +998,7 @@ namespace OpenLoco::S5
             dst = std::move(*importedGameState);
             CargoDist::reset();
             Vehicles::SharedOrderManager::reset();
+            Vehicles::VehicleAutoRenewal::reset();
 
             // Copy scenario options
             if (hasLoadFlags(flags, LoadFlags::scenario | LoadFlags::landscape))
@@ -1110,6 +1125,11 @@ namespace OpenLoco::S5
                 if (file->cargoDistState.has_value())
                 {
                     CargoDist::restoreState(std::move(*file->cargoDistState));
+                }
+                if (file->vehicleAutoRenewalState.has_value()
+                    && !Vehicles::VehicleAutoRenewal::restoreState(*file->vehicleAutoRenewalState))
+                {
+                    throw Exception::RuntimeError("Invalid vehicle auto-renewal state");
                 }
             }
 

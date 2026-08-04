@@ -151,18 +151,7 @@ namespace OpenLoco::GameCommands
         }
         newBogie->var_38 = Flags38::none;
 
-        int32_t reliability = vehObject.reliability * 256;
-        if (vehObject.designed + 2 > getCurrentYear())
-        {
-            // Vanilla intended to reduce reliability by 1/8th twice for the first two years after the year designed, then reduce reliability by 1/8th once for the third year. However, a bug meant that the two 1/8th reductions were always applied.
-            reliability -= reliability / 8;
-            reliability -= reliability / 8;
-        }
-        if (reliability != 0)
-        {
-            reliability += 255;
-        }
-        newBogie->reliability = reliability;
+        newBogie->reliability = calculateInitialReliability(vehObject);
         sub_4BA873(*newBogie);
 
         // Calculate refund cost == 7/8 * cost

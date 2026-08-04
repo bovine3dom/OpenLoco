@@ -7,6 +7,7 @@
 #include <OpenLoco/CargoDist/CargoDist.h>
 #include <OpenLoco/Vehicles/RoutingManager.h>
 #include <OpenLoco/Vehicles/SharedOrderManager.h>
+#include <OpenLoco/Vehicles/VehicleAutoRenewal.h>
 #include <optional>
 
 namespace OpenLoco::S5
@@ -23,5 +24,6 @@ namespace OpenLoco::S5
         std::optional<CargoDist::State> cargoDistState;
         std::optional<Vehicles::SharedOrderManager::State> sharedOrderState;
         std::optional<Vehicles::RoutingManager::State> pathReservationState;
+        std::optional<Vehicles::VehicleAutoRenewal::State> vehicleAutoRenewalState;
     };
 }

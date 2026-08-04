@@ -53,6 +53,12 @@ namespace OpenLoco::S5::SaveExtension
             std::byte{ 'E' },
             std::byte{ 'S' },
         };
+        constexpr std::array<std::byte, 4> kVehicleAutoRenewalTag = {
+            std::byte{ 'V' },
+            std::byte{ 'R' },
+            std::byte{ 'E' },
+            std::byte{ 'N' },
+        };
         constexpr uint16_t kVersion = 1;
         constexpr uint16_t kHeaderSize = 16;
         constexpr uint16_t kSectionVersion = 1;
@@ -252,6 +258,36 @@ namespace OpenLoco::S5::SaveExtension
             return state;
         }
 
+        std::vector<std::byte> encodeVehicleAutoRenewal(const Vehicles::VehicleAutoRenewal::State& state)
+        {
+            require(Vehicles::VehicleAutoRenewal::validateState(state), "Invalid vehicle auto-renewal state");
+            Writer payload;
+            for (const auto& settings : state.companies)
+            {
+                payload.write(static_cast<uint8_t>(settings.enabled));
+                payload.write(settings.reliabilityThreshold);
+            }
+            return payload.take();
+        }
+
+        Vehicles::VehicleAutoRenewal::State decodeVehicleAutoRenewal(std::span<const std::byte> data)
+        {
+            constexpr auto kEntrySize = sizeof(uint8_t) * 2;
+            require(data.size() == Limits::kMaxCompanies * kEntrySize, "Invalid vehicle auto-renewal data size");
+
+            Reader input(data);
+            Vehicles::VehicleAutoRenewal::State state;
+            for (auto& settings : state.companies)
+            {
+                const auto enabled = input.read<uint8_t>();
+                require(enabled <= 1, "Invalid vehicle auto-renewal enabled value");
+                settings.enabled = enabled != 0;
+                settings.reliabilityThreshold = input.read<uint8_t>();
+            }
+            require(Vehicles::VehicleAutoRenewal::validateState(state), "Invalid vehicle auto-renewal state");
+            return state;
+        }
+
         bool hasMagic(std::span<const std::byte> data, std::span<const std::byte, 8> magic)
         {
             return data.size() >= magic.size() && std::ranges::equal(data.first(magic.size()), magic);
@@ -264,6 +300,7 @@ namespace OpenLoco::S5::SaveExtension
             state.cargoDistState ? &*state.cargoDistState : nullptr,
             state.sharedOrderState ? &*state.sharedOrderState : nullptr,
             state.pathReservationState ? &*state.pathReservationState : nullptr,
+            state.vehicleAutoRenewalState ? &*state.vehicleAutoRenewalState : nullptr,
         });
     }
 
@@ -284,6 +321,11 @@ namespace OpenLoco::S5::SaveExtension
         {
             const auto pathReservations = encodePathReservations(*state.pathReservationState);
             appendSection(payload, kPathReservationsTag, pathReservations, kSectionRequired);
+        }
+        if (state.vehicleAutoRenewalState != nullptr)
+        {
+            const auto vehicleAutoRenewal = encodeVehicleAutoRenewal(*state.vehicleAutoRenewalState);
+            appendSection(payload, kVehicleAutoRenewalTag, vehicleAutoRenewal, kSectionRequired);
         }
 
         require(payload.size() <= std::numeric_limits<uint32_t>::max(), "Save extension is too large");
@@ -319,6 +361,7 @@ namespace OpenLoco::S5::SaveExtension
         bool hasCargoDist = false;
         bool hasSharedOrders = false;
         bool hasPathReservations = false;
+        bool hasVehicleAutoRenewal = false;
         while (!sections.empty())
         {
             const auto tag = sections.readBytes(4);
@@ -349,6 +392,14 @@ namespace OpenLoco::S5::SaveExtension
                 hasPathReservations = true;
                 require(version == kSectionVersion, "Unsupported path reservation section version");
                 state.pathReservationState = decodePathReservations(sectionData);
+            }
+            else if (std::ranges::equal(tag, kVehicleAutoRenewalTag))
+            {
+                require((flags & ~kKnownSectionFlags) == 0, "Invalid vehicle auto-renewal section flags");
+                require(!hasVehicleAutoRenewal, "Duplicate vehicle auto-renewal save extension section");
+                hasVehicleAutoRenewal = true;
+                require(version == kSectionVersion, "Unsupported vehicle auto-renewal section version");
+                state.vehicleAutoRenewalState = decodeVehicleAutoRenewal(sectionData);
             }
             else
             {

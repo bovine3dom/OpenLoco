@@ -100,7 +100,8 @@ namespace
         const State* cargoDistState,
         bool legacyExtension = false,
         const Vehicles::SharedOrderManager::State* sharedOrderState = nullptr,
-        const Vehicles::RoutingManager::State* pathReservationState = nullptr)
+        const Vehicles::RoutingManager::State* pathReservationState = nullptr,
+        const Vehicles::VehicleAutoRenewal::State* vehicleAutoRenewalState = nullptr)
     {
         SawyerStreamWriter writer(stream);
         S5::Header header{};
@@ -116,11 +117,11 @@ namespace
 
         std::array<std::byte, sizeof(S5::TileElement)> tile{};
         writer.writeChunk(SawyerEncoding::uncompressed, tile.data(), tile.size());
-        if (cargoDistState != nullptr || sharedOrderState != nullptr || pathReservationState != nullptr)
+        if (cargoDistState != nullptr || sharedOrderState != nullptr || pathReservationState != nullptr || vehicleAutoRenewalState != nullptr)
         {
             const auto encoded = legacyExtension
                 ? encodeState(*cargoDistState)
-                : S5::SaveExtension::encode({ cargoDistState, sharedOrderState, pathReservationState });
+                : S5::SaveExtension::encode({ cargoDistState, sharedOrderState, pathReservationState, vehicleAutoRenewalState });
             writer.writeChunk(SawyerEncoding::uncompressed, encoded.data(), encoded.size());
         }
         writer.writeChecksum();
@@ -235,8 +236,10 @@ TEST(CargoDistSave, S5TailRoundTripsExtension)
     sharedOrders.groups = { { { entity(3), entity(8) } } };
     Vehicles::RoutingManager::State pathReservations;
     pathReservations.pathReservedRoutings[7] = uint64_t{ 1 } << 3;
+    Vehicles::VehicleAutoRenewal::State vehicleAutoRenewal;
+    vehicleAutoRenewal.companies[3] = { true, 40 };
     MemoryStream stream;
-    writeMinimalSave(stream, &original, false, &sharedOrders, &pathReservations);
+    writeMinimalSave(stream, &original, false, &sharedOrders, &pathReservations, &vehicleAutoRenewal);
 
     const auto save = S5::loadSave(stream);
 
@@ -246,6 +249,8 @@ TEST(CargoDistSave, S5TailRoundTripsExtension)
     EXPECT_EQ(*save->sharedOrderState, sharedOrders);
     ASSERT_TRUE(save->pathReservationState.has_value());
     EXPECT_EQ(*save->pathReservationState, pathReservations);
+    ASSERT_TRUE(save->vehicleAutoRenewalState.has_value());
+    EXPECT_EQ(*save->vehicleAutoRenewalState, vehicleAutoRenewal);
 }
 
 TEST(CargoDistSave, LegacyS5WithoutExtensionStillLoads)
@@ -257,6 +262,7 @@ TEST(CargoDistSave, LegacyS5WithoutExtensionStillLoads)
 
     EXPECT_FALSE(save->cargoDistState.has_value());
     EXPECT_FALSE(save->sharedOrderState.has_value());
+    EXPECT_FALSE(save->vehicleAutoRenewalState.has_value());
 }
 
 TEST(CargoDistSave, LegacyDirectExtensionStillLoads)
@@ -270,4 +276,5 @@ TEST(CargoDistSave, LegacyDirectExtensionStillLoads)
     ASSERT_TRUE(save->cargoDistState.has_value());
     expectStatesEqual(original, *save->cargoDistState);
     EXPECT_FALSE(save->sharedOrderState.has_value());
+    EXPECT_FALSE(save->vehicleAutoRenewalState.has_value());
 }

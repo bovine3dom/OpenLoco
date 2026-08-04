@@ -48,6 +48,19 @@ namespace OpenLoco::GameSaveCompare
         return matches;
     }
 
+    static bool compareVehicleAutoRenewal(const S5::S5File& lhs, const S5::S5File& rhs)
+    {
+        const Vehicles::VehicleAutoRenewal::State defaultState;
+        const auto& lhsState = lhs.vehicleAutoRenewalState.has_value() ? *lhs.vehicleAutoRenewalState : defaultState;
+        const auto& rhsState = rhs.vehicleAutoRenewalState.has_value() ? *rhs.vehicleAutoRenewalState : defaultState;
+        const auto matches = lhsState == rhsState;
+        if (!matches)
+        {
+            Logging::info("Vehicle auto-renewal state differs");
+        }
+        return matches;
+    }
+
     template<typename T>
     std::span<const std::byte> getBytesSpan(const T& item)
     {
@@ -720,6 +733,7 @@ namespace OpenLoco::GameSaveCompare
         auto matches = compareGameStates(currentGameState->gameState, referenceGameState->gameState, false);
         matches &= compareCargoDist(*currentGameState, *referenceGameState);
         matches &= compareSharedOrders(*currentGameState, *referenceGameState);
+        matches &= compareVehicleAutoRenewal(*currentGameState, *referenceGameState);
         return matches;
     }
 
@@ -737,6 +751,7 @@ namespace OpenLoco::GameSaveCompare
         match &= compareElements(state1->tileElements, state2->tileElements, displayAllDivergences);
         match &= compareCargoDist(*state1, *state2);
         match &= compareSharedOrders(*state1, *state2);
+        match &= compareVehicleAutoRenewal(*state1, *state2);
         return match;
     }
 }

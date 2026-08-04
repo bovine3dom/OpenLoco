@@ -8,6 +8,7 @@
 #include "GameCommands/Company/RemoveCompanyHeadquarters.h"
 #include "GameCommands/Company/RenameCompanyName.h"
 #include "GameCommands/Company/RenameCompanyOwner.h"
+#include "GameCommands/Company/SetVehicleAutoRenewal.h"
 #include "GameCommands/GameCommands.h"
 #include "GameState.h"
 #include "Graphics/ImageIds.h"
@@ -45,6 +46,7 @@
 #include "Ui/Widgets/ViewportWidget.h"
 #include "Ui/WindowManager.h"
 #include "Vehicles/Vehicle.h"
+#include "Vehicles/VehicleAutoRenewal.h"
 #include "Vehicles/VehicleBody.h"
 #include "ViewportManager.h"
 #include "World/Company.h"
@@ -1712,6 +1714,10 @@ namespace OpenLoco::Ui::Windows::CompanyWindow
             loan_decrease,
             loan_increase,
             loan_autopay,
+            vehicle_auto_renewal,
+            renewal_threshold,
+            renewal_threshold_decrease,
+            renewal_threshold_increase,
         };
 
         namespace Widx
@@ -1721,6 +1727,10 @@ namespace OpenLoco::Ui::Windows::CompanyWindow
             constexpr WidgetId kLoanDecrease{ "loan_decrease" };
             constexpr WidgetId kLoanIncrease{ "loan_increase" };
             constexpr WidgetId kLoanAutopay{ "loan_autopay" };
+            constexpr WidgetId kVehicleAutoRenewal{ "vehicle_auto_renewal" };
+            constexpr WidgetId kRenewalThreshold{ "renewal_threshold" };
+            constexpr WidgetId kRenewalThresholdDecrease{ "renewal_threshold_decrease" };
+            constexpr WidgetId kRenewalThresholdIncrease{ "renewal_threshold_increase" };
         }
 
         constexpr uint16_t expenditureColumnWidth = 128;
@@ -1729,11 +1739,14 @@ namespace OpenLoco::Ui::Windows::CompanyWindow
             Common::makeCommonWidgets(636, 319, StringIds::title_company_finances),
             Widgets::ScrollView(Widx::kScrollview, { 133, 45 }, { 499, 215 }, WindowColour::secondary, Scrollbars::horizontal),
             Widgets::stepperWidgets(Widx::kCurrentLoan, Widx::kLoanDecrease, Widx::kLoanIncrease, { 87, 264 }, { 100, 12 }, WindowColour::secondary, StringIds::company_current_loan_value),
-            Widgets::Checkbox(Widx::kLoanAutopay, { 320, 264 }, { 204, 12 }, WindowColour::secondary, StringIds::loan_autopay, StringIds::tooltip_loan_autopay) // loan_autopay
+            Widgets::Checkbox(Widx::kLoanAutopay, { 320, 264 }, { 204, 12 }, WindowColour::secondary, StringIds::loan_autopay, StringIds::tooltip_loan_autopay),
+            Widgets::Checkbox(Widx::kVehicleAutoRenewal, { 320, 280 }, { 250, 12 }, WindowColour::secondary, StringIds::vehicle_auto_renewal, StringIds::tooltip_vehicle_auto_renewal),
+            Widgets::stepperWidgets(Widx::kRenewalThreshold, Widx::kRenewalThresholdDecrease, Widx::kRenewalThresholdIncrease, { 500, 295 }, { 100, 12 }, WindowColour::secondary, StringIds::vehicle_auto_renewal_threshold_value, StringIds::tooltip_vehicle_auto_renewal)
 
         );
 
-        const uint64_t holdableWidgets = (1 << widx::loan_decrease) | (1 << widx::loan_increase);
+        const uint64_t holdableWidgets = (1ULL << widx::loan_decrease) | (1ULL << widx::loan_increase)
+            | (1ULL << widx::renewal_threshold_decrease) | (1ULL << widx::renewal_threshold_increase);
 
         // 0x004332E4
         static void prepareDraw(Window& self)
@@ -1746,11 +1759,19 @@ namespace OpenLoco::Ui::Windows::CompanyWindow
             auto args = FormatArguments(self.widgets[widx::currentLoan].textArgs);
             args.push(company->currentLoan);
 
+            const auto renewalSettings = Vehicles::VehicleAutoRenewal::getSettings(company->id());
+            auto renewalArgs = FormatArguments(self.widgets[widx::renewal_threshold].textArgs);
+            renewalArgs.push<uint16_t>(renewalSettings.reliabilityThreshold);
+
             const auto isControllingCompany = company->id() == CompanyManager::getControllingId();
             self.widgets[widx::currentLoan].hidden = !isControllingCompany;
             self.widgets[widx::loan_decrease].hidden = !isControllingCompany;
             self.widgets[widx::loan_increase].hidden = !isControllingCompany;
             self.widgets[widx::loan_autopay].hidden = !isControllingCompany;
+            self.widgets[widx::vehicle_auto_renewal].hidden = !isControllingCompany;
+            self.widgets[widx::renewal_threshold].hidden = !isControllingCompany;
+            self.widgets[widx::renewal_threshold_decrease].hidden = !isControllingCompany;
+            self.widgets[widx::renewal_threshold_increase].hidden = !isControllingCompany;
 
             if (isControllingCompany)
             {
@@ -1761,6 +1782,20 @@ namespace OpenLoco::Ui::Windows::CompanyWindow
                 else
                 {
                     self.activatedWidgets &= ~(1ULL << Finances::widx::loan_autopay);
+                }
+
+                const auto thresholdWidgets = (1ULL << widx::renewal_threshold)
+                    | (1ULL << widx::renewal_threshold_decrease)
+                    | (1ULL << widx::renewal_threshold_increase);
+                if (renewalSettings.enabled)
+                {
+                    self.activatedWidgets |= 1ULL << widx::vehicle_auto_renewal;
+                    self.disabledWidgets &= ~thresholdWidgets;
+                }
+                else
+                {
+                    self.activatedWidgets &= ~(1ULL << widx::vehicle_auto_renewal);
+                    self.disabledWidgets |= thresholdWidgets;
                 }
             }
         }
@@ -1775,6 +1810,12 @@ namespace OpenLoco::Ui::Windows::CompanyWindow
             Common::drawCompanySelect(&self, drawingCtx);
 
             const auto company = CompanyManager::get(CompanyId(self.number));
+
+            if (company->id() == CompanyManager::getControllingId())
+            {
+                const auto point = Point(320, self.widgets[widx::renewal_threshold].top + 1);
+                tr.drawStringLeft(point, Colour::black, StringIds::vehicle_auto_renewal_threshold);
+            }
 
             // Draw 'expenditure/income' label
             {
@@ -2046,6 +2087,16 @@ namespace OpenLoco::Ui::Windows::CompanyWindow
                     company->challengeFlags ^= CompanyFlags::autopayLoan;
                     break;
                 }
+
+                case Widx::kVehicleAutoRenewal:
+                {
+                    const auto settings = Vehicles::VehicleAutoRenewal::getSettings(CompanyId(self.number));
+                    GameCommands::SetVehicleAutoRenewalArgs args{};
+                    args.enabled = !settings.enabled;
+                    args.reliabilityThreshold = settings.reliabilityThreshold;
+                    GameCommands::doCommand(args, GameCommands::Flags::apply);
+                    break;
+                }
             }
         }
 
@@ -2082,6 +2133,19 @@ namespace OpenLoco::Ui::Windows::CompanyWindow
                     args.newLoan = Math::Bound::add(company->currentLoan, Input::getClickRepeatStepSize() * 1'000);
 
                     GameCommands::setErrorTitle(StringIds::cant_borrow_any_more_money);
+                    GameCommands::doCommand(args, GameCommands::Flags::apply);
+                    break;
+                }
+
+                case Widx::kRenewalThresholdDecrease:
+                case Widx::kRenewalThresholdIncrease:
+                {
+                    const auto settings = Vehicles::VehicleAutoRenewal::getSettings(CompanyId(self.number));
+                    const auto delta = static_cast<int32_t>(Input::getClickRepeatStepSize()) * (id == Widx::kRenewalThresholdDecrease ? -5 : 5);
+                    const auto threshold = std::clamp<int32_t>(settings.reliabilityThreshold + delta, Vehicles::VehicleAutoRenewal::kMinReliabilityThreshold, Vehicles::VehicleAutoRenewal::kMaxReliabilityThreshold);
+                    GameCommands::SetVehicleAutoRenewalArgs args{};
+                    args.enabled = settings.enabled;
+                    args.reliabilityThreshold = threshold;
                     GameCommands::doCommand(args, GameCommands::Flags::apply);
                     break;
                 }

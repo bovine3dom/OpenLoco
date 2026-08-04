@@ -8,6 +8,8 @@ namespace OpenLoco
 
 namespace OpenLoco::Vehicles
 {
+    uint16_t calculateInitialReliability(const VehicleObject& vehicleObject);
+
     struct VehicleBogie : VehicleBase
     {
         static constexpr auto kVehicleThingType = VehicleEntityType::bogie;

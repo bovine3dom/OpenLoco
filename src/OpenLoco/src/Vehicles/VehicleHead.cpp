@@ -43,6 +43,7 @@
 #include "Vehicles/RoutingManager.h"
 #include "Vehicles/Vehicle1.h"
 #include "Vehicles/Vehicle2.h"
+#include "Vehicles/VehicleAutoRenewal.h"
 #include "Vehicles/VehicleBody.h"
 #include "Vehicles/VehicleBogie.h"
 #include "Vehicles/VehicleManager.h"
@@ -2712,9 +2713,13 @@ namespace OpenLoco::Vehicles
         }
 
         auto* stopOrder = curOrder->as<OrderStopAt>();
-        if (stopOrder != nullptr && stopOrder->isUnbunching())
+        if (stopOrder != nullptr)
         {
-            arriveAtUnbunchingStop();
+            VehicleAutoRenewal::tryRenew(*this);
+            if (stopOrder->isUnbunching())
+            {
+                arriveAtUnbunchingStop();
+            }
         }
 
         curOrder++;
