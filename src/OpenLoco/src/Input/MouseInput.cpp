@@ -3,6 +3,7 @@
 #include "Entities/EntityManager.h"
 #include "GameCommands/Vehicles/VehicleChangeRunningMode.h"
 #include "Input.h"
+#include "Input/ZoomDeltaAccumulator.h"
 #include "Localisation/FormatArguments.hpp"
 #include "Localisation/StringIds.h"
 #include "Logging.h"
@@ -89,6 +90,7 @@ namespace OpenLoco::Input
     static uint8_t _dragScrollIndex;                // 0x00523380
 
     static uint16_t _ticksSinceDragStart; // 0x0052338E
+    static ZoomDeltaAccumulator _viewportPanAccumulator;
 
     static Ui::Point _scrollLast;                 // 0x005233A4
     static Ui::WindowType _hoverWindowType;       // 0x005233A8
@@ -647,13 +649,12 @@ namespace OpenLoco::Input
                     else
                     {
                         const auto panZoom = vp->zoom + 1;
-                        const auto offsetX = -panZoom.applyTo(-std::abs(dragOffset.x)) * (dragOffset.x < 0 ? -1 : 1);
-                        const auto offsetY = -panZoom.applyTo(-std::abs(dragOffset.y)) * (dragOffset.y < 0 ? -1 : 1);
+                        const auto offset = _viewportPanAccumulator.apply(dragOffset, panZoom);
 
                         const auto invert = Config::get().invertRightMouseViewPan ? -1 : 1;
 
-                        window->viewportConfigurations[0].savedViewX += offsetX * invert;
-                        window->viewportConfigurations[0].savedViewY += offsetY * invert;
+                        window->viewportConfigurations[0].savedViewX += offset.x * invert;
+                        window->viewportConfigurations[0].savedViewY += offset.y * invert;
                     }
                 }
 
@@ -1516,6 +1517,7 @@ namespace OpenLoco::Input
 
     static void viewportDragBegin(Window* w)
     {
+        _viewportPanAccumulator.reset();
         w->flags &= ~Ui::WindowFlags::scrollingToLocation;
         state(State::viewportRight);
         _dragWindowType = w->type;

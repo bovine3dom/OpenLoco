@@ -908,6 +908,18 @@ namespace OpenLoco
             11,
         },
         StationBorder{
+            ImageIds::curved_border_left_medium,
+            ImageIds::curved_border_right_medium,
+            3,
+            11,
+        },
+        StationBorder{
+            ImageIds::curved_border_left_medium,
+            ImageIds::curved_border_right_medium,
+            3,
+            11,
+        },
+        StationBorder{
             ImageIds::curved_border_left_small,
             ImageIds::curved_border_right_small,
             1,
@@ -922,6 +934,8 @@ namespace OpenLoco
     };
 
     static constexpr std::array<Gfx::Font, ZoomLevel::count> kZoomToStationFonts = {
+        Gfx::Font::medium_bold,
+        Gfx::Font::medium_bold,
         Gfx::Font::medium_bold,
         Gfx::Font::medium_bold,
         Gfx::Font::medium_bold,

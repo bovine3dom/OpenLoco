@@ -5,6 +5,7 @@
 #include "GameCommands/GameCommands.h"
 #include "Input.h"
 #include "Input/Shortcuts.h"
+#include "Input/ZoomDeltaAccumulator.h"
 #include "Intro.h"
 #include "Localisation/StringIds.h"
 #include "Logging.h"
@@ -50,6 +51,8 @@ namespace OpenLoco::Input
     static uint32_t _keyQueueWriteIndex;
     static BitSet<SDL_SCANCODE_COUNT> _keyboardState;
     static bool _hasKeyboardState = false;
+    static ZoomDeltaAccumulator _edgeScrollAccumulator;
+    static ZoomDeltaAccumulator _keyScrollAccumulator;
 
     static const std::pair<std::string, std::function<void()>> kCheats[] = {
         { "DRIVER", loc_4BECDE },
@@ -419,26 +422,31 @@ namespace OpenLoco::Input
     {
         if (!Ui::hasInputFocus())
         {
+            _edgeScrollAccumulator.reset();
             return;
         }
 
         if (Tutorial::state() != Tutorial::State::none)
         {
+            _edgeScrollAccumulator.reset();
             return;
         }
 
         if (!Config::get().edgeScrolling)
         {
+            _edgeScrollAccumulator.reset();
             return;
         }
 
         if (Input::state() != State::normal && Input::state() != State::dropdownActive)
         {
+            _edgeScrollAccumulator.reset();
             return;
         }
 
         if (hasKeyModifier(KeyModifier::shift) || hasKeyModifier(KeyModifier::control))
         {
+            _edgeScrollAccumulator.reset();
             return;
         }
 
@@ -467,28 +475,39 @@ namespace OpenLoco::Input
 
         if (delta.x == 0 && delta.y == 0)
         {
+            _edgeScrollAccumulator.reset();
             return;
+        }
+        if (delta.x == 0)
+        {
+            _edgeScrollAccumulator.resetX();
+        }
+        if (delta.y == 0)
+        {
+            _edgeScrollAccumulator.resetY();
         }
 
         auto main = WindowManager::getMainWindow();
         if (main->hasFlags(WindowFlags::viewportNoScrolling))
         {
+            _edgeScrollAccumulator.reset();
             return;
         }
 
         if (SceneManager::isTitleMode())
         {
+            _edgeScrollAccumulator.reset();
             return;
         }
 
         auto viewport = main->viewports[0];
         if (viewport == nullptr)
         {
+            _edgeScrollAccumulator.reset();
             return;
         }
 
-        delta.x = viewport->zoom.applyTo(delta.x);
-        delta.y = viewport->zoom.applyTo(delta.y);
+        delta = _edgeScrollAccumulator.apply(delta, viewport->zoom);
         main->viewportConfigurations[0].savedViewX += delta.x;
         main->viewportConfigurations[0].savedViewY += delta.y;
         Input::setFlag(Flags::viewportScrolling);
@@ -498,16 +517,19 @@ namespace OpenLoco::Input
     {
         if (Tutorial::state() != Tutorial::State::none)
         {
+            _keyScrollAccumulator.reset();
             return;
         }
 
         if (WindowManager::getCurrentModalType() != WindowType::undefined)
         {
+            _keyScrollAccumulator.reset();
             return;
         }
 
         if (WindowManager::find(WindowType::textInput) != nullptr)
         {
+            _keyScrollAccumulator.reset();
             return;
         }
 
@@ -535,28 +557,39 @@ namespace OpenLoco::Input
 
         if (delta.x == 0 && delta.y == 0)
         {
+            _keyScrollAccumulator.reset();
             return;
+        }
+        if (delta.x == 0)
+        {
+            _keyScrollAccumulator.resetX();
+        }
+        if (delta.y == 0)
+        {
+            _keyScrollAccumulator.resetY();
         }
 
         auto main = WindowManager::getMainWindow();
         if (main->hasFlags(WindowFlags::viewportNoScrolling))
         {
+            _keyScrollAccumulator.reset();
             return;
         }
 
         if (SceneManager::isTitleMode())
         {
+            _keyScrollAccumulator.reset();
             return;
         }
 
         auto viewport = main->viewports[0];
         if (viewport == nullptr)
         {
+            _keyScrollAccumulator.reset();
             return;
         }
 
-        delta.x = viewport->zoom.applyTo(delta.x);
-        delta.y = viewport->zoom.applyTo(delta.y);
+        delta = _keyScrollAccumulator.apply(delta, viewport->zoom);
         main->viewportConfigurations[0].savedViewX += delta.x;
         main->viewportConfigurations[0].savedViewY += delta.y;
         Input::setFlag(Flags::viewportScrolling);

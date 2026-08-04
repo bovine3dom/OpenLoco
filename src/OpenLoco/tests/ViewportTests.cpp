@@ -1,3 +1,6 @@
+#include "Input/ZoomDeltaAccumulator.h"
+#include "LabelFrame.h"
+#include "S5/S5LabelFrame.h"
 #include "Viewport.hpp"
 
 #include <gtest/gtest.h>
@@ -80,4 +83,129 @@ TEST(ViewportTests, AppliesViewportOffsetsScaleAndZoom)
     EXPECT_EQ(exactWorldPosition.x, 1902);
     EXPECT_EQ(exactWorldPosition.y, 2602);
     expectPoint(viewport.viewportToWindow(worldPosition), windowPosition.x, windowPosition.y);
+}
+
+TEST(ZoomLevelTests, SupportsEightfoldAndSixteenfoldMagnification)
+{
+    EXPECT_EQ(ZoomLevel::min, ZoomLevel::sixteenfold);
+    EXPECT_EQ(ZoomLevel::count, 8);
+    EXPECT_EQ(ZoomLevel{ ZoomLevel::sixteenfold }.index(), 0);
+    EXPECT_EQ(ZoomLevel{ ZoomLevel::eightfold }.index(), 1);
+    EXPECT_EQ(ZoomLevel{ ZoomLevel::full }.index(), 4);
+    EXPECT_EQ(ZoomLevel{ ZoomLevel::eighth }.index(), 7);
+
+    const ZoomLevel zoom{ ZoomLevel::sixteenfold };
+    EXPECT_EQ(zoom.applyTo(160), 10);
+    EXPECT_EQ(zoom.applyInversedTo(10), 160);
+    EXPECT_EQ(zoom.applyInversedTo(-10), -160);
+    EXPECT_EQ(ZoomLevel{ ZoomLevel::half }.applyTo(-3), -6);
+
+    Viewport viewport{};
+    viewport.zoom = zoom;
+    viewport.setDimensions({ 320, 200 }, { 1600, 960 });
+    EXPECT_EQ(viewport.viewWidth, 100);
+    EXPECT_EQ(viewport.viewHeight, 60);
+}
+
+TEST(ZoomLevelTests, PreservesLegacyLabelFrameMapping)
+{
+    LabelFrame source{};
+    for (auto level = ZoomLevel::min; level <= ZoomLevel::max; ++level)
+    {
+        const auto index = ZoomLevel{ level }.index();
+        source.left[index] = 100 + level;
+        source.right[index] = 200 + level;
+        source.top[index] = 300 + level;
+        source.bottom[index] = 400 + level;
+    }
+
+    const auto saved = S5::exportLabelFrame(source);
+    const auto restored = S5::importLabelFrame(saved);
+    for (int8_t level = ZoomLevel::full; level <= ZoomLevel::max; ++level)
+    {
+        const auto index = ZoomLevel{ level }.index();
+        EXPECT_EQ(saved.left[level], source.left[index]);
+        EXPECT_EQ(saved.right[level], source.right[index]);
+        EXPECT_EQ(saved.top[level], source.top[index]);
+        EXPECT_EQ(saved.bottom[level], source.bottom[index]);
+        EXPECT_EQ(restored.left[index], source.left[index]);
+        EXPECT_EQ(restored.right[index], source.right[index]);
+        EXPECT_EQ(restored.top[index], source.top[index]);
+        EXPECT_EQ(restored.bottom[index], source.bottom[index]);
+    }
+    for (auto level = ZoomLevel::min; level < ZoomLevel::full; ++level)
+    {
+        const auto index = ZoomLevel{ level }.index();
+        EXPECT_EQ(restored.left[index], 0);
+        EXPECT_EQ(restored.right[index], 0);
+        EXPECT_EQ(restored.top[index], 0);
+        EXPECT_EQ(restored.bottom[index], 0);
+    }
+}
+
+TEST(ZoomLevelTests, UsesSignedSaveEncoding)
+{
+    EXPECT_EQ(ZoomLevel{ ZoomLevel::eightfold }.toEncoded(), 0xFD);
+    EXPECT_EQ(ZoomLevel{ ZoomLevel::sixteenfold }.toEncoded(), 0xFC);
+    EXPECT_EQ(ZoomLevel::fromEncoded(0xFD), ZoomLevel{ ZoomLevel::eightfold });
+    EXPECT_EQ(ZoomLevel::fromEncoded(0xFC), ZoomLevel{ ZoomLevel::sixteenfold });
+    EXPECT_EQ(ZoomLevel::fromEncoded(0xFB), ZoomLevel{ ZoomLevel::min });
+    EXPECT_EQ(ZoomLevel::fromEncoded(0x04), ZoomLevel{ ZoomLevel::max });
+}
+
+TEST(ZoomDeltaAccumulatorTests, PreservesMagnifiedScrollingSpeedAndDirection)
+{
+    Input::ZoomDeltaAccumulator positive;
+    Input::ZoomDeltaAccumulator negative;
+    int32_t positiveTotal = 0;
+    int32_t negativeTotal = 0;
+    for (auto i = 0; i < 4; ++i)
+    {
+        positiveTotal += positive.apply({ 12, 0 }, ZoomLevel::sixteenfold).x;
+        negativeTotal += negative.apply({ -12, 0 }, ZoomLevel::sixteenfold).x;
+    }
+    EXPECT_EQ(positiveTotal, 3);
+    EXPECT_EQ(negativeTotal, -3);
+}
+
+TEST(ZoomDeltaAccumulatorTests, IsIndependentOfInputBatching)
+{
+    Input::ZoomDeltaAccumulator individual;
+    Input::ZoomDeltaAccumulator batched;
+    int32_t individualTotal = 0;
+    for (auto i = 0; i < 8; ++i)
+    {
+        individualTotal += individual.apply({ 1, 0 }, ZoomLevel::eightfold).x;
+    }
+
+    EXPECT_EQ(individualTotal, batched.apply({ 8, 0 }, ZoomLevel::eightfold).x);
+}
+
+TEST(ZoomDeltaAccumulatorTests, IsIndependentOfDirectionChangeBatching)
+{
+    Input::ZoomDeltaAccumulator individual;
+    Input::ZoomDeltaAccumulator batched;
+    const auto forward = individual.apply({ 20, 0 }, ZoomLevel::sixteenfold).x;
+    const auto backward = individual.apply({ -12, 0 }, ZoomLevel::sixteenfold).x;
+
+    EXPECT_EQ(forward + backward, batched.apply({ 8, 0 }, ZoomLevel::sixteenfold).x);
+}
+
+TEST(ZoomDeltaAccumulatorTests, ResetsRemainderOnResetAndZoomChange)
+{
+    Input::ZoomDeltaAccumulator accumulator;
+    EXPECT_EQ(accumulator.apply({ 12, 0 }, ZoomLevel::sixteenfold).x, 0);
+    accumulator.reset();
+    EXPECT_EQ(accumulator.apply({ 4, 0 }, ZoomLevel::sixteenfold).x, 0);
+
+    EXPECT_EQ(accumulator.apply({ 12, 0 }, ZoomLevel::eightfold).x, 1);
+}
+
+TEST(ZoomDeltaAccumulatorTests, ResetsAxesIndependently)
+{
+    Input::ZoomDeltaAccumulator accumulator;
+    EXPECT_EQ(accumulator.apply({ 12, 12 }, ZoomLevel::sixteenfold), Ui::Point(0, 0));
+    accumulator.resetX();
+
+    EXPECT_EQ(accumulator.apply({ 4, 4 }, ZoomLevel::sixteenfold), Ui::Point(0, 1));
 }

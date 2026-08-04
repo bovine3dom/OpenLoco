@@ -82,6 +82,8 @@ namespace OpenLoco
         Gfx::Font::medium_bold,
         Gfx::Font::medium_bold,
         Gfx::Font::medium_bold,
+        Gfx::Font::medium_bold,
+        Gfx::Font::medium_bold,
         Gfx::Font::medium_normal,
         Gfx::Font::medium_normal,
     };

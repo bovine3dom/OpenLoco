@@ -534,6 +534,7 @@ set(OLOCO_HEADERS
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/Gui.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/Input.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/Input/Shortcuts.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/Input/ZoomDeltaAccumulator.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/Intro.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/Jukebox.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/LabelFrame.h"
