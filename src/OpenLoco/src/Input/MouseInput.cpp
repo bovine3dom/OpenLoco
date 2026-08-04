@@ -1,5 +1,6 @@
 #include "Audio/Audio.h"
 #include "Config.h"
+#include "Effects/MoneyEffect.h"
 #include "Entities/EntityManager.h"
 #include "GameCommands/Vehicles/VehicleChangeRunningMode.h"
 #include "Input.h"
@@ -127,6 +128,8 @@ namespace OpenLoco::Input
     });
 
     constexpr int32_t kDropdownItemUndefined = -1;
+    constexpr currency32_t kVehicleStartedFeedback = 5'742'730;  // STARTED
+    constexpr currency32_t kVehicleStoppedFeedback = -5'709'930; // STOPPED
 
     void initMouse()
     {
@@ -517,6 +520,8 @@ namespace OpenLoco::Input
                                 if (head != nullptr && hasKeyModifier(KeyModifier::control) && head->owner == CompanyManager::getControllingId())
                                 {
                                     const auto isStopped = head->hasVehicleFlags(Vehicles::VehicleFlags::commandStop);
+                                    const auto feedbackPosition = veh->position + World::Pos3{ 0, 0, 34 };
+                                    const auto feedbackCompany = head->owner;
                                     GameCommands::setErrorTitle(isStopped ? StringIds::cant_start_string_id : StringIds::cant_stop_string_id);
 
                                     auto args = FormatArguments::common();
@@ -527,7 +532,12 @@ namespace OpenLoco::Input
                                     GameCommands::VehicleChangeRunningModeArgs commandArgs{};
                                     commandArgs.head = head->id;
                                     commandArgs.mode = isStopped ? GameCommands::VehicleChangeRunningModeArgs::Mode::startVehicle : GameCommands::VehicleChangeRunningModeArgs::Mode::stopVehicle;
-                                    GameCommands::doCommand(commandArgs, GameCommands::Flags::apply);
+                                    const auto result = GameCommands::doCommand(commandArgs, GameCommands::Flags::apply);
+                                    const auto* updatedHead = EntityManager::get<Vehicles::VehicleHead>(commandArgs.head);
+                                    if (result != GameCommands::kFailure && updatedHead != nullptr && updatedHead->hasVehicleFlags(Vehicles::VehicleFlags::commandStop) != isStopped)
+                                    {
+                                        MoneyEffect::create(feedbackPosition, feedbackCompany, isStopped ? kVehicleStartedFeedback : kVehicleStoppedFeedback);
+                                    }
                                 }
                                 else
                                 {
