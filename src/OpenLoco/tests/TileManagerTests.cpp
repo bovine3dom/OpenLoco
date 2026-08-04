@@ -202,6 +202,26 @@ namespace
             }
         }
 
+        static void addTrainStation(const Pos3 pos, const uint8_t trackId, const uint8_t rotation, const OpenLoco::StationId stationId)
+        {
+            auto tile = TileManager::get(pos);
+            const auto trackIt = std::ranges::find_if(tile, [trackId, rotation](const auto& entry) {
+                const auto* track = entry.template as<TrackElement>();
+                return track != nullptr && track->trackId() == trackId && track->rotation() == rotation;
+            });
+            ASSERT_NE(trackIt, tile.end());
+            auto* trackEntry = &*trackIt;
+            auto& track = trackEntry->get<TrackElement>();
+            track.setHasStationElement(true);
+            auto* stationEntry = TileManager::insertElementAfterNoReorg<StationElement>(trackEntry, pos, track.baseZ(), 0xF);
+            ASSERT_NE(stationEntry, nullptr);
+            auto& station = stationEntry->get<StationElement>();
+            station.setClearZ(track.clearZ());
+            station.setOwner(OpenLoco::CompanyId(0));
+            station.setStationId(stationId);
+            station.setStationType(OpenLoco::StationType::trainStation);
+        }
+
         static void addTwoRouteJunction(const Pos3& firstPos = kFirstPos)
         {
             addTrack(firstPos, 0, 0);
@@ -1392,14 +1412,49 @@ TEST(RailPathfindingResultTest, BoundsDetoursTakenToAvoidBlockedSignals)
 {
     using namespace OpenLoco::Vehicles::RailPathfinding;
 
-    const RouteResult blockedRoute{ 0, 320, SignalState::signalBlockedTwoWay };
-    const RouteResult localClearDetour{ 0, 640, SignalState::signalClear };
-    const RouteResult excessiveClearDetour{ 0, 672, SignalState::signalClear };
+    const RouteResult disconnectedPlatform{ 0, 64, SignalState::signalClear, 1 };
+    const RouteResult blockedRoute{ 0, 320, SignalState::signalBlockedTwoWay, 2 };
+    const RouteResult localClearDetour{ 0, 640, SignalState::signalClear, 2 };
+    const RouteResult excessiveClearDetour{ 0, 672, SignalState::signalClear, 2 };
 
+    EXPECT_TRUE(isBetterRoute(disconnectedPlatform, blockedRoute));
+    EXPECT_FALSE(isBetterRoute(blockedRoute, disconnectedPlatform));
     EXPECT_TRUE(isBetterRoute(blockedRoute, localClearDetour));
     EXPECT_FALSE(isBetterRoute(localClearDetour, blockedRoute));
     EXPECT_FALSE(isBetterRoute(blockedRoute, excessiveClearDetour));
     EXPECT_TRUE(isBetterRoute(excessiveClearDetour, blockedRoute));
+}
+
+TEST_F(RailPathfindingTest, LooksBeyondStationToSelectConnectedPlatform)
+{
+    constexpr Pos3 junction{ 200 * kTileSize, 200 * kTileSize, 32 };
+    constexpr Pos3 deadEndPlatform{ junction.x - kTileSize, junction.y, junction.z };
+    constexpr Pos3 throughPlatform{ junction.x, junction.y - kTileSize, junction.z };
+    constexpr Pos3 nextWaypoint{ throughPlatform.x, throughPlatform.y - kTileSize, throughPlatform.z };
+
+    addTrack(junction, 0, 0);
+    addTrack(deadEndPlatform, 0, 0);
+    addTrack(junction, 2, 0);
+    addTrack(throughPlatform, 0, 3);
+    addTrack(nextWaypoint, 0, 3);
+
+    addTrainStation(deadEndPlatform, 0, 0, OpenLoco::StationId(0));
+    addTrainStation(throughPlatform, 0, 3, OpenLoco::StationId(0));
+
+    OpenLoco::Vehicles::RailPathfinding::Target stationTarget{};
+    stationTarget.stationId = OpenLoco::StationId(0);
+    stationTarget.pos = deadEndPlatform;
+    OpenLoco::Vehicles::RailPathfinding::Target waypointTarget{};
+    waypointTarget.pos = nextWaypoint;
+    waypointTarget.tad = 3;
+
+    const auto deadEnd = OpenLoco::Vehicles::RailPathfinding::findRoute(junction, kStraightWest, OpenLoco::CompanyId(0), 0, 0, 0, stationTarget, &waypointTarget);
+    const auto through = OpenLoco::Vehicles::RailPathfinding::findRoute(junction, kTurnNorth, OpenLoco::CompanyId(0), 0, 0, 0, stationTarget, &waypointTarget);
+
+    EXPECT_EQ(deadEnd.numTargetsReached, 1);
+    EXPECT_EQ(through.numTargetsReached, 2);
+    EXPECT_TRUE(OpenLoco::Vehicles::RailPathfinding::isBetterRoute(deadEnd, through));
+    EXPECT_FALSE(OpenLoco::Vehicles::RailPathfinding::isBetterRoute(through, deadEnd));
 }
 
 TEST_F(RailPathfindingTest, FindsLongStationRouteThatInitiallyMovesAwayFromTarget)
@@ -1427,27 +1482,7 @@ TEST_F(RailPathfindingTest, FindsLongStationRouteThatInitiallyMovesAwayFromTarge
     }
 
     const auto targetPos = westTurn + Pos3{ -destinationDistance * kTileSize, 0, 0 };
-    auto targetTile = TileManager::get(targetPos);
-    TileElementEntry* targetTrackEntry = nullptr;
-    for (auto& element : targetTile)
-    {
-        const auto* track = element.as<TrackElement>();
-        if (track != nullptr && track->trackId() == 0 && track->rotation() == 0)
-        {
-            targetTrackEntry = &element;
-            break;
-        }
-    }
-    ASSERT_NE(targetTrackEntry, nullptr);
-    auto* targetTrack = targetTrackEntry->as<TrackElement>();
-    targetTrack->setHasStationElement(true);
-    auto* stationEntry = TileManager::insertElementAfterNoReorg<StationElement>(targetTrackEntry, targetPos, targetTrack->baseZ(), 0xF);
-    ASSERT_NE(stationEntry, nullptr);
-    auto& station = stationEntry->get<StationElement>();
-    station.setClearZ(targetTrack->clearZ());
-    station.setOwner(OpenLoco::CompanyId(0));
-    station.setStationId(OpenLoco::StationId(0));
-    station.setStationType(OpenLoco::StationType::trainStation);
+    addTrainStation(targetPos, 0, 0, OpenLoco::StationId(0));
 
     OpenLoco::Vehicles::RailPathfinding::Target target{};
     target.stationId = OpenLoco::StationId(0);

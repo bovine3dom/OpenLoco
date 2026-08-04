@@ -25,6 +25,7 @@ namespace OpenLoco::Vehicles::RailPathfinding
         StationId stationId;
         uint32_t weighting;
         SignalState signalState;
+        uint8_t numTargetsReached;
     };
 
     struct PendingNode
@@ -46,6 +47,19 @@ namespace OpenLoco::Vehicles::RailPathfinding
         const auto zDiff = static_cast<uint32_t>(std::abs(pos.z - target.pos.z));
         const auto distance = std::min(xDiff, yDiff) / 4 + std::max(xDiff, yDiff) + zDiff;
         return static_cast<uint16_t>(std::min<uint32_t>(distance, std::numeric_limits<uint16_t>::max()));
+    }
+
+    static uint32_t getEstimatedDistanceToTargets(const Pos3& pos, const uint8_t numTargetsReached, const Target& target, const Target* nextTarget)
+    {
+        if (numTargetsReached != 0)
+        {
+            return getDistanceToTarget(pos, *nextTarget);
+        }
+
+        const auto distanceToTarget = getDistanceToTarget(pos, target);
+        return nextTarget == nullptr
+            ? distanceToTarget
+            : addWeighting(distanceToTarget, getDistanceToTarget(target.pos, *nextTarget));
     }
 
     static bool hasReachedTarget(const SearchNode& node, const Target& target)
@@ -101,7 +115,8 @@ namespace OpenLoco::Vehicles::RailPathfinding
             | (static_cast<uint64_t>(static_cast<uint16_t>(node.pos.y)) << 16)
             | (static_cast<uint64_t>(static_cast<uint16_t>(node.pos.z)) << 32)
             | (static_cast<uint64_t>(node.routing & Track::AdditionalTaDFlags::basicTaDMask) << 48)
-            | (static_cast<uint64_t>(signal) << 57);
+            | (static_cast<uint64_t>(signal) << 57)
+            | (static_cast<uint64_t>(node.numTargetsReached) << 60);
     }
 
     bool isBetterRoute(const RouteResult& base, const RouteResult& candidate)
@@ -109,6 +124,10 @@ namespace OpenLoco::Vehicles::RailPathfinding
         if (base.signalState == SignalState::null)
         {
             return true;
+        }
+        if (candidate.numTargetsReached != base.numTargetsReached)
+        {
+            return candidate.numTargetsReached > base.numTargetsReached;
         }
         const bool candidateReachedTarget = candidate.bestDistToTarget == 0;
         const bool baseReachedTarget = base.bestDistToTarget == 0;
@@ -192,7 +211,8 @@ namespace OpenLoco::Vehicles::RailPathfinding
         const uint8_t trackType,
         const uint8_t requiredMods,
         const uint8_t queryMods,
-        const Target& target)
+        const Target& target,
+        const Target* nextTarget)
     {
         const auto comparePending = [](const PendingNode& lhs, const PendingNode& rhs) {
             return std::tie(lhs.estimatedCost, lhs.weighting, lhs.index)
@@ -201,10 +221,10 @@ namespace OpenLoco::Vehicles::RailPathfinding
 
         std::vector<SearchNode> nodes;
         nodes.reserve(kMaxSearchNodes);
-        nodes.push_back({ pos, tad, StationId::null, 0, SignalState::null });
+        nodes.push_back({ pos, tad, StationId::null, 0, SignalState::null, 0 });
 
         std::priority_queue<PendingNode, std::vector<PendingNode>, decltype(comparePending)> pending(comparePending);
-        pending.push({ getDistanceToTarget(pos, target), 0, 0 });
+        pending.push({ getEstimatedDistanceToTargets(pos, 0, target, nextTarget), 0, 0 });
 
         std::unordered_map<uint64_t, uint32_t> bestWeightingByRoute;
         bestWeightingByRoute.reserve(kMaxSearchNodes);
@@ -222,21 +242,36 @@ namespace OpenLoco::Vehicles::RailPathfinding
                 continue;
             }
 
-            if (hasReachedTarget(node, target))
+            const auto* activeTarget = node.numTargetsReached == 0 ? &target : nextTarget;
+            if (activeTarget != nullptr && hasReachedTarget(node, *activeTarget))
             {
-                const RouteResult result{ 0, node.weighting, node.signalState == SignalState::null ? SignalState::noSignals : node.signalState };
-                if (isBetterRoute(bestReached, result))
+                node.numTargetsReached++;
+                if (nextTarget == nullptr || node.numTargetsReached == 2)
                 {
-                    bestReached = result;
+                    const RouteResult result{ 0, node.weighting, node.signalState == SignalState::null ? SignalState::noSignals : node.signalState, node.numTargetsReached };
+                    if (isBetterRoute(bestReached, result))
+                    {
+                        bestReached = result;
+                    }
+                    continue;
                 }
-                continue;
+
+                const auto key = getRouteKey(node);
+                const auto previous = bestWeightingByRoute.find(key);
+                if (previous != bestWeightingByRoute.end() && previous->second <= node.weighting)
+                {
+                    continue;
+                }
+                bestWeightingByRoute[key] = node.weighting;
             }
 
             const auto canContinue = canPassSignal(node, trackType);
+            const auto& searchTarget = node.numTargetsReached == 0 ? target : *nextTarget;
             const RouteResult fallback{
-                getDistanceToTarget(node.pos, target),
+                getDistanceToTarget(node.pos, searchTarget),
                 node.weighting,
                 node.signalState == SignalState::null ? SignalState::signalClear : node.signalState,
+                node.numTargetsReached,
             };
             if (isBetterRoute(bestFallback, fallback))
             {
@@ -260,7 +295,7 @@ namespace OpenLoco::Vehicles::RailPathfinding
                     break;
                 }
 
-                SearchNode child{ nextPos, routing, connections.stationId, weighting, node.signalState };
+                SearchNode child{ nextPos, routing, connections.stationId, weighting, node.signalState, node.numTargetsReached };
                 const auto key = getRouteKey(child);
                 const auto previous = bestWeightingByRoute.find(key);
                 if (previous != bestWeightingByRoute.end() && previous->second <= weighting)
@@ -271,7 +306,7 @@ namespace OpenLoco::Vehicles::RailPathfinding
 
                 nodes.push_back(child);
                 const auto index = static_cast<uint16_t>(nodes.size() - 1);
-                const auto estimatedCost = addWeighting(weighting, getDistanceToTarget(nextPos, target));
+                const auto estimatedCost = addWeighting(weighting, getEstimatedDistanceToTargets(nextPos, child.numTargetsReached, target, nextTarget));
                 pending.push({ estimatedCost, weighting, index });
             }
         }

@@ -5766,6 +5766,35 @@ namespace OpenLoco::Vehicles
         return state.unkFlags;
     }
 
+    static std::optional<RailPathfinding::Target> makeRailPathfindingTarget(const Order& order)
+    {
+        RailPathfinding::Target target{};
+        if (const auto* stationOrder = order.as<OrderStation>(); stationOrder != nullptr)
+        {
+            target.stationId = stationOrder->getStation();
+            const auto* station = StationManager::get(target.stationId);
+            target.pos = { station->x, station->y, station->z };
+            return target;
+        }
+
+        const auto* waypointOrder = order.as<OrderRouteWaypoint>();
+        if (waypointOrder == nullptr)
+        {
+            return std::nullopt;
+        }
+
+        target.pos = waypointOrder->getWaypoint();
+        target.tad = (waypointOrder->getTrackId() << 3) | waypointOrder->getDirection();
+        const auto& trackSize = TrackData::getUnkTrack(target.tad);
+        target.reversePos = target.pos + trackSize.pos;
+        if (trackSize.rotationEnd < 12)
+        {
+            target.reversePos -= World::Pos3{ World::kRotationOffset[trackSize.rotationEnd], 0 };
+        }
+        target.reverseTad = target.tad ^ (1U << 2);
+        return target;
+    }
+
     // 0x004AC3D3
     // pos.x : ax
     // pos.y : cx
@@ -5799,33 +5828,20 @@ namespace OpenLoco::Vehicles
 
         auto orders = head.getCurrentOrders();
         auto curOrder = orders.begin();
-        auto* stationOrder = curOrder->as<OrderStation>();
-        auto* routeOrder = curOrder->as<OrderRouteWaypoint>();
-        if (stationOrder != nullptr || routeOrder != nullptr)
+        const auto target = makeRailPathfindingTarget(*curOrder);
+        if (target.has_value())
         {
-            RailPathfinding::Target target{};
-            if (stationOrder != nullptr)
+            std::optional<RailPathfinding::Target> nextTarget;
+            // Cargo instructions belong to the current stop, so look through them.
+            auto nextOrder = curOrder;
+            for (++nextOrder; nextOrder != orders.end(); ++nextOrder)
             {
-                // 0x004AC504
-                target.stationId = stationOrder->getStation();
-                auto* station = StationManager::get(target.stationId);
-                target.pos = World::Pos3{ station->x, station->y, station->z };
-            }
-            else
-            {
-                // 0x004AC441
-                target.stationId = StationId::null;
-                target.pos = routeOrder->getWaypoint();
-                target.tad = (routeOrder->getTrackId() << 3) | routeOrder->getDirection();
-                const auto& trackSize = TrackData::getUnkTrack(target.tad);
-                target.reversePos = target.pos + trackSize.pos;
-                if (trackSize.rotationEnd < 12)
+                nextTarget = makeRailPathfindingTarget(*nextOrder);
+                if (nextTarget.has_value())
                 {
-                    target.reversePos -= World::Pos3{ World::kRotationOffset[trackSize.rotationEnd], 0 };
+                    break;
                 }
-                target.reverseTad = target.tad ^ (1U << 2); // Reverse
             }
-            // 0x004AC5F5
 
             uint32_t bestConnection = 0;
             for (auto i = 0U; i < tc.connections.size(); ++i)
@@ -5833,17 +5849,20 @@ namespace OpenLoco::Vehicles
                 const auto connection = tc.connections[i] & World::Track::AdditionalTaDFlags::basicTaDWithSignalMask;
                 const auto connectionTad = connection & World::Track::AdditionalTaDFlags::basicTaDMask;
 
-                if ((pos == target.pos && connectionTad == target.tad)
-                    || (pos == target.reversePos && connectionTad == target.reverseTad))
+                if (!nextTarget.has_value()
+                    && target->stationId == StationId::null
+                    && ((pos == target->pos && connectionTad == target->tad)
+                        || (pos == target->reversePos && connectionTad == target->reverseTad)))
                 {
                     state.result.signalState = RouteSignalState::noSignals;
                     state.result.bestDistToTarget = 0;
                     state.result.bestTrackWeighting = 0;
+                    state.result.numTargetsReached = 1;
                     state.hadNewResult = 1;
                     return tc.connections[i];
                 }
 
-                auto newResult = RailPathfinding::findRoute(pos, connection, companyId, trackType, requiredMods, queryMods, target);
+                auto newResult = RailPathfinding::findRoute(pos, connection, companyId, trackType, requiredMods, queryMods, *target, nextTarget.has_value() ? &*nextTarget : nullptr);
                 if (newResult.signalState == RouteSignalState::null)
                 {
                     newResult.signalState = RouteSignalState::signalClear;

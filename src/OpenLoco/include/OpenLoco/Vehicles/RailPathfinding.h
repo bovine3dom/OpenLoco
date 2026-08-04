@@ -23,6 +23,7 @@ namespace OpenLoco::Vehicles::RailPathfinding
         uint16_t bestDistToTarget;
         uint32_t bestTrackWeighting;
         SignalState signalState;
+        uint8_t numTargetsReached{}; // Current order, then optional lookahead order.
     };
 
     struct Target
@@ -41,6 +42,7 @@ namespace OpenLoco::Vehicles::RailPathfinding
         uint8_t trackType,
         uint8_t requiredMods,
         uint8_t queryMods,
-        const Target& target);
+        const Target& target,
+        const Target* nextTarget = nullptr);
     bool isBetterRoute(const RouteResult& base, const RouteResult& candidate);
 }
