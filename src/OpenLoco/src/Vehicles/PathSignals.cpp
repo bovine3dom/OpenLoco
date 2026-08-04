@@ -726,7 +726,8 @@ namespace OpenLoco::Vehicles::PathSignals
                 considerCandidate(index, nextPos, numTargetsReached, node.weighting, std::nullopt);
                 continue;
             }
-            if (node.depth >= maxPathLength || nodes.size() >= kMaxSearchNodes)
+            // The terminating signal is not part of the reserved path, so inspect one extra connection.
+            if (node.depth > maxPathLength || nodes.size() >= kMaxSearchNodes)
             {
                 continue;
             }

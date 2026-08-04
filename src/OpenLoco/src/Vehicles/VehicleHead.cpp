@@ -4396,6 +4396,44 @@ namespace OpenLoco::Vehicles
         setSignalState(targetPos, tad, targetTrackType, lightStateFlags);
     }
 
+    static void tryAdvanceWaypointOrder(VehicleHead& head, const World::Pos3& pos, const uint16_t routing)
+    {
+        if (head.var_52 == 1)
+        {
+            return;
+        }
+
+        auto curOrder = OrderRingView(head.orderTableOffset, head.currentOrder).begin();
+        auto* waypointOrder = curOrder->as<OrderRouteWaypoint>();
+        if (waypointOrder == nullptr)
+        {
+            return;
+        }
+
+        const auto basicTaD = routing & World::Track::AdditionalTaDFlags::basicTaDMask;
+        const auto waypointTaD = (waypointOrder->getTrackId() << 3) | waypointOrder->getDirection();
+        if (pos != waypointOrder->getWaypoint() || basicTaD != waypointTaD)
+        {
+            const auto& trackSize = World::TrackData::getUnkTrack(basicTaD);
+            auto connectPos = pos + trackSize.pos;
+            if (trackSize.rotationEnd < 12)
+            {
+                connectPos -= World::Pos3{ kRotationOffset[trackSize.rotationEnd], 0 };
+            }
+            auto reverseTaD = basicTaD;
+            reverseTaD ^= (1U << 2);
+            reverseTaD &= ~0x3;
+            reverseTaD |= World::kReverseRotation[trackSize.rotationEnd] & 0x3;
+            if (connectPos != waypointOrder->getWaypoint() || reverseTaD != waypointTaD)
+            {
+                return;
+            }
+        }
+        curOrder++;
+        head.currentOrder = curOrder->getOffset() - head.orderTableOffset;
+        Ui::WindowManager::invalidateOrderPageByVehicleNumber(enumValue(head.id));
+    }
+
     // 0x004ACEF1
     static Sub4ACEE7Result sub_4ACEF1(VehicleHead& head, uint32_t unk1, uint32_t var_113612C, bool isPlaceDown)
     {
@@ -4416,6 +4454,9 @@ namespace OpenLoco::Vehicles
         }
 
         // Identical to ROAD
+        const auto previousRoutingHandle = head.routingHandle;
+        auto traversedPos = head.getTrackLoc();
+        auto traversedTaD = head.trackAndDirection.track._data;
         UpdateMotionResult motionResult{};
         if (head.var_52 == 1)
         {
@@ -4431,6 +4472,19 @@ namespace OpenLoco::Vehicles
             head.var_3C += distance - motionResult.remainingDistance;
         }
         // NOTE: head.routingHandle may have changed here due to updateTrackMotion
+
+        if (head.var_52 != 1)
+        {
+            auto traversedRoutingHandle = previousRoutingHandle;
+            while (traversedRoutingHandle != head.routingHandle)
+            {
+                traversedPos += World::TrackData::getUnkTrack(traversedTaD).pos;
+                traversedRoutingHandle.setIndex(traversedRoutingHandle.getIndex() + 1);
+                const auto traversedRouting = RoutingManager::getRouting(traversedRoutingHandle);
+                tryAdvanceWaypointOrder(head, traversedPos, traversedRouting);
+                traversedTaD = traversedRouting & World::Track::AdditionalTaDFlags::basicTaDMask;
+            }
+        }
 
         if (!motionResult.hasFlags(UpdateVar1136114Flags::unk_m00))
         {
@@ -4750,40 +4804,7 @@ namespace OpenLoco::Vehicles
         const auto& nextHandle = *++(routings.begin());
         RoutingManager::setRouting(nextHandle, connection);
 
-        if (head.var_52 == 1)
-        {
-            return Sub4ACEE7Result{ 0, 0, StationId::null };
-        }
-
-        auto curOrder = OrderRingView(head.orderTableOffset, head.currentOrder).begin();
-        auto* waypointOrder = curOrder->as<OrderRouteWaypoint>();
-        if (waypointOrder == nullptr)
-        {
-            return Sub4ACEE7Result{ 0, 0, StationId::null };
-        }
-
-        auto curPos = nextPos;
-        const auto waypointTaD = (waypointOrder->getTrackId() << 3) | waypointOrder->getDirection();
-        if (curPos != waypointOrder->getWaypoint() || (connection & World::Track::AdditionalTaDFlags::basicTaDMask) != waypointTaD)
-        {
-            auto& trackSize = World::TrackData::getUnkTrack(connection & World::Track::AdditionalTaDFlags::basicTaDMask);
-            auto connectPos = curPos + trackSize.pos;
-            if (trackSize.rotationEnd < 12)
-            {
-                connectPos -= World::Pos3{ kRotationOffset[trackSize.rotationEnd], 0 };
-            }
-            auto reverseTaD = (connection & World::Track::AdditionalTaDFlags::basicTaDMask);
-            reverseTaD ^= (1U << 2);
-            reverseTaD &= ~0x3;
-            reverseTaD |= World::kReverseRotation[trackSize.rotationEnd] & 0x3;
-            if (connectPos != waypointOrder->getWaypoint() || reverseTaD != waypointTaD)
-            {
-                return Sub4ACEE7Result{ 0, 0, StationId::null };
-            }
-        }
-        curOrder++;
-        head.currentOrder = curOrder->getOffset() - head.orderTableOffset;
-        Ui::WindowManager::invalidateOrderPageByVehicleNumber(enumValue(head.id));
+        tryAdvanceWaypointOrder(head, nextPos, connection);
         return Sub4ACEE7Result{ 0, 0, StationId::null };
     }
 

@@ -1173,6 +1173,41 @@ TEST_F(PathSignalsTest, MarksExactPathReservationEntries)
     EXPECT_FALSE(OpenLoco::Vehicles::RoutingManager::isPathReserved(handle));
 }
 
+TEST_F(PathSignalsTest, PrefersWaypointRouteAtReservationCapacity)
+{
+    constexpr Pos3 firstPos{ 3200, 3200, 32 };
+    constexpr Pos3 junction{ firstPos.x - kTileSize, firstPos.y, firstPos.z };
+    constexpr Pos3 waypointPos{ junction.x - kTileSize, junction.y, junction.z };
+    constexpr auto longBlockLength = 60;
+
+    addTrack(firstPos, 0, 0);
+    for (auto i = 1; i <= longBlockLength; ++i)
+    {
+        addTrack(firstPos + Pos3{ -i * kTileSize, 0, 0 }, 0, 0, i == longBlockLength);
+    }
+    addTrack(junction, 2, 0);
+    addTrack(junction + Pos3{ 0, -kTileSize, 0 }, 0, 3);
+    addTrack(junction + Pos3{ 0, -2 * kTileSize, 0 }, 0, 3, true);
+
+    auto* train = createTrain(firstPos + Pos3{ kTileSize, 0, 0 }, kStraightWest);
+    ASSERT_NE(train, nullptr);
+    const OpenLoco::Vehicles::OrderRouteWaypoint waypoint{ toTileSpace(waypointPos), waypointPos.z / 8, 0, 0 };
+    OpenLoco::Vehicles::OrderManager::insertOrder(train, 0, &waypoint);
+
+    ASSERT_TRUE(OpenLoco::Vehicles::PathSignals::tryReservePath(*train, firstPos, kStraightWest));
+
+    EXPECT_EQ(getSecondReservedRouting(*train), kStraightWest);
+    auto handle = train->routingHandle;
+    for (auto i = 0; i < longBlockLength; ++i)
+    {
+        handle.setIndex(handle.getIndex() + 1);
+        EXPECT_TRUE(OpenLoco::Vehicles::RoutingManager::isPathReserved(handle));
+    }
+    handle.setIndex(handle.getIndex() + 1);
+    EXPECT_EQ(OpenLoco::Vehicles::RoutingManager::getRouting(handle), OpenLoco::Vehicles::RoutingManager::kAllocatedButFreeRouting);
+    EXPECT_FALSE(OpenLoco::Vehicles::RoutingManager::isPathReserved(handle));
+}
+
 TEST_F(PathSignalsTest, OrdinaryMovementDoesNotEnterOccupiedPathReservation)
 {
     constexpr Pos3 currentPos{ 352, 320, 32 };
@@ -1191,6 +1226,34 @@ TEST_F(PathSignalsTest, OrdinaryMovementDoesNotEnterOccupiedPathReservation)
     auto nextHandle = waitingTrain->routingHandle;
     nextHandle.setIndex(nextHandle.getIndex() + 1);
     EXPECT_EQ(OpenLoco::Vehicles::RoutingManager::getRouting(nextHandle), OpenLoco::Vehicles::RoutingManager::kAllocatedButFreeRouting);
+}
+
+TEST_F(PathSignalsTest, AdvancesWaypointConsumedFromReservedRouting)
+{
+    constexpr Pos3 currentPos{ 352, 320, 32 };
+    constexpr Pos3 waypointPos{ 320, 320, 32 };
+    constexpr Pos3 nextPos{ 288, 320, 32 };
+    addTrack(currentPos, 0, 0);
+    addTrack(waypointPos, 0, 0);
+    addTrack(nextPos, 0, 0);
+
+    auto* train = createTrain(currentPos, kStraightWest);
+    ASSERT_NE(train, nullptr);
+    const OpenLoco::Vehicles::OrderStopAt precedingOrder{ OpenLoco::StationId(0) };
+    const OpenLoco::Vehicles::OrderRouteWaypoint waypoint{ toTileSpace(waypointPos), waypointPos.z / 8, 0, 0 };
+    const OpenLoco::Vehicles::OrderRouteWaypoint followingWaypoint{ toTileSpace(currentPos), currentPos.z / 8, 0, 0 };
+    OpenLoco::Vehicles::OrderManager::insertOrder(train, 0, &precedingOrder);
+    OpenLoco::Vehicles::OrderManager::insertOrder(train, sizeof(precedingOrder), &waypoint);
+    OpenLoco::Vehicles::OrderManager::insertOrder(train, sizeof(precedingOrder) + sizeof(waypoint), &followingWaypoint);
+    train->currentOrder = sizeof(precedingOrder);
+
+    auto reservedHandle = train->routingHandle;
+    reservedHandle.setIndex(reservedHandle.getIndex() + 1);
+    OpenLoco::Vehicles::RoutingManager::setRouting(reservedHandle, kStraightWest);
+
+    train->sub_4ACEE7(0xD4CB00, 0xD4CB00, false);
+
+    EXPECT_EQ(train->currentOrder, sizeof(precedingOrder) + sizeof(waypoint));
 }
 
 TEST_F(PathSignalsTest, FreeingRoutingClearsPathReservation)
