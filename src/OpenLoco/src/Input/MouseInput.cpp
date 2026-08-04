@@ -1,7 +1,9 @@
 #include "Audio/Audio.h"
 #include "Config.h"
 #include "Entities/EntityManager.h"
+#include "GameCommands/Vehicles/VehicleChangeRunningMode.h"
 #include "Input.h"
+#include "Localisation/FormatArguments.hpp"
 #include "Localisation/StringIds.h"
 #include "Logging.h"
 #include "Map/BuildingElement.h"
@@ -27,6 +29,7 @@
 #include "Ui/WindowManager.h"
 #include "Ui/Windows/CargoFlowOverlay.h"
 #include "Vehicles/Vehicle.h"
+#include "Vehicles/VehicleHead.h"
 #include "World/CompanyManager.h"
 #include "World/StationManager.h"
 #include "World/TownManager.h"
@@ -508,7 +511,26 @@ namespace OpenLoco::Input
                             auto veh = _entity->asBase<Vehicles::VehicleBase>();
                             if (veh != nullptr)
                             {
-                                Ui::Windows::Vehicle::Main::open(veh);
+                                auto* head = EntityManager::get<Vehicles::VehicleHead>(veh->getHead());
+                                if (head != nullptr && hasKeyModifier(KeyModifier::control) && head->owner == CompanyManager::getControllingId())
+                                {
+                                    const auto isStopped = head->hasVehicleFlags(Vehicles::VehicleFlags::commandStop);
+                                    GameCommands::setErrorTitle(isStopped ? StringIds::cant_start_string_id : StringIds::cant_stop_string_id);
+
+                                    auto args = FormatArguments::common();
+                                    args.skip(6);
+                                    args.push(head->name);
+                                    args.push(head->ordinalNumber);
+
+                                    GameCommands::VehicleChangeRunningModeArgs commandArgs{};
+                                    commandArgs.head = head->id;
+                                    commandArgs.mode = isStopped ? GameCommands::VehicleChangeRunningModeArgs::Mode::startVehicle : GameCommands::VehicleChangeRunningModeArgs::Mode::stopVehicle;
+                                    GameCommands::doCommand(commandArgs, GameCommands::Flags::apply);
+                                }
+                                else
+                                {
+                                    Ui::Windows::Vehicle::Main::open(veh);
+                                }
                             }
                             break;
                         }
