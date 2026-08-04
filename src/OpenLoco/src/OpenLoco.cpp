@@ -363,9 +363,7 @@ namespace OpenLoco
     {
         auto& tweener = EntityTweener::get();
 
-        const auto alpha = std::min<float>(_accumulator / UpdateTime, 1.0);
-
-        while (_accumulator > UpdateTime)
+        while (_accumulator >= UpdateTime)
         {
             tweener.preTick();
 
@@ -375,6 +373,7 @@ namespace OpenLoco
             tweener.postTick();
         }
 
+        const auto alpha = std::clamp<float>(_accumulator / UpdateTime, 0.0F, 1.0F);
         tweener.tween(alpha);
 
         SceneManager::update();
@@ -385,6 +384,7 @@ namespace OpenLoco
     static void fixedUpdate()
     {
         auto& tweener = EntityTweener::get();
+        tweener.restore();
         tweener.reset();
 
         if (_accumulator < UpdateTime)
@@ -466,7 +466,7 @@ namespace OpenLoco
         }
     }
 
-    bool runRenderBenchmark(const fs::path& savePath, int32_t warmupFrames, int32_t frames, int32_t width, int32_t height, float scaleFactor)
+    bool runRenderBenchmark(const fs::path& savePath, int32_t warmupFrames, int32_t frames, int32_t width, int32_t height, float scaleFactor, bool fullRedraw)
     {
         auto& config = Config::get();
         struct BenchmarkStateGuard
@@ -578,6 +578,10 @@ namespace OpenLoco
         {
             processEvents();
             prepareFrame(frame);
+            if (fullRedraw)
+            {
+                Gfx::invalidateScreen();
+            }
             drawingEngine.render();
             if (!drawingEngine.present())
             {
@@ -587,14 +591,24 @@ namespace OpenLoco
 
         using BenchmarkClock = std::chrono::steady_clock;
         std::vector<uint64_t> frameTotals(static_cast<size_t>(frames));
+        std::vector<uint64_t> updateTotals(static_cast<size_t>(frames));
         std::vector<uint64_t> renderTotals(static_cast<size_t>(frames));
         std::vector<uint64_t> presentTotals(static_cast<size_t>(frames));
         for (int32_t frame = 0; frame < frames; ++frame)
         {
+            const auto frameStart = BenchmarkClock::now();
             processEvents();
+
+            const auto updateStart = BenchmarkClock::now();
             prepareFrame(frame + warmupFrames);
+            if (fullRedraw)
+            {
+                Gfx::invalidateScreen();
+            }
 
             const auto index = static_cast<size_t>(frame);
+            updateTotals[index] = std::chrono::duration_cast<std::chrono::nanoseconds>(BenchmarkClock::now() - updateStart).count();
+
             const auto renderStart = BenchmarkClock::now();
             drawingEngine.render();
             renderTotals[index] = std::chrono::duration_cast<std::chrono::nanoseconds>(BenchmarkClock::now() - renderStart).count();
@@ -605,15 +619,22 @@ namespace OpenLoco
                 throw std::runtime_error("Renderer presentation failed during benchmark");
             }
             presentTotals[index] = std::chrono::duration_cast<std::chrono::nanoseconds>(BenchmarkClock::now() - presentStart).count();
-            frameTotals[index] = renderTotals[index] + presentTotals[index];
+            frameTotals[index] = std::chrono::duration_cast<std::chrono::nanoseconds>(BenchmarkClock::now() - frameStart).count();
         }
 
         const auto logMetric = [](std::string_view name, std::vector<uint64_t> values) {
             std::ranges::sort(values);
-            const auto median = values[values.size() / 2];
-            const auto p95 = values[(values.size() * 95 + 99) / 100 - 1];
+            const auto percentile = [&](size_t value) {
+                return values[(values.size() * value + 99) / 100 - 1];
+            };
             const auto toMilliseconds = [](uint64_t nanoseconds) { return static_cast<double>(nanoseconds) / 1'000'000.0; };
-            Logging::info("  {:<18} median={:>8.3f} ms  p95={:>8.3f} ms", name, toMilliseconds(median), toMilliseconds(p95));
+            Logging::info(
+                "  {:<18} median={:>8.3f} ms  p95={:>8.3f} ms  p99={:>8.3f} ms  max={:>8.3f} ms",
+                name,
+                toMilliseconds(values[values.size() / 2]),
+                toMilliseconds(percentile(95)),
+                toMilliseconds(percentile(99)),
+                toMilliseconds(values.back()));
         };
 
         const auto hashFrame = [&] {
@@ -631,15 +652,38 @@ namespace OpenLoco
             return hash;
         };
         const auto frameHash = hashFrame();
-        Gfx::invalidateScreen();
-        drawingEngine.render();
-        const auto fullRenderHash = hashFrame();
-        tweener.restore();
-        if (frameHash != fullRenderHash)
+        const auto benchmarkScenarioTicks = getGameState().scenarioTicks;
+        constexpr int32_t kValidationFrames = 32;
+        for (int32_t frame = 0; frame < kValidationFrames; ++frame)
         {
-            Logging::error("Incremental render hash 0x{:016X} differs from full render hash 0x{:016X}", frameHash, fullRenderHash);
-            return false;
+            processEvents();
+            prepareFrame(frame + warmupFrames + frames);
+            drawingEngine.render();
+            const auto incrementalHash = hashFrame();
+            if (!drawingEngine.present())
+            {
+                throw std::runtime_error("Renderer presentation failed during incremental validation");
+            }
+
+            Gfx::invalidateScreen();
+            drawingEngine.render();
+            const auto fullRenderHash = hashFrame();
+            if (!drawingEngine.present())
+            {
+                throw std::runtime_error("Renderer presentation failed during full-render validation");
+            }
+            if (incrementalHash != fullRenderHash)
+            {
+                Logging::error(
+                    "Validation frame {} incremental hash 0x{:016X} differs from full render hash 0x{:016X}",
+                    frame,
+                    incrementalHash,
+                    fullRenderHash);
+                tweener.restore();
+                return false;
+            }
         }
+        tweener.restore();
 
         Logging::info("--------------------------------");
         Logging::info("- Render benchmark");
@@ -648,9 +692,12 @@ namespace OpenLoco
         Logging::info("  framebuffer:        {}x{} at {:.2f}x", width, height, scaleFactor);
         Logging::info("  presentation:       {}x{}", presentationSize.width, presentationSize.height);
         Logging::info("  warmup / measured:  {} / {} frames", warmupFrames, frames);
-        Logging::info("  scenario ticks:     {}", getGameState().scenarioTicks);
+        Logging::info("  redraw mode:        {}", fullRedraw ? "full" : "incremental");
+        Logging::info("  scenario ticks:     {}", benchmarkScenarioTicks);
         Logging::info("  framebuffer hash:   0x{:016X}", frameHash);
-        logMetric("frame total", std::move(frameTotals));
+        Logging::info("  validation frames:  {} incremental/full matches", kValidationFrames);
+        logMetric("end-to-end frame", std::move(frameTotals));
+        logMetric("update total", std::move(updateTotals));
         logMetric("render total", std::move(renderTotals));
         logMetric("present total", std::move(presentTotals));
         return true;

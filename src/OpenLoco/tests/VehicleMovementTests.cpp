@@ -1,0 +1,95 @@
+#include "Entities/EntityManager.h"
+#include "Vehicles/Vehicle1.h"
+#include "Vehicles/Vehicle2.h"
+#include "Vehicles/VehicleBody.h"
+#include "Vehicles/VehicleBogie.h"
+#include "Vehicles/VehicleHead.h"
+#include "Vehicles/VehicleTail.h"
+#include <array>
+#include <gtest/gtest.h>
+
+using namespace OpenLoco;
+using namespace OpenLoco::Literals;
+using namespace OpenLoco::Vehicles;
+
+namespace
+{
+    class VehicleMovementTest : public ::testing::Test
+    {
+    protected:
+        void SetUp() override
+        {
+            EntityManager::reset();
+        }
+
+        void TearDown() override
+        {
+            EntityManager::reset();
+        }
+
+        template<typename T>
+        static T* createComponent()
+        {
+            auto* entity = EntityManager::createEntityVehicle();
+            if (entity == nullptr)
+            {
+                return nullptr;
+            }
+            entity->baseType = EntityBaseType::vehicle;
+            auto* component = reinterpret_cast<VehicleBase*>(entity);
+            component->setSubType(T::kVehicleThingType);
+            return static_cast<T*>(component);
+        }
+    };
+}
+
+TEST_F(VehicleMovementTest, StationaryLandBodySkipsGeometryButAdvancesAnimation)
+{
+    auto* head = createComponent<VehicleHead>();
+    auto* veh1 = createComponent<Vehicle1>();
+    auto* veh2 = createComponent<Vehicle2>();
+    auto* front = createComponent<VehicleBogie>();
+    auto* back = createComponent<VehicleBogie>();
+    auto* body = createComponent<VehicleBody>();
+    auto* tail = createComponent<VehicleTail>();
+    ASSERT_NE(head, nullptr);
+    ASSERT_NE(veh1, nullptr);
+    ASSERT_NE(veh2, nullptr);
+    ASSERT_NE(front, nullptr);
+    ASSERT_NE(back, nullptr);
+    ASSERT_NE(body, nullptr);
+    ASSERT_NE(tail, nullptr);
+
+    body->setSubType(VehicleEntityType::body_start);
+    const std::array<VehicleBase*, 7> components = { head, veh1, veh2, front, back, body, tail };
+    for (size_t i = 0; i < std::size(components); ++i)
+    {
+        components[i]->head = head->id;
+        components[i]->position = { 64, 64, 16 };
+        components[i]->mode = TransportMode::air;
+        components[i]->setNextCar(i + 1 < std::size(components) ? components[i + 1]->id : EntityId::null);
+    }
+
+    head->mode = TransportMode::road;
+    head->status = Status::stopped;
+    head->vehicleFlags = VehicleFlags::commandStop;
+    veh2->sound.objectId = 0xFFFF;
+    tail->sound.objectId = 0xFFFF;
+    veh2->currentSpeed = 8.0_mph;
+
+    front->position = { 64, 64, 16 };
+    back->position = { 72, 64, 16 };
+    body->position = { 68, 64, 16 };
+    body->mode = TransportMode::road;
+    body->var_38 = Flags38::isGhost;
+    body->objectSpriteType = 0xFF;
+    // moveTo refreshes this bound even when the world position is unchanged.
+    body->spriteLeft = 12345;
+    const auto initialAnimationProgress = body->var_44;
+
+    head->updateVehicle();
+
+    EXPECT_EQ(body->position, (World::Pos3{ 68, 64, 16 }));
+    EXPECT_EQ(body->spriteLeft, 12345);
+    EXPECT_NE(body->var_44, initialAnimationProgress);
+}

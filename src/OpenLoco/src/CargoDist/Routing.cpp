@@ -35,6 +35,43 @@ namespace OpenLoco::CargoDist
             uint64_t remainder;
         };
 
+        using ShortestPathQueueEntry = std::pair<uint64_t, size_t>;
+
+        class ShortestPathQueue : public std::priority_queue<ShortestPathQueueEntry, std::vector<ShortestPathQueueEntry>, std::greater<ShortestPathQueueEntry>>
+        {
+        public:
+            void clear()
+            {
+                this->c.clear();
+            }
+
+            void reserve(size_t size)
+            {
+                this->c.reserve(size);
+            }
+        };
+
+        struct ShortestPathScratch
+        {
+            void reset(size_t nodeCount)
+            {
+                const auto infinity = std::numeric_limits<uint64_t>::max();
+                distance.assign(nodeCount, infinity);
+                previous.assign(nodeCount, kNoIndex);
+                settled.assign(nodeCount, false);
+                queue.clear();
+                queue.reserve(nodeCount);
+                path.clear();
+                path.reserve(nodeCount);
+            }
+
+            std::vector<uint64_t> distance;
+            std::vector<size_t> previous;
+            std::vector<bool> settled;
+            ShortestPathQueue queue;
+            std::vector<size_t> path;
+        };
+
         constexpr uint16_t stationValue(StationId station)
         {
             return static_cast<uint16_t>(station);
@@ -174,21 +211,22 @@ namespace OpenLoco::CargoDist
             return saturatedAdd(base, saturatedAdd(wholePenalty, fractionalPenalty));
         }
 
-        std::vector<size_t> shortestPath(
+        const std::vector<size_t>& shortestPath(
             size_t source,
             size_t destination,
             const std::vector<RoutingNode>& nodes,
             const std::vector<PlannedEdge>& edges,
             const std::vector<std::vector<size_t>>& adjacency,
             bool timeSensitive,
-            uint8_t saturation)
+            uint8_t saturation,
+            ShortestPathScratch& scratch)
         {
-            const auto infinity = std::numeric_limits<uint64_t>::max();
-            std::vector<uint64_t> distance(nodes.size(), infinity);
-            std::vector<size_t> previous(nodes.size(), kNoIndex);
-            std::vector<bool> settled(nodes.size());
-            using QueueEntry = std::pair<uint64_t, size_t>;
-            std::priority_queue<QueueEntry, std::vector<QueueEntry>, std::greater<QueueEntry>> queue;
+            scratch.reset(nodes.size());
+            auto& distance = scratch.distance;
+            auto& previous = scratch.previous;
+            auto& settled = scratch.settled;
+            auto& queue = scratch.queue;
+            auto& path = scratch.path;
             distance[source] = 0;
             queue.emplace(0, source);
 
@@ -228,15 +266,15 @@ namespace OpenLoco::CargoDist
 
             if (previous[destination] == kNoIndex)
             {
-                return {};
+                return path;
             }
-            std::vector<size_t> path;
             for (auto current = destination; current != source;)
             {
                 const auto edge = previous[current];
                 if (edge == kNoIndex || path.size() == nodes.size())
                 {
-                    return {};
+                    path.clear();
+                    return path;
                 }
                 path.push_back(edge);
                 current = edges[edge].from;
@@ -313,6 +351,7 @@ namespace OpenLoco::CargoDist
         const auto nodes = canonicalNodes(graph);
         auto edges = canonicalEdges(graph, nodes);
         const auto adjacency = makeAdjacency(nodes.size(), edges);
+        ShortestPathScratch shortestPathScratch;
         std::map<std::tuple<StationId, StationId, StationId>, uint64_t> shares;
         std::map<std::pair<size_t, StationId>, uint64_t> demands;
 
@@ -364,7 +403,7 @@ namespace OpenLoco::CargoDist
                 for (uint32_t remaining = allocation.amount; remaining != 0;)
                 {
                     const auto chunk = std::min(remaining, chunkSize);
-                    const auto path = shortestPath(sourceIndex, allocation.node, nodes, edges, adjacency, graph.timeSensitive, settings.saturation);
+                    const auto& path = shortestPath(sourceIndex, allocation.node, nodes, edges, adjacency, graph.timeSensitive, settings.saturation, shortestPathScratch);
                     if (path.empty())
                     {
                         break;

@@ -149,13 +149,20 @@ namespace OpenLoco
     // 0x00453275
     void Industry::tick()
     {
-        // Maybe worthwhile returning early if the industry does not use farm tiles
         if (!hasFlags(IndustryFlags::isGhost) && under_construction == kIndustryConstructionComplete)
         {
+            const auto* obj = getObject();
+            const bool canHaveFarmFields = obj->farmNumFields != 0
+                || obj->farmTileGrowthStageNoProduction != 0xFF
+                || obj->farmTileNumGrowthStages != 0;
+
             // Run tile loop for 100 iterations every tick; whole 384x384 map scans in 1475 ticks/15 days/37 seconds
             for (int i = 0; i < 100; i++)
             {
-                isFarmTileProducing(tileLoop.current());
+                if (canHaveFarmFields)
+                {
+                    isFarmTileProducing(tileLoop.current());
+                }
 
                 // loc_453318
                 if (tileLoop.next() == Pos2())

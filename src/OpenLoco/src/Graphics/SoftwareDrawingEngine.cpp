@@ -76,6 +76,8 @@ namespace OpenLoco::Gfx
     void SoftwareDrawingEngine::destroySeparateWorldResources()
     {
         _worldTextureDirty = true;
+        _uiTextureDirty = true;
+        _uiTextureUploadPending = false;
         if (_uiTexture != nullptr)
         {
             SDL_DestroyTexture(_uiTexture);
@@ -314,6 +316,7 @@ namespace OpenLoco::Gfx
         int16_t blockHeight = 1 << heightShift;
 
         _invalidationGrid.reset(scaledWidth, scaledHeight, blockWidth, blockHeight);
+        _worldUploadGrid.reset(width, height, blockWidth, blockHeight);
 
         // Reset the drawing context, this holds the old screen render target.
         _ctx.reset();
@@ -336,6 +339,16 @@ namespace OpenLoco::Gfx
     void SoftwareDrawingEngine::invalidateRegion(int32_t left, int32_t top, int32_t right, int32_t bottom)
     {
         _invalidationGrid.invalidate(left, top, right, bottom);
+        _uiTextureDirty = true;
+    }
+
+    void SoftwareDrawingEngine::invalidateUiRegion(int32_t left, int32_t top, int32_t right, int32_t bottom)
+    {
+        if (!shouldUseSeparateWorld())
+        {
+            _invalidationGrid.invalidate(left, top, right, bottom);
+        }
+        _uiTextureDirty = true;
     }
 
     void SoftwareDrawingEngine::createPalette()
@@ -351,8 +364,9 @@ namespace OpenLoco::Gfx
 
     void SoftwareDrawingEngine::updatePalette(const PaletteEntry* entries, int32_t index, int32_t count)
     {
-        assert(index + count < 256);
+        assert(index >= 0 && count >= 0 && index + count <= 256);
         _worldTextureDirty = true;
+        _uiTextureDirty = true;
 
         if (_palette == nullptr)
         {
@@ -388,7 +402,12 @@ namespace OpenLoco::Gfx
                 renderDirtyWorldRegions();
             }
 
-            renderSeparateUi();
+            if (_uiTextureDirty)
+            {
+                _uiTextureDirty = false;
+                renderSeparateUi();
+                _uiTextureUploadPending = true;
+            }
             return;
         }
 
@@ -437,7 +456,7 @@ namespace OpenLoco::Gfx
             const auto worldRight = static_cast<int32_t>((static_cast<int64_t>(right) * _worldRT.width + uiWidth - 1) / uiWidth);
             const auto worldBottom = static_cast<int32_t>((static_cast<int64_t>(bottom) * _worldRT.height + uiHeight - 1) / uiHeight);
             renderSeparateWorld(Rect::fromLTRB(worldLeft, worldTop, worldRight, worldBottom));
-            _worldTextureDirty = true;
+            _worldUploadGrid.invalidate(worldLeft, worldTop, worldRight, worldBottom);
         });
     }
 
@@ -583,6 +602,7 @@ namespace OpenLoco::Gfx
 
     void SoftwareDrawingEngine::render(const Rect& _rect)
     {
+        _uiTextureDirty = true;
         auto max = Rect(0, 0, Ui::width(), Ui::height());
         auto rect = _rect.intersection(max);
 
@@ -702,11 +722,32 @@ namespace OpenLoco::Gfx
                 && SDL_UpdateTexture(_worldTexture, nullptr, _worldRGBASurface->pixels, _worldRGBASurface->pitch);
             if (worldUploaded)
             {
-                _worldTextureDirty = false;
+                _worldUploadGrid.traverseDirtyCells([](int32_t, int32_t, int32_t, int32_t) {});
             }
         }
+        else
+        {
+            _worldUploadGrid.traverseDirtyCells([&](int32_t left, int32_t top, int32_t right, int32_t bottom) {
+                if (!worldUploaded)
+                {
+                    return;
+                }
 
-        if (!worldUploaded || !SDL_UpdateTexture(_uiTexture, nullptr, _uiRGBASurface->pixels, _uiRGBASurface->pitch))
+                const SDL_Rect rect{ left, top, right - left, bottom - top };
+                auto* pixels = static_cast<uint8_t*>(_worldRGBASurface->pixels)
+                    + static_cast<size_t>(top) * _worldRGBASurface->pitch
+                    + static_cast<size_t>(left) * sizeof(uint32_t);
+                worldUploaded = SDL_BlitSurface(_worldSurface, &rect, _worldRGBASurface, &rect)
+                    && SDL_UpdateTexture(_worldTexture, &rect, pixels, _worldRGBASurface->pitch);
+            });
+        }
+        _worldTextureDirty = !worldUploaded;
+
+        const auto uiUploaded = !_uiTextureUploadPending
+            || SDL_UpdateTexture(_uiTexture, nullptr, _uiRGBASurface->pixels, _uiRGBASurface->pitch);
+        _uiTextureUploadPending = !uiUploaded;
+
+        if (!worldUploaded || !uiUploaded)
         {
             Logging::error("Unable to upload separate world rendering textures: {}", SDL_GetError());
             return false;
@@ -768,6 +809,7 @@ namespace OpenLoco::Gfx
         int16_t srcX,
         int16_t srcY)
     {
+        _uiTextureDirty = true;
         if (dstX == 0 && dstY == 0)
         {
             return;

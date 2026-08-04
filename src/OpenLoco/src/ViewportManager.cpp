@@ -285,7 +285,7 @@ namespace OpenLoco::Ui::ViewportManager
                 top += viewport->y + window->y;
                 bottom += viewport->y + window->y;
 
-                Gfx::invalidateRegion(left, top, right, bottom);
+                Gfx::invalidateUiRegion(left, top, right, bottom);
             }
         }
     }

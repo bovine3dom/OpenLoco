@@ -35,6 +35,7 @@ namespace OpenLoco
         std::optional<int32_t> width;
         std::optional<int32_t> height;
         std::optional<float> scaleFactor;
+        bool fullRedraw{};
         std::optional<int32_t> cases;
         std::optional<int32_t> seed;
         std::string focusTown;

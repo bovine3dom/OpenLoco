@@ -345,7 +345,7 @@ namespace OpenLoco::Ui::WindowManager
 
             if (widget.left != -2)
             {
-                Gfx::invalidateRegion(
+                Gfx::invalidateUiRegion(
                     w.x + widget.left,
                     w.y + widget.top,
                     w.x + widget.right + 1,

@@ -58,6 +58,7 @@ namespace OpenLoco
         std::cout << "--width                     Render benchmark framebuffer width (default: 1920)" << std::endl;
         std::cout << "--height                    Render benchmark framebuffer height (default: 1080)" << std::endl;
         std::cout << "--scale-factor              Render benchmark UI scale (default: 2)" << std::endl;
+        std::cout << "--full-redraw               Force a complete world/UI redraw for every benchmark frame" << std::endl;
         std::cout << "--seed                      Signal fuzz seed (default: 1)" << std::endl;
         std::cout << "--focus-town                Signal fuzz focus town (default: Beachtown)" << std::endl;
         std::cout << "--layout                    Signal fuzz layout: fixture, flat-merge, flat-fan," << std::endl;
@@ -239,7 +240,7 @@ namespace OpenLoco
 
         try
         {
-            return runRenderBenchmark(fs::u8path(options.path), warmupFrames, frames, width, height, scaleFactor)
+            return runRenderBenchmark(fs::u8path(options.path), warmupFrames, frames, width, height, scaleFactor, options.fullRedraw)
                 ? EXIT_SUCCESS
                 : EXIT_FAILURE;
         }

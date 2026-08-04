@@ -39,45 +39,58 @@ namespace OpenLoco::Gfx
             const auto blockHeight = _blockHeight;
             auto& blocks = _blocks;
 
-            for (uint32_t column = 0; column < columnCount; column++)
+            for (uint32_t row = 0; row < rowCount; row++)
             {
-                for (uint32_t row = 0; row < rowCount; row++)
+                for (uint32_t column = 0; column < columnCount;)
                 {
-                    const auto rowStartOffset = row * columnCount;
-                    if (blocks[rowStartOffset + column] != 0)
+                    const auto blockOffset = row * columnCount + column;
+                    if (blocks[blockOffset] == 0)
                     {
-                        uint32_t rowEndOffset = rowStartOffset;
-                        uint32_t numRowsDirty = 0;
-
-                        // Count amount of dirty rows at current column.
-                        while (true)
-                        {
-                            if (row + numRowsDirty + 1 >= rowCount || blocks[rowEndOffset + column + columnCount] == 0)
-                            {
-                                break;
-                            }
-
-                            numRowsDirty++;
-                            rowEndOffset += columnCount;
-                        }
-
-                        // Clear rows at the current column.
-                        for (auto rowOffset = rowStartOffset; rowOffset <= rowEndOffset; rowOffset += columnCount)
-                        {
-                            blocks[rowOffset + column] = 0;
-                        }
-
-                        // Convert to pixel coordinates.
-                        const auto left = column * blockWidth;
-                        const auto top = row * blockHeight;
-                        const auto right = (column + 1) * blockWidth;
-                        const auto bottom = (row + numRowsDirty + 1) * blockHeight;
-
-                        if (left < _screenWidth && top < _screenHeight)
-                        {
-                            func(left, top, std::min(right, _screenWidth), std::min(bottom, _screenHeight));
-                        }
+                        column++;
+                        continue;
                     }
+
+                    uint32_t rectangleWidth = 1;
+                    while (column + rectangleWidth < columnCount && blocks[blockOffset + rectangleWidth] != 0)
+                    {
+                        rectangleWidth++;
+                    }
+
+                    uint32_t rectangleHeight = 1;
+                    while (row + rectangleHeight < rowCount)
+                    {
+                        uint32_t dirtyWidth = 0;
+                        const auto nextRowOffset = (row + rectangleHeight) * columnCount + column;
+                        while (dirtyWidth < rectangleWidth && blocks[nextRowOffset + dirtyWidth] != 0)
+                        {
+                            dirtyWidth++;
+                        }
+                        if (dirtyWidth == 0)
+                        {
+                            break;
+                        }
+
+                        rectangleWidth = dirtyWidth;
+                        rectangleHeight++;
+                    }
+
+                    for (uint32_t dirtyRow = row; dirtyRow < row + rectangleHeight; dirtyRow++)
+                    {
+                        const auto dirtyOffset = dirtyRow * columnCount + column;
+                        std::fill_n(blocks.begin() + dirtyOffset, rectangleWidth, 0);
+                    }
+
+                    const auto left = column * blockWidth;
+                    const auto top = row * blockHeight;
+                    const auto right = (column + rectangleWidth) * blockWidth;
+                    const auto bottom = (row + rectangleHeight) * blockHeight;
+
+                    if (left < _screenWidth && top < _screenHeight)
+                    {
+                        func(left, top, std::min(right, _screenWidth), std::min(bottom, _screenHeight));
+                    }
+
+                    column += rectangleWidth;
                 }
             }
         }

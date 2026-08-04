@@ -250,6 +250,11 @@ namespace OpenLoco::Gfx
         getDrawingEngine().invalidateRegion(left, top, right, bottom);
     }
 
+    void invalidateUiRegion(int32_t left, int32_t top, int32_t right, int32_t bottom)
+    {
+        getDrawingEngine().invalidateUiRegion(left, top, right, bottom);
+    }
+
     // 0x004C5CFA
     void render()
     {

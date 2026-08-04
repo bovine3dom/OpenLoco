@@ -340,9 +340,15 @@ namespace OpenLoco::Ui
             if (drawOverlays)
             {
                 sess.drawStringStructs(columnDrawingCtx);
-                drawRoutingNumbers(columnDrawingCtx, zoom);
             }
         });
+
+        if (drawOverlays)
+        {
+            Gfx::SoftwareDrawingContext overlayDrawingCtx;
+            overlayDrawingCtx.pushRenderTarget(zoomViewRt);
+            drawRoutingNumbers(overlayDrawingCtx, zoom);
+        }
     }
 
     // 0x004CA444

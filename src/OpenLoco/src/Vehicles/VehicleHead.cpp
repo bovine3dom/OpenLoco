@@ -133,7 +133,7 @@ namespace OpenLoco::Vehicles
                 }
                 carUpdateState.hasBogieMoved |= carComponent.front->position != initialFrontPos;
 
-                const auto initialBackPos = carComponent.front->position;
+                const auto initialBackPos = carComponent.back->position;
                 if (!carComponent.back->update())
                 {
                     return;
@@ -4013,7 +4013,7 @@ namespace OpenLoco::Vehicles
                 carComponent.front->updateSegmentCrashed();
                 carUpdateState.hasBogieMoved |= carComponent.front->position != initialFrontPos;
 
-                const auto initialBackPos = carComponent.front->position;
+                const auto initialBackPos = carComponent.back->position;
                 carComponent.back->updateSegmentCrashed();
                 carUpdateState.hasBogieMoved |= carComponent.back->position != initialBackPos;
 

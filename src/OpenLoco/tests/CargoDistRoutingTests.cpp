@@ -239,6 +239,7 @@ TEST(CargoDistRouting, HigherAttractionDestinationKeepsFlowThroughIntermediateSt
 TEST(CargoDistRouting, CongestionSplitsFlowAcrossParallelRoutes)
 {
     const auto flows = calculateAsymmetricFlows(parallelGraph());
+    const auto repeatedFlows = calculateAsymmetricFlows(parallelGraph());
     const auto upperRoute = amountAt(flows, 1, 1, 2);
     const auto lowerRoute = amountAt(flows, 1, 1, 3);
 
@@ -248,6 +249,7 @@ TEST(CargoDistRouting, CongestionSplitsFlowAcrossParallelRoutes)
     EXPECT_EQ(amountAt(flows, 2, 1, 4), upperRoute);
     EXPECT_EQ(amountAt(flows, 3, 1, 4), lowerRoute);
     EXPECT_EQ(amountAt(flows, 4, 1, 4), 80U);
+    expectSameFlows(flows, repeatedFlows);
 }
 
 TEST(CargoDistRouting, InputOrderDoesNotAffectResult)

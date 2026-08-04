@@ -20,7 +20,7 @@ namespace OpenLoco
     void* hInstance();
     void resetSubsystems();
     void simulateGame(const fs::path& path, int32_t ticks);
-    bool runRenderBenchmark(const fs::path& path, int32_t warmupFrames, int32_t frames, int32_t width, int32_t height, float scaleFactor);
+    bool runRenderBenchmark(const fs::path& path, int32_t warmupFrames, int32_t frames, int32_t width, int32_t height, float scaleFactor, bool fullRedraw);
 
     void initialise();
     void update();

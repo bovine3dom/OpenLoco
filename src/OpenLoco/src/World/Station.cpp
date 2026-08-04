@@ -50,12 +50,19 @@ namespace OpenLoco
 
     struct CargoMap
     {
-        std::array<uint8_t, kMapSize> data = {};
-
-        void reset()
+        struct Bounds
         {
-            data.fill(0);
-        }
+            TilePos2 min{ kMapColumns, kMapRows };
+            TilePos2 max{ -1, -1 };
+
+            bool empty() const
+            {
+                return min.x > max.x || min.y > max.y;
+            }
+        };
+
+        std::array<uint8_t, kMapSize> data = {};
+        std::array<Bounds, 2> bounds = {};
 
         bool mapHas1(const tile_coord_t x, const tile_coord_t y) const
         {
@@ -83,6 +90,17 @@ namespace OpenLoco
 
         void setTileRegion(tile_coord_t x, tile_coord_t y, int16_t xTileCount, int16_t yTileCount, const CatchmentFlags flag)
         {
+            if (xTileCount <= 0 || yTileCount <= 0)
+            {
+                return;
+            }
+
+            auto& flagBounds = bounds[enumValue(flag)];
+            flagBounds.min.x = std::min(flagBounds.min.x, x);
+            flagBounds.min.y = std::min(flagBounds.min.y, y);
+            flagBounds.max.x = std::max<tile_coord_t>(flagBounds.max.x, x + xTileCount - 1);
+            flagBounds.max.y = std::max<tile_coord_t>(flagBounds.max.y, y + yTileCount - 1);
+
             auto xStart = x;
             auto xTileStartCount = xTileCount;
             while (yTileCount > 0)
@@ -119,6 +137,16 @@ namespace OpenLoco
                 y++;
                 yTileCount--;
             }
+        }
+
+        void reset(const CatchmentFlags flag)
+        {
+            auto& flagBounds = bounds[enumValue(flag)];
+            if (!flagBounds.empty())
+            {
+                resetTileRegion(flagBounds.min.x, flagBounds.min.y, flagBounds.max.x - flagBounds.min.x + 1, flagBounds.max.y - flagBounds.min.y + 1, flag);
+            }
+            flagBounds = {};
         }
     };
 
@@ -310,9 +338,10 @@ namespace OpenLoco
             cargoSearchState.filter(~0U);
         }
 
-        for (tile_coord_t ty = 0; ty < kMapColumns; ty++)
+        const auto& catchmentBounds = _cargoMap.bounds[enumValue(CatchmentFlags::flag_1)];
+        for (tile_coord_t ty = catchmentBounds.min.y; ty <= catchmentBounds.max.y; ty++)
         {
-            for (tile_coord_t tx = 0; tx < kMapRows; tx++)
+            for (tile_coord_t tx = catchmentBounds.min.x; tx <= catchmentBounds.max.x; tx++)
             {
                 if (_cargoMap.mapHas2(tx, ty))
                 {
@@ -554,7 +583,7 @@ namespace OpenLoco
     // catchment flag should not be shifted (1, 2, 3, 4) and NOT (1 << 0, 1 << 1)
     void setCatchmentDisplay(const Station* station, const CatchmentFlags catchmentFlag)
     {
-        _cargoMap.resetTileRegion(0, 0, kMapColumns, kMapRows, catchmentFlag);
+        _cargoMap.reset(catchmentFlag);
 
         if (station == nullptr)
         {

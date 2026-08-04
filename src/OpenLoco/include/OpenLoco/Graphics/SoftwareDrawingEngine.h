@@ -46,6 +46,7 @@ namespace OpenLoco::Gfx
 
         // Invalidates a region, this forces it to be rendered next frame.
         void invalidateRegion(int32_t left, int32_t top, int32_t right, int32_t bottom);
+        void invalidateUiRegion(int32_t left, int32_t top, int32_t right, int32_t bottom);
 
         void createPalette();
         SDL_Palette* getPalette() { return _palette; }
@@ -107,9 +108,12 @@ namespace OpenLoco::Gfx
 
         SoftwareDrawingContext _ctx;
         InvalidationGrid _invalidationGrid;
+        InvalidationGrid _worldUploadGrid;
 
         bool _vsync = false;
         bool _worldTextureDirty = true;
+        bool _uiTextureDirty = true;
+        bool _uiTextureUploadPending = false;
         int32_t _outputWidth{};
         int32_t _outputHeight{};
     };

@@ -400,7 +400,7 @@ namespace OpenLoco::Ui
             {
                 if (activated || pressedWidgetIndex == widx || toolWidgetIndex == widx)
                 {
-                    Gfx::invalidateRegion(
+                    Gfx::invalidateUiRegion(
                         x + widget.left,
                         y + widget.top,
                         x + widget.right + 1,
@@ -415,7 +415,14 @@ namespace OpenLoco::Ui
     // input: regs.esi - window (this)
     void Window::invalidate()
     {
-        Gfx::invalidateRegion(x, y, x + width, y + height);
+        if (type == WindowType::main)
+        {
+            Gfx::invalidateRegion(x, y, x + width, y + height);
+        }
+        else
+        {
+            Gfx::invalidateUiRegion(x, y, x + width, y + height);
+        }
     }
 
     // 0x004CA115
