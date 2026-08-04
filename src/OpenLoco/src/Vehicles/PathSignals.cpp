@@ -684,6 +684,7 @@ namespace OpenLoco::Vehicles::PathSignals
 
         std::vector<Candidate> candidates;
         const auto appendCandidates = [&](const uint16_t firstRouting) {
+            auto searchTruncated = false;
             std::vector<SearchNode> nodes;
             nodes.reserve(kMaxSearchNodes);
             nodes.push_back({ firstPos, firstRouting, kNoParent, 1, 0, 0 });
@@ -692,8 +693,13 @@ namespace OpenLoco::Vehicles::PathSignals
 
             const auto considerCandidate = [&](const uint16_t tailIndex, const Pos3& endpoint, const uint8_t numTargetsReached, const uint32_t weighting, std::optional<std::pair<Pos3, uint16_t>> continuation) {
                 auto path = getPath(nodes, tailIndex);
-                if (path.empty() || path.size() > maxPathLength || hasConflict(path, firstPos, noClaims))
+                if (path.empty() || hasConflict(path, firstPos, noClaims))
                 {
+                    return;
+                }
+                if (path.size() > maxPathLength)
+                {
+                    searchTruncated = true;
                     return;
                 }
                 const auto distance = getDistanceToActiveTarget(endpoint, target, nextTargetPtr, numTargetsReached);
@@ -729,7 +735,12 @@ namespace OpenLoco::Vehicles::PathSignals
                     continue;
                 }
                 // The terminating signal is not part of the reserved path, so inspect one extra connection.
-                if (node.depth > maxPathLength || nodes.size() >= kMaxSearchNodes)
+                if (node.depth > maxPathLength)
+                {
+                    searchTruncated = true;
+                    continue;
+                }
+                if (nodes.size() >= kMaxSearchNodes)
                 {
                     continue;
                 }
@@ -759,6 +770,7 @@ namespace OpenLoco::Vehicles::PathSignals
             {
                 candidates.erase(candidates.begin() + firstCandidate + kMaxReservationCandidates, candidates.end());
             }
+            return searchTruncated;
         };
 
         const auto scoreCandidates = [&](const size_t firstCandidate) {
@@ -790,6 +802,7 @@ namespace OpenLoco::Vehicles::PathSignals
             }
         };
 
+        bool mustReachCurrentTarget = false;
         const auto findBestCandidate = [&]() -> const Candidate* {
             if (candidates.empty())
             {
@@ -797,6 +810,10 @@ namespace OpenLoco::Vehicles::PathSignals
             }
 
             const auto& preferred = *std::ranges::min_element(candidates, isBetterBaselineCandidate);
+            if (mustReachCurrentTarget && preferred.baselineTargetsReached == 0)
+            {
+                return nullptr;
+            }
             const auto preferredCost = addWeighting(preferred.baselineWeighting, preferred.baselineDistance);
             const Candidate* best = nullptr;
             for (const auto& candidate : candidates)
@@ -816,8 +833,14 @@ namespace OpenLoco::Vehicles::PathSignals
             return best;
         };
 
-        appendCandidates(preferredRouting);
+        const auto preferredSearchTruncated = appendCandidates(preferredRouting);
         scoreCandidates(0);
+        // Routing capacity must not make a shorter route that misses the current target preferable.
+        if (preferredSearchTruncated && target.hasTarget
+            && std::ranges::none_of(candidates, [](const auto& candidate) { return candidate.baselineTargetsReached != 0; }))
+        {
+            mustReachCurrentTarget = getLookaheadScore(firstPos, preferredRouting, head, requiredMods, queryMods, target, nullptr, 0, nullptr).numTargetsReached != 0;
+        }
         auto* best = findBestCandidate();
         if (best == nullptr)
         {

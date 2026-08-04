@@ -1173,11 +1173,11 @@ TEST_F(PathSignalsTest, MarksExactPathReservationEntries)
     EXPECT_FALSE(OpenLoco::Vehicles::RoutingManager::isPathReserved(handle));
 }
 
-TEST_F(PathSignalsTest, PrefersWaypointRouteAtReservationCapacity)
+TEST_F(PathSignalsTest, WaitsForWaypointRouteUntilReservationCapacityIsAvailable)
 {
     constexpr Pos3 firstPos{ 3200, 3200, 32 };
     constexpr Pos3 junction{ firstPos.x - kTileSize, firstPos.y, firstPos.z };
-    constexpr Pos3 waypointPos{ junction.x - kTileSize, junction.y, junction.z };
+    constexpr Pos3 waypointPos{ firstPos.x - 5 * kTileSize, firstPos.y, firstPos.z };
     constexpr auto longBlockLength = 60;
 
     addTrack(firstPos, 0, 0);
@@ -1194,6 +1194,14 @@ TEST_F(PathSignalsTest, PrefersWaypointRouteAtReservationCapacity)
     const OpenLoco::Vehicles::OrderRouteWaypoint waypoint{ toTileSpace(waypointPos), waypointPos.z / 8, 0, 0 };
     OpenLoco::Vehicles::OrderManager::insertOrder(train, 0, &waypoint);
 
+    // Six free slots leave room for a three-piece reservation and three spare entries.
+    auto capacityBoundary = train->routingHandle;
+    capacityBoundary.setIndex(capacityBoundary.getIndex() + 7);
+    OpenLoco::Vehicles::RoutingManager::setRouting(capacityBoundary, kStraightWest);
+    EXPECT_FALSE(OpenLoco::Vehicles::PathSignals::tryReservePath(*train, firstPos, kStraightWest));
+    EXPECT_FALSE(OpenLoco::Vehicles::RoutingManager::hasPathReservations(train->routingHandle));
+
+    OpenLoco::Vehicles::RoutingManager::freeRouting(capacityBoundary);
     ASSERT_TRUE(OpenLoco::Vehicles::PathSignals::tryReservePath(*train, firstPos, kStraightWest));
 
     EXPECT_EQ(getSecondReservedRouting(*train), kStraightWest);
