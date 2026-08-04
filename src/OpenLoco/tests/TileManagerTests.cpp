@@ -18,6 +18,7 @@
 #include <OpenLoco/S5/S5GameState.h>
 #include <OpenLoco/S5/S5TileElement.h>
 #include <OpenLoco/Vehicles/OrderManager.h>
+#include <OpenLoco/Vehicles/Orders.h>
 #include <OpenLoco/Vehicles/PathSignals.h>
 #include <OpenLoco/Vehicles/RailPathfinding.h>
 #include <OpenLoco/Vehicles/RoutingManager.h>
@@ -27,6 +28,7 @@
 #include <OpenLoco/Vehicles/VehicleHead.h>
 #include <OpenLoco/Vehicles/VehicleTail.h>
 #include <OpenLoco/World/Station.h>
+#include <OpenLoco/World/StationManager.h>
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -1292,6 +1294,43 @@ TEST_F(PathSignalsTest, ExcludesRouteWithConflictInsideImmediateReservation)
     EXPECT_EQ(getSecondReservedRouting(*reservingTrain), kTurnNorth);
 }
 
+TEST_F(PathSignalsTest, WaitsInsteadOfReservingExcessiveDetour)
+{
+    constexpr Pos3 firstPos{ 1280, 1280, 32 };
+    constexpr auto detourLength = 12;
+    const auto junction = firstPos + Pos3{ -32, 0, 0 };
+    const auto directPlatform = firstPos + Pos3{ -128, 0, 0 };
+
+    addTrack(firstPos, 0, 0);
+    addTrack(junction, 0, 0);
+    addTrack(firstPos + Pos3{ -64, 0, 0 }, 0, 0);
+    addTrack(firstPos + Pos3{ -96, 0, 0 }, 0, 0, true);
+    addTrack(directPlatform, 0, 0);
+    addTrack(junction, 2, 0);
+    addTrack(junction + Pos3{ 0, -32, 0 }, 0, 3);
+    addTrack(junction + Pos3{ 0, -64, 0 }, 0, 3);
+    addTrack(junction + Pos3{ 0, -96, 0 }, 0, 3, true);
+    for (auto i = 4; i < detourLength + 4; ++i)
+    {
+        addTrack(junction + Pos3{ 0, -i * kTileSize, 0 }, 0, 3);
+    }
+    const auto detourPlatform = junction + Pos3{ 0, -(detourLength + 3) * kTileSize, 0 };
+    addTrainStation(directPlatform, 0, 0, OpenLoco::StationId(0));
+    addTrainStation(detourPlatform, 0, 3, OpenLoco::StationId(0));
+    auto* station = OpenLoco::StationManager::get(OpenLoco::StationId(0));
+    station->x = directPlatform.x;
+    station->y = directPlatform.y;
+    station->z = directPlatform.z;
+
+    auto* reservingTrain = createTrain(firstPos + Pos3{ 32, 0, 0 }, kStraightWest);
+    ASSERT_NE(reservingTrain, nullptr);
+    const OpenLoco::Vehicles::OrderStopAt order{ OpenLoco::StationId(0) };
+    OpenLoco::Vehicles::OrderManager::insertOrder(reservingTrain, 0, &order);
+    ASSERT_NE(createTrain(firstPos + Pos3{ -64, 0, 0 }, kStraightWest), nullptr);
+
+    EXPECT_FALSE(OpenLoco::Vehicles::PathSignals::tryReservePath(*reservingTrain, firstPos, kStraightWest));
+}
+
 TEST_F(PathSignalsTest, DepartureFromCurrentPathSignalWaitsForOccupiedRoute)
 {
     constexpr Pos3 currentPos{ 352, 320, 32 };
@@ -1406,6 +1445,50 @@ TEST_F(PathSignalsTest, ChoosesShorterRouteWhenBothRoutesAreClear)
     ASSERT_TRUE(OpenLoco::Vehicles::PathSignals::tryReservePath(*reservingTrain, kFirstPos, kStraightWest));
 
     EXPECT_EQ(getSecondReservedRouting(*reservingTrain), kStraightWest);
+}
+
+TEST_F(PathSignalsTest, LooksBeyondStationWhenReservingPlatform)
+{
+    constexpr Pos3 junction{ 288, 320, 32 };
+    constexpr Pos3 deadEndPlatform{ 256, 320, 32 };
+    constexpr Pos3 throughPlatform{ 288, 288, 32 };
+    constexpr Pos3 nextStation{ 288, 256, 32 };
+
+    addTrack(kFirstPos, 0, 0);
+    addTrack(junction, 0, 0);
+    addTrack(deadEndPlatform, 0, 0);
+    addTrack(junction, 2, 0);
+    addTrack(throughPlatform, 0, 3);
+    addTrack(nextStation, 0, 3);
+    addTrack({ 288, 224, 32 }, 0, 3, true);
+    addTrainStation(deadEndPlatform, 0, 0, OpenLoco::StationId(0));
+    addTrainStation(throughPlatform, 0, 3, OpenLoco::StationId(0));
+    addTrainStation(nextStation, 0, 3, OpenLoco::StationId(1));
+
+    auto* currentStation = OpenLoco::StationManager::get(OpenLoco::StationId(0));
+    currentStation->x = deadEndPlatform.x;
+    currentStation->y = deadEndPlatform.y;
+    currentStation->z = deadEndPlatform.z;
+    auto* onwardStation = OpenLoco::StationManager::get(OpenLoco::StationId(1));
+    onwardStation->x = nextStation.x;
+    onwardStation->y = nextStation.y;
+    onwardStation->z = nextStation.z;
+
+    auto* train = createTrain({ 352, 320, 32 }, kStraightWest);
+    ASSERT_NE(train, nullptr);
+    const OpenLoco::Vehicles::OrderStopAt currentOrder{ OpenLoco::StationId(0) };
+    const OpenLoco::Vehicles::OrderStopAt onwardOrder{ OpenLoco::StationId(1) };
+    OpenLoco::Vehicles::OrderManager::insertOrder(train, 0, &currentOrder);
+    OpenLoco::Vehicles::OrderManager::insertOrder(train, sizeof(currentOrder), &onwardOrder);
+
+    auto* blockingTrain = createTrain(throughPlatform, 3);
+    ASSERT_NE(blockingTrain, nullptr);
+    EXPECT_FALSE(OpenLoco::Vehicles::PathSignals::tryReservePath(*train, kFirstPos, kStraightWest));
+    blockingTrain->tileX = -1;
+
+    ASSERT_TRUE(OpenLoco::Vehicles::PathSignals::tryReservePath(*train, kFirstPos, kStraightWest));
+
+    EXPECT_EQ(getSecondReservedRouting(*train), kTurnNorth);
 }
 
 TEST(RailPathfindingResultTest, BoundsDetoursTakenToAvoidBlockedSignals)
