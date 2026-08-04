@@ -84,6 +84,18 @@
             "inherits": "posix-base"
         },
         {
+            "name": "posix-quick",
+            "displayName": "POSIX quick development build",
+            "description": "Ninja configure environment for a quick local build without tests",
+            "inherits": "posix-base",
+            "cacheVariables": {
+                "OPENLOCO_BUILD_TESTS": {
+                    "type": "BOOL",
+                    "value": false
+                }
+            }
+        },
+        {
             "name": "linux-x86-32-ci",
             "displayName": "Linux x86-32 CI",
             "description": "CI Ninja congfigure environment for Linux x86-32",
@@ -225,6 +237,14 @@
             "configurePreset": "posix",
             "displayName": "Debug",
             "description": "Build Debug Configuration",
+            "configuration": "Debug",
+            "nativeToolOptions": [ "-k0" ]
+        },
+        {
+            "name": "posix-quick",
+            "configurePreset": "posix-quick",
+            "displayName": "Quick Debug",
+            "description": "Build Debug Configuration without tests",
             "configuration": "Debug",
             "nativeToolOptions": [ "-k0" ]
         },

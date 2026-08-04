@@ -184,6 +184,10 @@ jobs:
         with:
           fetch-depth: 0
           submodules: true
+      - name: Set up compiler cache
+        uses: ./.github/actions/setup-ccache
+        with:
+          key-prefix: ccache-${{ runner.os }}-ubuntu${{ matrix.distro }}-${{ matrix.compiler }}-i686
       - name: Install GCC problem matcher
         uses: ammaraskar/gcc-problem-matcher@master
       - name: Build OpenLoco
@@ -209,6 +213,10 @@ jobs:
         with:
           fetch-depth: 0
           submodules: true
+      - name: Set up compiler cache
+        uses: ./.github/actions/setup-ccache
+        with:
+          key-prefix: ccache-${{ runner.os }}-ubuntu${{ matrix.distro }}-${{ matrix.compiler }}-x64-build
       - name: Install GCC problem matcher
         uses: ammaraskar/gcc-problem-matcher@master
       - name: Build OpenLoco
@@ -235,6 +243,10 @@ jobs:
         with:
           fetch-depth: 0
           submodules: true
+      - name: Set up compiler cache
+        uses: ./.github/actions/setup-ccache
+        with:
+          key-prefix: ccache-${{ runner.os }}-ubuntu${{ matrix.distro }}-${{ matrix.compiler }}-x64-headers
       - name: Validate Headers
         run: |
           cmake --preset posix -DCMAKE_CXX_COMPILER=${{ matrix.compiler }} -DOPENLOCO_HEADER_CHECK=ON
@@ -255,6 +267,10 @@ jobs:
         with:
           fetch-depth: 0
           submodules: true
+      - name: Set up compiler cache
+        uses: ./.github/actions/setup-ccache
+        with:
+          key-prefix: ccache-${{ runner.os }}-mingw32-${{ matrix.build_shared_libs }}-i686
       - name: Install GCC problem matcher
         uses: ammaraskar/gcc-problem-matcher@master
       - name: Build OpenLoco
@@ -290,6 +306,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-vcpkg-ubuntu26.04.vcpkg-
           # Cache currently broken as docker image does not include unzip
+      - name: Set up compiler cache
+        uses: ./.github/actions/setup-ccache
+        with:
+          key-prefix: ccache-${{ runner.os }}-ubuntu26.04-vcpkg-g++-x64
       - name: Build OpenLoco
         run: |
           cmake --preset linux-vcpkg-static

@@ -145,6 +145,8 @@ cmake --preset posix
 cmake --build --preset posix-release
 ```
 
+For a quick local Debug build without test targets, use `posix-quick` for both commands instead.
+
 Note: If building x86-32 installing some packages can be problematic. To work around this, you can use [our Docker images](https://github.com/OpenLoco/openloco-docker-build) for compilation.
 
 Note: Due to issues with distro yaml-cpp packages, its source release is downloaded during CMake generation.

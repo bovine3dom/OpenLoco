@@ -10,19 +10,7 @@ set (PROJECT openloco)
 # Store the top level source directory in a variable to be passed down to targets.
 set(OPENLOCO_PROJECT_PATH ${CMAKE_SOURCE_DIR})
 
-# Note: Searching for CCache must be before project() so project() can use CCache too
-# if it is available
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
-find_package(CCache)
-
-if (CCache_FOUND)
-    option(OPENLOCO_USE_CCACHE "Use CCache to improve recompilation speed (optional)" ON)
-    if (OPENLOCO_USE_CCACHE)
-        # Use e.g. "ccache clang++" instead of "clang++"
-        set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE "${CCache_EXECUTABLE}")
-        set_property(GLOBAL PROPERTY RULE_LAUNCH_LINK    "${CCache_EXECUTABLE}")
-    endif (OPENLOCO_USE_CCACHE)
-endif (CCache_FOUND)
 
 include(FetchContent)
 
@@ -94,6 +82,14 @@ include(OpenLocoUtility)
 option(STRICT "Build with warnings as errors" YES)
 option(OPENLOCO_BUILD_TESTS "Build tests" YES)
 option(OPENLOCO_HEADER_CHECK "Verify all public interfaces are standalone" NO)
+option(OPENLOCO_USE_CCACHE "Automatically use ccache when no compiler launcher is configured" YES)
+
+if (OPENLOCO_USE_CCACHE AND NOT CMAKE_CXX_COMPILER_LAUNCHER)
+    find_package(CCache)
+    if (CCache_FOUND)
+        set(CMAKE_CXX_COMPILER_LAUNCHER "${CCache_EXECUTABLE}")
+    endif()
+endif()
 
 if (APPLE)
     # Enable the use of e.g. std::execution::par
@@ -116,28 +112,57 @@ if (${OPENLOCO_BUILD_TESTS})
     enable_testing()
 endif()
 
+set(openloco_objects_version v0.1.9)
+set(openloco_objects_sha256 442790242746559704516e98f8427af108607b532145c3502f7770e132f9e1bd)
 FetchContent_Declare(openloco_objects
-            URL      https://github.com/OpenLoco/OpenGraphics/releases/download/v0.1.9/objects.zip
-            URL_HASH SHA256=442790242746559704516e98f8427af108607b532145c3502f7770e132f9e1bd)
+            URL      "https://github.com/OpenLoco/OpenGraphics/releases/download/${openloco_objects_version}/objects.zip"
+            URL_HASH "SHA256=${openloco_objects_sha256}")
 FetchContent_MakeAvailable(openloco_objects)
 
 add_subdirectory(src)
 
 if (NOT APPLE)
-    if (${CMAKE_VERSION} VERSION_GREATER 3.26)
-        # Uses the copy_directory_if_different to avoid copying objects/language every time (3.26 feature)
-        add_custom_target(OpenLocoAssets ALL
-            COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different "${CMAKE_CURRENT_SOURCE_DIR}/data" "$<TARGET_FILE_DIR:App>/data"
-            COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different "${openloco_objects_SOURCE_DIR}" "$<TARGET_FILE_DIR:App>/data/objects"
-            COMMENT "Copying over data and objects folder"
-        )
+    file(GLOB_RECURSE openloco_data_inputs
+        CONFIGURE_DEPENDS
+        LIST_DIRECTORIES false
+        "${CMAKE_CURRENT_SOURCE_DIR}/data/*")
+    file(GLOB_RECURSE openloco_object_inputs
+        CONFIGURE_DEPENDS
+        LIST_DIRECTORIES false
+        "${openloco_objects_SOURCE_DIR}/*")
+
+    get_property(openloco_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+    if (openloco_multi_config)
+        set(openloco_runtime_directory "${CMAKE_BINARY_DIR}/$<CONFIG>")
     else()
-        add_custom_target(OpenLocoAssets ALL
-            COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/data" "$<TARGET_FILE_DIR:App>/data"
-            COMMAND ${CMAKE_COMMAND} -E copy_directory "${openloco_objects_SOURCE_DIR}" "$<TARGET_FILE_DIR:App>/data/objects"
-            COMMENT "Copying over data and objects folder"
-        )
+        set(openloco_runtime_directory "${CMAKE_BINARY_DIR}")
     endif()
+
+    foreach(openloco_data_input IN LISTS openloco_data_inputs)
+        file(RELATIVE_PATH openloco_asset_path "${CMAKE_CURRENT_SOURCE_DIR}/data" "${openloco_data_input}")
+        list(APPEND openloco_asset_outputs "${openloco_runtime_directory}/data/${openloco_asset_path}")
+    endforeach()
+    foreach(openloco_object_input IN LISTS openloco_object_inputs)
+        file(RELATIVE_PATH openloco_asset_path "${openloco_objects_SOURCE_DIR}" "${openloco_object_input}")
+        list(APPEND openloco_asset_outputs "${openloco_runtime_directory}/data/objects/${openloco_asset_path}")
+    endforeach()
+
+    string(JOIN "\n" openloco_asset_manifest ${openloco_data_inputs} ${openloco_object_inputs})
+    set(openloco_assets_manifest "${CMAKE_CURRENT_BINARY_DIR}/OpenLocoAssets.manifest")
+    file(GENERATE OUTPUT "${openloco_assets_manifest}"
+        CONTENT "${openloco_objects_version}\n${openloco_objects_sha256}\n${openloco_asset_manifest}\n")
+    set(openloco_assets_stamp "${CMAKE_CURRENT_BINARY_DIR}/assets/$<CONFIG>/OpenLocoAssets.stamp")
+    add_custom_command(
+        OUTPUT "${openloco_assets_stamp}" ${openloco_asset_outputs}
+        COMMAND "${CMAKE_COMMAND}" -E rm -rf "$<TARGET_FILE_DIR:App>/data"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/assets/$<CONFIG>"
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/data" "$<TARGET_FILE_DIR:App>/data"
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory "${openloco_objects_SOURCE_DIR}" "$<TARGET_FILE_DIR:App>/data/objects"
+        COMMAND "${CMAKE_COMMAND}" -E touch "${openloco_assets_stamp}"
+        DEPENDS "${openloco_assets_manifest}" ${openloco_data_inputs} ${openloco_object_inputs}
+        COMMENT "Copying over data and objects folder"
+        VERBATIM)
+    add_custom_target(OpenLocoAssets ALL DEPENDS "${openloco_assets_stamp}" ${openloco_asset_outputs})
     add_dependencies(App OpenLocoAssets)
     set_target_properties(OpenLocoAssets PROPERTIES PROJECT_LABEL "Assets")
 endif()
