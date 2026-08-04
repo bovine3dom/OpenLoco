@@ -40,6 +40,7 @@
 #include "Vehicles/Orders.h"
 #include "Vehicles/PathSignals.h"
 #include "Vehicles/RailPathfinding.h"
+#include "Vehicles/RailTraffic.h"
 #include "Vehicles/RoutingManager.h"
 #include "Vehicles/Vehicle1.h"
 #include "Vehicles/Vehicle2.h"
@@ -97,6 +98,7 @@ namespace OpenLoco::Vehicles
         // uint32_t bestTrackWeighting;  // 0x0113643C
 
         uint16_t hadNewResult; // 0x01136458
+        bool searchExhausted;
     };
 
     static uint16_t roadLongestPathing(VehicleHead& head, const World::Pos3 pos, const Track::RoadConnections& rc, const uint8_t requiredMods, const uint8_t queryMods);
@@ -4594,6 +4596,14 @@ namespace OpenLoco::Vehicles
             {
                 Sub4AC3D3State state{};
                 connection = trackPathing(head, nextPos, tc, requiredMods, queryMods, false, state);
+                if (state.hadNewResult == 0)
+                {
+                    if (state.searchExhausted)
+                    {
+                        return Sub4ACEE7Result{ 3, enumValue(SignalStateFlags::occupied), StationId::null };
+                    }
+                    return Sub4ACEE7Result{ 2, 0, StationId::null };
+                }
             }
         }
         if (reservedRouting == RoutingManager::kAllocatedButFreeRouting)
@@ -5174,11 +5184,12 @@ namespace OpenLoco::Vehicles
     static void roadUpdateDistanceToTarget(const Pos3 curPos, const Sub4AC94FTarget& target, Sub4AC94FState& state)
     {
         const auto dist = Math::Vector::manhattanDistance3D(curPos, target.pos);
-        if (dist <= state.result.bestDistToTarget)
+        const auto distance = static_cast<uint32_t>(dist);
+        if (distance <= state.result.bestDistToTarget)
         {
-            if (dist < state.result.bestDistToTarget || state.totalTrackWeighting <= state.result.bestTrackWeighting)
+            if (distance < state.result.bestDistToTarget || state.totalTrackWeighting <= state.result.bestTrackWeighting)
             {
-                state.result.bestDistToTarget = static_cast<uint16_t>(dist);
+                state.result.bestDistToTarget = distance;
                 state.result.bestTrackWeighting = state.totalTrackWeighting;
             }
         }
@@ -5408,6 +5419,7 @@ namespace OpenLoco::Vehicles
         if (!isSecondRun)
         {
             state.result.signalState = RouteSignalState::null;
+            state.searchExhausted = false;
         }
 
         // 0x01136438
@@ -5840,6 +5852,7 @@ namespace OpenLoco::Vehicles
 
         const auto companyId = head.owner;
         const auto trackType = head.trackType;
+        const auto speedProfile = RailTraffic::getSpeedProfile(head);
 
         auto orders = head.getCurrentOrders();
         auto curOrder = orders.begin();
@@ -5861,29 +5874,20 @@ namespace OpenLoco::Vehicles
             uint32_t bestConnection = 0;
             for (auto i = 0U; i < tc.connections.size(); ++i)
             {
-                const auto connection = tc.connections[i] & World::Track::AdditionalTaDFlags::basicTaDWithSignalMask;
-                const auto connectionTad = connection & World::Track::AdditionalTaDFlags::basicTaDMask;
+                const auto connection = tc.connections[i];
 
-                if (!nextTarget.has_value()
-                    && target->stationId == StationId::null
-                    && ((pos == target->pos && connectionTad == target->tad)
-                        || (pos == target->reversePos && connectionTad == target->reverseTad)))
+                auto newResult = RailPathfinding::findRoute(pos, connection, companyId, trackType, requiredMods, queryMods, speedProfile, *target, nextTarget.has_value() ? &*nextTarget : nullptr);
+                state.searchExhausted |= newResult.searchExhausted;
+                if (newResult.searchExhausted)
                 {
-                    state.result.signalState = RouteSignalState::noSignals;
-                    state.result.bestDistToTarget = 0;
-                    state.result.bestTrackWeighting = 0;
-                    state.result.numTargetsReached = 1;
-                    state.hadNewResult = 1;
-                    return tc.connections[i];
+                    continue;
                 }
-
-                auto newResult = RailPathfinding::findRoute(pos, connection, companyId, trackType, requiredMods, queryMods, *target, nextTarget.has_value() ? &*nextTarget : nullptr);
                 if (newResult.signalState == RouteSignalState::null)
                 {
                     newResult.signalState = RouteSignalState::signalClear;
                 }
 
-                if (RailPathfinding::isBetterRoute(state.result, newResult))
+                if (newResult.numTargetsReached != 0 && RailPathfinding::isBetterRoute(state.result, newResult))
                 {
                     // 0x004AC807
                     state.result = newResult;
@@ -5896,6 +5900,7 @@ namespace OpenLoco::Vehicles
         }
         else
         {
+            state.hadNewResult = !isSecondRun;
             uint16_t bestValue = 0;
             uint16_t bestConnection = 0;
             // aimless wander pathing
@@ -7031,6 +7036,11 @@ namespace OpenLoco::Vehicles
             veh.invalidateSprite();
         });
         // 0x004AE1E4
+
+        if (head.mode == TransportMode::rail)
+        {
+            RailTraffic::restart(*train.veh1);
+        }
 
         if (head.mode != TransportMode::road)
         {

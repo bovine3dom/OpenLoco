@@ -41,6 +41,7 @@
 #include "Ui/Windows/Construction/Construction.h"
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/RoutingManager.h"
+#include "Vehicles/RailTraffic.h"
 #include "World/CompanyManager.h"
 #include "World/CompanyRecords.h"
 #include "World/IndustryManager.h"
@@ -217,6 +218,7 @@ namespace OpenLoco::Scenario
         StationManager::reset();
 
         Vehicles::RoutingManager::resetRoutingTable();
+        Vehicles::RailTraffic::reset();
         Vehicles::OrderManager::reset();
         Ui::Windows::Terraform::resetDefaultObjectIds();
         sub_43C8FD();

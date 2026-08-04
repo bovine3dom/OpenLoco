@@ -61,6 +61,33 @@ namespace OpenLoco::GameSaveCompare
         return matches;
     }
 
+    static bool comparePathReservations(const S5::S5File& lhs, const S5::S5File& rhs)
+    {
+        const Vehicles::RoutingManager::State defaultState;
+        const auto& lhsState = lhs.pathReservationState.has_value() ? *lhs.pathReservationState : defaultState;
+        const auto& rhsState = rhs.pathReservationState.has_value() ? *rhs.pathReservationState : defaultState;
+        const auto matches = lhsState == rhsState
+            && lhs.discardPathReservationsOnLoad == rhs.discardPathReservationsOnLoad;
+        if (!matches)
+        {
+            Logging::info("Path reservation state differs");
+        }
+        return matches;
+    }
+
+    static bool compareRailTraffic(const S5::S5File& lhs, const S5::S5File& rhs)
+    {
+        const Vehicles::RailTraffic::State defaultState;
+        const auto& lhsState = lhs.railTrafficState.has_value() ? *lhs.railTrafficState : defaultState;
+        const auto& rhsState = rhs.railTrafficState.has_value() ? *rhs.railTrafficState : defaultState;
+        const auto matches = lhsState == rhsState;
+        if (!matches)
+        {
+            Logging::info("Rail traffic state differs");
+        }
+        return matches;
+    }
+
     template<typename T>
     std::span<const std::byte> getBytesSpan(const T& item)
     {
@@ -733,7 +760,9 @@ namespace OpenLoco::GameSaveCompare
         auto matches = compareGameStates(currentGameState->gameState, referenceGameState->gameState, false);
         matches &= compareCargoDist(*currentGameState, *referenceGameState);
         matches &= compareSharedOrders(*currentGameState, *referenceGameState);
+        matches &= comparePathReservations(*currentGameState, *referenceGameState);
         matches &= compareVehicleAutoRenewal(*currentGameState, *referenceGameState);
+        matches &= compareRailTraffic(*currentGameState, *referenceGameState);
         return matches;
     }
 
@@ -751,7 +780,9 @@ namespace OpenLoco::GameSaveCompare
         match &= compareElements(state1->tileElements, state2->tileElements, displayAllDivergences);
         match &= compareCargoDist(*state1, *state2);
         match &= compareSharedOrders(*state1, *state2);
+        match &= comparePathReservations(*state1, *state2);
         match &= compareVehicleAutoRenewal(*state1, *state2);
+        match &= compareRailTraffic(*state1, *state2);
         return match;
     }
 }

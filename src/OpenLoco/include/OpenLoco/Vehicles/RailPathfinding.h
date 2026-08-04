@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Types.hpp"
+#include "Vehicles/RailTraffic.h"
 #include <OpenLoco/Engine/World.hpp>
 #include <cstdint>
 #include <limits>
@@ -20,10 +21,11 @@ namespace OpenLoco::Vehicles::RailPathfinding
 
     struct RouteResult
     {
-        uint16_t bestDistToTarget;
-        uint32_t bestTrackWeighting;
+        RailTraffic::TravelTime bestDistToTarget;
+        RailTraffic::TravelTime bestTrackWeighting;
         SignalState signalState;
         uint8_t numTargetsReached{}; // Current order, then optional lookahead order.
+        bool searchExhausted{};
     };
 
     struct Target
@@ -42,6 +44,16 @@ namespace OpenLoco::Vehicles::RailPathfinding
         uint8_t trackType,
         uint8_t requiredMods,
         uint8_t queryMods,
+        const Target& target,
+        const Target* nextTarget = nullptr);
+    RouteResult findRoute(
+        World::Pos3 pos,
+        uint16_t tad,
+        CompanyId company,
+        uint8_t trackType,
+        uint8_t requiredMods,
+        uint8_t queryMods,
+        const RailTraffic::SpeedProfile& speedProfile,
         const Target& target,
         const Target* nextTarget = nullptr);
     bool isBetterRoute(const RouteResult& base, const RouteResult& candidate);

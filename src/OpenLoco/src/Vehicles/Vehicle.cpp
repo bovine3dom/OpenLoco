@@ -15,6 +15,7 @@
 #include "Objects/RoadObject.h"
 #include "Ui/WindowManager.h"
 #include "Vehicles/RoutingManager.h"
+#include "Vehicles/RailTraffic.h"
 #include "Vehicles/Vehicle1.h"
 #include "Vehicles/Vehicle2.h"
 #include "Vehicles/VehicleBody.h"
@@ -507,17 +508,28 @@ namespace OpenLoco::Vehicles
         else if (component.mode == TransportMode::rail)
         {
             UpdateMotionResult result{};
+            const auto samplesTraffic = component.isVehicle1() && distance > 0;
+            const auto timingBudget = static_cast<int64_t>(std::max(distance, 0));
+            auto timingBalance = static_cast<int64_t>(component.remainingDistance);
+            int64_t timingConsumed = 0;
             component.remainingDistance += distance;
             bool hasMoved = false;
             auto intermediatePosition = component.position;
             while (component.remainingDistance >= 0x368A)
             {
+                if (samplesTraffic)
+                {
+                    const auto needed = std::max<int64_t>(0, 0x368A - timingBalance);
+                    timingConsumed = std::min(timingBudget, timingConsumed + needed);
+                    timingBalance += needed;
+                }
                 hasMoved = true;
                 auto newSubPosition = component.subPosition + 1U;
                 const auto subPositionDataSize = World::TrackData::getTrackSubPositon(component.trackAndDirection.track._data).size();
                 // This means we have moved forward by a track piece
                 if (newSubPosition >= subPositionDataSize)
                 {
+                    const auto previousEdge = samplesTraffic ? RailTraffic::getEdge(component) : RailTraffic::Edge{};
                     if (!updateTrackMotionNewTrackPiece(component, result.flags, isVeh2UnkM15))
                     {
                         result.remainingDistance = component.remainingDistance - 0x3689;
@@ -527,6 +539,11 @@ namespace OpenLoco::Vehicles
                     }
                     else
                     {
+                        if (samplesTraffic)
+                        {
+                            const auto fraction = static_cast<uint32_t>(static_cast<uint64_t>(timingConsumed) * RailTraffic::kOneTick / timingBudget);
+                            RailTraffic::onPieceTransition(*component.asVehicle1(), previousEdge, RailTraffic::getEdge(component), fraction);
+                        }
                         newSubPosition = 0;
                     }
                 }
@@ -534,7 +551,9 @@ namespace OpenLoco::Vehicles
                 component.subPosition = newSubPosition;
                 const auto& moveData = World::TrackData::getTrackSubPositon(component.trackAndDirection.track._data)[newSubPosition];
                 const auto nextNewPosition = moveData.loc + World::Pos3(component.tileX, component.tileY, component.tileBaseZ * World::kSmallZStep);
-                component.remainingDistance -= kMovementNibbleToDistance[getMovementNibble(intermediatePosition, nextNewPosition)];
+                const auto movementDistance = kMovementNibbleToDistance[getMovementNibble(intermediatePosition, nextNewPosition)];
+                component.remainingDistance -= movementDistance;
+                timingBalance -= movementDistance;
                 intermediatePosition = nextNewPosition;
                 component.spriteYaw = moveData.yaw;
                 component.spritePitch = moveData.pitch;

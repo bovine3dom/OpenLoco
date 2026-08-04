@@ -1,10 +1,13 @@
 #include "Vehicles/PathSignals.h"
 
 #include "Map/QuarterTile.h"
+#include "Map/StationElement.h"
+#include "Map/TileManager.h"
 #include "Map/Track/Track.h"
 #include "Map/Track/TrackData.h"
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/Orders.h"
+#include "Vehicles/RailTraffic.h"
 #include "Vehicles/RoutingManager.h"
 #include "Vehicles/Vehicle.h"
 #include "Vehicles/Vehicle1.h"
@@ -30,7 +33,6 @@ namespace OpenLoco::Vehicles::PathSignals
     static constexpr size_t kMaxLookaheadNodes = 512;
     static constexpr uint16_t kMaxLookaheadDepth = 256;
     static constexpr uint32_t kMaxReservationDetourWeighting = 320;
-    // Prefer a clear detour of up to roughly sixteen straight track pieces.
     static constexpr uint32_t kClaimedRoutingPenalty = 512;
     static constexpr uint16_t kNoParent = std::numeric_limits<uint16_t>::max();
 
@@ -48,7 +50,7 @@ namespace OpenLoco::Vehicles::PathSignals
         uint16_t routing;
         uint16_t parent;
         uint8_t depth;
-        uint32_t weighting;
+        RailTraffic::TravelTime weighting;
         uint8_t numTargetsReached;
     };
 
@@ -66,12 +68,12 @@ namespace OpenLoco::Vehicles::PathSignals
     {
         std::vector<uint16_t> routings;
         uint8_t numTargetsReached;
-        uint32_t distance;
-        uint32_t weighting;
+        RailTraffic::TravelTime distance;
+        RailTraffic::TravelTime weighting;
         std::optional<std::pair<Pos3, uint16_t>> continuation;
         uint8_t baselineTargetsReached;
-        uint32_t baselineDistance;
-        uint32_t baselineWeighting;
+        RailTraffic::TravelTime baselineDistance;
+        RailTraffic::TravelTime baselineWeighting;
         bool reservationConflict;
     };
 
@@ -80,15 +82,15 @@ namespace OpenLoco::Vehicles::PathSignals
         Pos3 pos;
         uint16_t routing;
         uint16_t depth;
-        uint32_t weighting;
+        RailTraffic::TravelTime weighting;
         uint8_t numTargetsReached;
     };
 
     struct RouteScore
     {
         uint8_t numTargetsReached;
-        uint32_t distance;
-        uint32_t weighting;
+        RailTraffic::TravelTime distance;
+        RailTraffic::TravelTime weighting;
     };
 
     static uint64_t getResourceKey(const Pos3& pos)
@@ -124,6 +126,15 @@ namespace OpenLoco::Vehicles::PathSignals
             }
         }
         return pos;
+    }
+
+    static StationId getStationId(const Pos3& pos, const uint16_t routing)
+    {
+        TrackAndDirection::_TrackAndDirection tad{ 0, 0 };
+        tad._data = routing & Track::AdditionalTaDFlags::basicTaDMask;
+        const auto trackStart = getTrackStart(pos, tad);
+        const auto* station = TileManager::get(trackStart).trainStation(tad.id(), tad.cardinalDirection(), trackStart.z / kSmallZStep);
+        return station != nullptr && !station->isGhost() && !station->isAiAllocated() ? station->stationId() : StationId::null;
     }
 
     template<typename TFunc>
@@ -259,16 +270,25 @@ namespace OpenLoco::Vehicles::PathSignals
             || (pos == target.reversePos && tad == target.reverseTad);
     }
 
-    static uint32_t getDistanceToTarget(const Pos3& pos, const Target& target)
+    static RailTraffic::TravelTime getDistanceToTarget(const Pos3& pos, const Target& target, const RailTraffic::SpeedProfile& speedProfile)
     {
         if (!target.hasTarget)
         {
             return 0;
         }
-        const auto xDiff = static_cast<uint32_t>(std::abs(pos.x - target.pos.x));
-        const auto yDiff = static_cast<uint32_t>(std::abs(pos.y - target.pos.y));
-        const auto zDiff = static_cast<uint32_t>(std::abs(pos.z - target.pos.z));
-        return std::min(xDiff, yDiff) / 4 + std::max(xDiff, yDiff) + zDiff;
+        if (target.stationId != StationId::null)
+        {
+            // A station coordinate need not identify the platform reached by this route.
+            return 0;
+        }
+        const auto getDistance = [&pos](const Pos3& destination) {
+            const auto xDiff = static_cast<uint32_t>(std::abs(pos.x - destination.x));
+            const auto yDiff = static_cast<uint32_t>(std::abs(pos.y - destination.y));
+            const auto zDiff = static_cast<uint32_t>(std::abs(pos.z - destination.z));
+            return std::min(xDiff, yDiff) / 4 + std::max(xDiff, yDiff) + zDiff;
+        };
+        // The cheapest track pieces cost at least two-fifths of this geometric metric.
+        return RailTraffic::getHeuristicTime(speedProfile, std::min(getDistance(target.pos), getDistance(target.reversePos)) * 2 / 5);
     }
 
     static const Target* getActiveTarget(const Target& target, const Target* nextTarget, const uint8_t numTargetsReached)
@@ -284,26 +304,27 @@ namespace OpenLoco::Vehicles::PathSignals
         return numTargetsReached == 1 ? nextTarget : nullptr;
     }
 
-    static uint32_t getDistanceToActiveTarget(const Pos3& pos, const Target& target, const Target* nextTarget, const uint8_t numTargetsReached)
+    static RailTraffic::TravelTime getDistanceToActiveTarget(const Pos3& pos, const Target& target, const Target* nextTarget, const uint8_t numTargetsReached, const RailTraffic::SpeedProfile& speedProfile)
     {
         const auto* activeTarget = getActiveTarget(target, nextTarget, numTargetsReached);
-        return activeTarget == nullptr ? 0 : getDistanceToTarget(pos, *activeTarget);
+        return activeTarget == nullptr ? 0 : getDistanceToTarget(pos, *activeTarget, speedProfile);
     }
 
-    static uint8_t advanceWaypointTarget(const Pos3& pos, const uint16_t routing, const Target& target, const Target* nextTarget, const uint8_t numTargetsReached)
+    static uint8_t advanceTargets(const Pos3& pos, const uint16_t routing, const Target& target, const Target* nextTarget, const uint8_t numTargetsReached)
     {
-        const auto* activeTarget = getActiveTarget(target, nextTarget, numTargetsReached);
-        return activeTarget != nullptr && activeTarget->stationId == StationId::null && reachesWaypoint(pos, routing, *activeTarget)
-            ? numTargetsReached + 1
-            : numTargetsReached;
-    }
-
-    static uint8_t advanceStationTarget(const StationId stationId, const Target& target, const Target* nextTarget, const uint8_t numTargetsReached)
-    {
-        const auto* activeTarget = getActiveTarget(target, nextTarget, numTargetsReached);
-        return activeTarget != nullptr && activeTarget->stationId != StationId::null && activeTarget->stationId == stationId
-            ? numTargetsReached + 1
-            : numTargetsReached;
+        auto progress = numTargetsReached;
+        while (const auto* activeTarget = getActiveTarget(target, nextTarget, progress))
+        {
+            const auto reached = activeTarget->stationId == StationId::null
+                ? reachesWaypoint(pos, routing, *activeTarget)
+                : activeTarget->stationId == getStationId(pos, routing);
+            if (!reached)
+            {
+                break;
+            }
+            progress++;
+        }
+        return progress;
     }
 
     static std::vector<uint16_t> getPath(const std::vector<SearchNode>& nodes, uint16_t index)
@@ -357,28 +378,30 @@ namespace OpenLoco::Vehicles::PathSignals
         return hasClaim;
     }
 
-    static uint32_t addWeighting(const uint32_t lhs, const uint32_t rhs)
+    static RailTraffic::TravelTime addWeighting(const RailTraffic::TravelTime lhs, const RailTraffic::TravelTime rhs)
     {
-        return static_cast<uint32_t>(std::min<uint64_t>(static_cast<uint64_t>(lhs) + rhs, std::numeric_limits<uint32_t>::max()));
+        return rhs > std::numeric_limits<RailTraffic::TravelTime>::max() - lhs
+            ? std::numeric_limits<RailTraffic::TravelTime>::max()
+            : lhs + rhs;
     }
 
-    static uint32_t getRoutingWeighting(const Pos3& pos, const uint16_t routing, const uint8_t trackType, const bool includeTrackWeighting, const ResourceMasks* claimed)
+    static RailTraffic::TravelTime getRoutingWeighting(const Pos3& pos, const uint16_t routing, const uint8_t trackType, const bool includeTrackWeighting, const ResourceMasks* claimed, const RailTraffic::SpeedProfile& speedProfile)
     {
         TrackAndDirection::_TrackAndDirection tad{ 0, 0 };
         tad._data = routing & Track::AdditionalTaDFlags::basicTaDMask;
-        auto weighting = includeTrackWeighting ? static_cast<uint32_t>(TrackData::getTrackMiscData(tad.id()).unkWeighting) : 0;
+        auto weighting = includeTrackWeighting ? RailTraffic::getTravelTime(speedProfile, pos, routing, trackType) : 0;
         if (claimed == nullptr)
         {
             return weighting;
         }
         if (isClaimed(pos, routing, *claimed))
         {
-            return addWeighting(weighting, kClaimedRoutingPenalty);
+            return addWeighting(weighting, RailTraffic::getHeuristicTime(speedProfile, kClaimedRoutingPenalty));
         }
         if ((routing & Track::AdditionalTaDFlags::hasSignal) != 0
             && (getSignalState(pos, tad, trackType, 0) & SignalStateFlags::occupied) != SignalStateFlags::none)
         {
-            weighting = addWeighting(weighting, kClaimedRoutingPenalty);
+            weighting = addWeighting(weighting, RailTraffic::getLiveSignalPenalty(speedProfile, routing, trackType));
         }
         return weighting;
     }
@@ -471,6 +494,10 @@ namespace OpenLoco::Vehicles::PathSignals
 
     static bool isBetterCandidate(const Candidate& candidate, const Candidate& current)
     {
+        if (candidate.reservationConflict != current.reservationConflict)
+        {
+            return !candidate.reservationConflict;
+        }
         if (candidate.numTargetsReached != current.numTargetsReached)
         {
             return candidate.numTargetsReached > current.numTargetsReached;
@@ -508,7 +535,7 @@ namespace OpenLoco::Vehicles::PathSignals
         return false;
     }
 
-    static RouteScore getLookaheadScore(
+    static std::optional<RouteScore> getLookaheadScore(
         const Pos3& firstPos,
         const uint16_t firstRouting,
         const VehicleHead& head,
@@ -517,27 +544,28 @@ namespace OpenLoco::Vehicles::PathSignals
         const Target& target,
         const Target* nextTarget,
         const uint8_t initialTargetsReached,
-        const ResourceMasks* claimed)
+        const ResourceMasks* claimed,
+        const RailTraffic::SpeedProfile& speedProfile)
     {
         struct PendingNode
         {
-            uint32_t estimatedCost;
+            RailTraffic::TravelTime estimatedCost;
             uint16_t index;
         };
         const auto comparePending = [](const PendingNode& lhs, const PendingNode& rhs) {
             return std::tie(lhs.estimatedCost, lhs.index) > std::tie(rhs.estimatedCost, rhs.index);
         };
 
-        const auto seedProgress = advanceWaypointTarget(firstPos, firstRouting, target, nextTarget, initialTargetsReached);
-        const auto seedWeighting = getRoutingWeighting(firstPos, firstRouting, head.trackType, target.hasTarget, claimed);
-        const auto seedDistance = getDistanceToActiveTarget(firstPos, target, nextTarget, seedProgress);
+        const auto seedProgress = advanceTargets(firstPos, firstRouting, target, nextTarget, initialTargetsReached);
+        const auto seedWeighting = getRoutingWeighting(firstPos, firstRouting, head.trackType, target.hasTarget, claimed, speedProfile);
+        const auto seedDistance = getDistanceToActiveTarget(firstPos, target, nextTarget, seedProgress, speedProfile);
         std::vector<LookaheadNode> nodes;
         nodes.reserve(kMaxLookaheadNodes);
         nodes.push_back({ firstPos, firstRouting, 1, seedWeighting, seedProgress });
         std::priority_queue<PendingNode, std::vector<PendingNode>, decltype(comparePending)> pending(comparePending);
         pending.push({ addWeighting(seedWeighting, seedDistance), 0 });
 
-        std::unordered_map<uint64_t, uint32_t> bestWeightingByRoute;
+        std::unordered_map<uint64_t, RailTraffic::TravelTime> bestWeightingByRoute;
         const auto getRouteKey = [](const Pos3& pos, const uint16_t routing, const uint8_t numTargetsReached) {
             return getResourceKey(pos)
                 | (static_cast<uint64_t>(routing & Track::AdditionalTaDFlags::basicTaDMask) << 48)
@@ -548,6 +576,7 @@ namespace OpenLoco::Vehicles::PathSignals
         std::optional<RouteScore> bestReached;
         std::optional<RouteScore> bestFallback;
         uint16_t bestFallbackDepth = 0;
+        bool searchExhausted = false;
         const auto isBetterScore = [](const RouteScore& candidate, const RouteScore& current) {
             if (candidate.numTargetsReached != current.numTargetsReached)
             {
@@ -591,25 +620,23 @@ namespace OpenLoco::Vehicles::PathSignals
             {
                 continue;
             }
+            if (target.hasTarget && getActiveTarget(target, nextTarget, node.numTargetsReached) == nullptr)
+            {
+                return RouteScore{ node.numTargetsReached, 0, node.weighting };
+            }
 
             TrackAndDirection::_TrackAndDirection tad{ 0, 0 };
             tad._data = node.routing & Track::AdditionalTaDFlags::basicTaDMask;
             const auto [nextPos, nextRotation] = Track::getTrackConnectionEnd(node.pos, tad._data);
             const auto connections = Track::getTrackConnections(nextPos, nextRotation, head.owner, head.trackType, requiredMods, queryMods);
-            const auto numTargetsReached = advanceStationTarget(connections.stationId, target, nextTarget, node.numTargetsReached);
-            const auto distance = getDistanceToActiveTarget(nextPos, target, nextTarget, numTargetsReached);
-            const auto reachedAllTargets = target.hasTarget && getActiveTarget(target, nextTarget, numTargetsReached) == nullptr;
-
-            if (reachedAllTargets || connections.connections.empty() || node.depth >= kMaxLookaheadDepth)
+            const auto numTargetsReached = node.numTargetsReached;
+            const auto distance = getDistanceToActiveTarget(nextPos, target, nextTarget, numTargetsReached, speedProfile);
+            if (connections.connections.empty())
             {
                 considerScore({ numTargetsReached, distance, node.weighting }, node.depth);
                 continue;
             }
             considerScore({ numTargetsReached, distance, node.weighting }, node.depth);
-            if (nodes.size() >= kMaxLookaheadNodes)
-            {
-                continue;
-            }
 
             for (const auto routing : connections.connections)
             {
@@ -621,32 +648,36 @@ namespace OpenLoco::Vehicles::PathSignals
                     continue;
                 }
 
-                const auto childWeighting = addWeighting(node.weighting, getRoutingWeighting(nextPos, routing, head.trackType, target.hasTarget, claimed));
-                const auto childProgress = advanceWaypointTarget(nextPos, routing, target, nextTarget, numTargetsReached);
+                const auto childWeighting = addWeighting(node.weighting, getRoutingWeighting(nextPos, routing, head.trackType, target.hasTarget, claimed, speedProfile));
+                const auto childProgress = advanceTargets(nextPos, routing, target, nextTarget, numTargetsReached);
                 const auto childKey = getRouteKey(nextPos, routing, childProgress);
                 const auto previousWeighting = bestWeightingByRoute.find(childKey);
                 if (previousWeighting != bestWeightingByRoute.end() && previousWeighting->second <= childWeighting)
                 {
                     continue;
                 }
+                if (node.depth >= kMaxLookaheadDepth || nodes.size() >= kMaxLookaheadNodes)
+                {
+                    searchExhausted = true;
+                    continue;
+                }
                 bestWeightingByRoute[childKey] = childWeighting;
 
-                const auto childDistance = getDistanceToActiveTarget(nextPos, target, nextTarget, childProgress);
+                const auto childDistance = getDistanceToActiveTarget(nextPos, target, nextTarget, childProgress, speedProfile);
                 nodes.push_back({ nextPos, routing, static_cast<uint16_t>(node.depth + 1), childWeighting, childProgress });
                 const auto childIndex = static_cast<uint16_t>(nodes.size() - 1);
                 pending.push({ addWeighting(childWeighting, childDistance), childIndex });
-                if (nodes.size() == kMaxLookaheadNodes)
-                {
-                    break;
-                }
             }
         }
 
-        if (bestReached.has_value())
+        const auto score = bestReached.has_value()
+            ? *bestReached
+            : bestFallback.value_or(RouteScore{ seedProgress, seedDistance, seedWeighting });
+        if (target.hasTarget && initialTargetsReached == 0 && score.numTargetsReached == 0 && !searchExhausted)
         {
-            return *bestReached;
+            return std::nullopt;
         }
-        return bestFallback.value_or(RouteScore{ seedProgress, seedDistance, seedWeighting });
+        return score;
     }
 
     static size_t getAvailableRoutingSlots(const VehicleHead& head)
@@ -679,6 +710,7 @@ namespace OpenLoco::Vehicles::PathSignals
         const auto queryMods = train.veh1->var_49;
         const auto [target, nextTarget] = getTargets(head);
         const auto* nextTargetPtr = nextTarget.has_value() ? &*nextTarget : nullptr;
+        const auto speedProfile = RailTraffic::getSpeedProfile(head);
         const auto claimed = getClaimedResourceMask();
         const ResourceMasks noClaims;
 
@@ -691,7 +723,7 @@ namespace OpenLoco::Vehicles::PathSignals
             std::vector<uint16_t> pending{ 0 };
             const auto firstCandidate = candidates.size();
 
-            const auto considerCandidate = [&](const uint16_t tailIndex, const Pos3& endpoint, const uint8_t numTargetsReached, const uint32_t weighting, std::optional<std::pair<Pos3, uint16_t>> continuation) {
+            const auto considerCandidate = [&](const uint16_t tailIndex, const Pos3& endpoint, const uint8_t numTargetsReached, const RailTraffic::TravelTime weighting, std::optional<std::pair<Pos3, uint16_t>> continuation) {
                 auto path = getPath(nodes, tailIndex);
                 if (path.empty() || hasConflict(path, firstPos, noClaims))
                 {
@@ -702,7 +734,11 @@ namespace OpenLoco::Vehicles::PathSignals
                     searchTruncated = true;
                     return;
                 }
-                const auto distance = getDistanceToActiveTarget(endpoint, target, nextTargetPtr, numTargetsReached);
+                if (target.hasTarget && numTargetsReached == 0 && !continuation.has_value())
+                {
+                    return;
+                }
+                const auto distance = getDistanceToActiveTarget(endpoint, target, nextTargetPtr, numTargetsReached, speedProfile);
                 const auto conflictsWithClaim = hasConflict(path, firstPos, claimed)
                     || (continuation.has_value() && isClaimed(continuation->first, continuation->second, claimed));
                 candidates.push_back({ std::move(path), numTargetsReached, distance, weighting, continuation, numTargetsReached, distance, weighting, conflictsWithClaim });
@@ -716,19 +752,25 @@ namespace OpenLoco::Vehicles::PathSignals
 
                 TrackAndDirection::_TrackAndDirection tad{ 0, 0 };
                 tad._data = node.routing & Track::AdditionalTaDFlags::basicTaDMask;
-                if (index != 0 && getSignalMode(node.pos, tad, head.trackType, 0).has_value())
+                const auto signalMode = getSignalMode(node.pos, tad, head.trackType, 0);
+                if (index != 0 && signalMode.has_value())
                 {
                     considerCandidate(node.parent, node.pos, node.numTargetsReached, nodes[node.parent].weighting, std::pair{ node.pos, node.routing });
                     continue;
                 }
+                if (index == 0 && !signalMode.has_value()
+                    && getSignalState(node.pos, tad, head.trackType, 0) != SignalStateFlags::none)
+                {
+                    continue;
+                }
 
-                node.numTargetsReached = advanceWaypointTarget(node.pos, node.routing, target, nextTargetPtr, node.numTargetsReached);
-                node.weighting += TrackData::getTrackMiscData(tad.id()).unkWeighting;
+                node.numTargetsReached = advanceTargets(node.pos, node.routing, target, nextTargetPtr, node.numTargetsReached);
+                node.weighting = addWeighting(node.weighting, RailTraffic::getTravelTime(speedProfile, node.pos, node.routing, head.trackType));
                 nodes[index] = node;
 
                 const auto [nextPos, nextRotation] = Track::getTrackConnectionEnd(node.pos, tad._data);
                 const auto connections = Track::getTrackConnections(nextPos, nextRotation, head.owner, head.trackType, requiredMods, queryMods);
-                const auto numTargetsReached = advanceStationTarget(connections.stationId, target, nextTargetPtr, node.numTargetsReached);
+                const auto numTargetsReached = node.numTargetsReached;
                 if (connections.connections.empty())
                 {
                     considerCandidate(index, nextPos, numTargetsReached, node.weighting, std::nullopt);
@@ -765,15 +807,26 @@ namespace OpenLoco::Vehicles::PathSignals
                 }
             }
 
-            std::sort(candidates.begin() + firstCandidate, candidates.end(), isBetterCandidate);
-            if (candidates.size() - firstCandidate > kMaxReservationCandidates)
-            {
-                candidates.erase(candidates.begin() + firstCandidate + kMaxReservationCandidates, candidates.end());
-            }
+            const auto getContinuationKey = [](const Candidate& candidate) {
+                const auto pos = candidate.continuation.has_value() ? candidate.continuation->first : Pos3{};
+                const auto routing = candidate.continuation.has_value() ? candidate.continuation->second : 0;
+                return std::tuple{ candidate.continuation.has_value(), pos.x, pos.y, pos.z, routing, candidate.numTargetsReached, candidate.reservationConflict };
+            };
+            const auto hasSameContinuation = [&getContinuationKey](const Candidate& lhs, const Candidate& rhs) {
+                return getContinuationKey(lhs) == getContinuationKey(rhs);
+            };
+            std::sort(candidates.begin() + firstCandidate, candidates.end(), [&](const Candidate& lhs, const Candidate& rhs) {
+                if (!hasSameContinuation(lhs, rhs))
+                {
+                    return getContinuationKey(lhs) < getContinuationKey(rhs);
+                }
+                return isBetterCandidate(lhs, rhs);
+            });
+            candidates.erase(std::unique(candidates.begin() + firstCandidate, candidates.end(), hasSameContinuation), candidates.end());
             return searchTruncated;
         };
 
-        const auto scoreCandidates = [&](const size_t firstCandidate) {
+        const auto scoreBaselineCandidates = [&](const size_t firstCandidate) {
             for (auto& candidate : std::span{ candidates }.subspan(firstCandidate))
             {
                 if (!candidate.continuation.has_value())
@@ -782,22 +835,71 @@ namespace OpenLoco::Vehicles::PathSignals
                 }
 
                 const auto& [continuationPos, continuationRouting] = *candidate.continuation;
-                // Compare routes to the current order, or to the next order after entering a station.
-                const auto* baselineNextTarget = candidate.baselineTargetsReached == 0 ? nullptr : nextTargetPtr;
+                // Compare unclaimed and claimed lookahead over the same targets.
+                const auto* baselineNextTarget = nextTargetPtr;
                 if (getActiveTarget(target, baselineNextTarget, candidate.baselineTargetsReached) != nullptr || !target.hasTarget)
                 {
-                    const auto baselineScore = getLookaheadScore(continuationPos, continuationRouting, head, requiredMods, queryMods, target, baselineNextTarget, candidate.baselineTargetsReached, nullptr);
-                    candidate.baselineTargetsReached = baselineScore.numTargetsReached;
-                    candidate.baselineDistance = baselineScore.distance;
-                    candidate.baselineWeighting = addWeighting(candidate.baselineWeighting, baselineScore.weighting);
+                    const auto baselineScore = getLookaheadScore(continuationPos, continuationRouting, head, requiredMods, queryMods, target, baselineNextTarget, candidate.baselineTargetsReached, nullptr, speedProfile);
+                    if (!baselineScore.has_value())
+                    {
+                        candidate.baselineDistance = std::numeric_limits<RailTraffic::TravelTime>::max();
+                        candidate.baselineWeighting = std::numeric_limits<RailTraffic::TravelTime>::max();
+                        candidate.reservationConflict = true;
+                        continue;
+                    }
+                    candidate.baselineTargetsReached = baselineScore->numTargetsReached;
+                    candidate.baselineDistance = baselineScore->distance;
+                    candidate.baselineWeighting = addWeighting(candidate.baselineWeighting, baselineScore->weighting);
                 }
-                if (!candidate.reservationConflict
-                    && (getActiveTarget(target, nextTargetPtr, candidate.numTargetsReached) != nullptr || !target.hasTarget))
+            }
+        };
+
+        const auto truncateCandidates = [&](const size_t firstCandidate) {
+            auto candidateRange = std::span{ candidates }.subspan(firstCandidate);
+            if (candidateRange.size() <= kMaxReservationCandidates)
+            {
+                return;
+            }
+
+            const auto baseline = std::ranges::min_element(candidateRange, isBetterBaselineCandidate);
+            const auto numAvailable = static_cast<size_t>(std::ranges::count(candidateRange, false, &Candidate::reservationConflict));
+            const auto conflictedBaseline = baseline->reservationConflict && numAvailable >= kMaxReservationCandidates
+                ? std::optional<Candidate>{ *baseline }
+                : std::nullopt;
+            std::sort(candidates.begin() + firstCandidate, candidates.end(), [](const Candidate& lhs, const Candidate& rhs) {
+                if (lhs.reservationConflict != rhs.reservationConflict)
                 {
-                    const auto score = getLookaheadScore(continuationPos, continuationRouting, head, requiredMods, queryMods, target, nextTargetPtr, candidate.numTargetsReached, &claimed);
-                    candidate.numTargetsReached = score.numTargetsReached;
-                    candidate.distance = score.distance;
-                    candidate.weighting = addWeighting(candidate.weighting, score.weighting);
+                    return !lhs.reservationConflict;
+                }
+                return isBetterBaselineCandidate(lhs, rhs);
+            });
+            candidates.erase(candidates.begin() + firstCandidate + kMaxReservationCandidates, candidates.end());
+            if (conflictedBaseline.has_value())
+            {
+                candidates.push_back(*conflictedBaseline);
+            }
+        };
+
+        const auto scoreClaimedCandidates = [&](const size_t firstCandidate) {
+            for (auto& candidate : std::span{ candidates }.subspan(firstCandidate))
+            {
+                if (!candidate.continuation.has_value() || candidate.reservationConflict)
+                {
+                    continue;
+                }
+
+                const auto& [continuationPos, continuationRouting] = *candidate.continuation;
+                if (getActiveTarget(target, nextTargetPtr, candidate.numTargetsReached) != nullptr || !target.hasTarget)
+                {
+                    const auto score = getLookaheadScore(continuationPos, continuationRouting, head, requiredMods, queryMods, target, nextTargetPtr, candidate.numTargetsReached, &claimed, speedProfile);
+                    if (!score.has_value())
+                    {
+                        candidate.reservationConflict = true;
+                        continue;
+                    }
+                    candidate.numTargetsReached = score->numTargetsReached;
+                    candidate.distance = score->distance;
+                    candidate.weighting = addWeighting(candidate.weighting, score->weighting);
                 }
             }
         };
@@ -815,13 +917,14 @@ namespace OpenLoco::Vehicles::PathSignals
                 return nullptr;
             }
             const auto preferredCost = addWeighting(preferred.baselineWeighting, preferred.baselineDistance);
+            const auto waitAllowance = RailTraffic::getHeuristicTime(speedProfile, kMaxReservationDetourWeighting);
             const Candidate* best = nullptr;
             for (const auto& candidate : candidates)
             {
                 const auto candidateCost = addWeighting(candidate.baselineWeighting, candidate.baselineDistance);
                 if (candidate.reservationConflict
                     || candidate.baselineTargetsReached != preferred.baselineTargetsReached
-                    || candidateCost > addWeighting(preferredCost, kMaxReservationDetourWeighting))
+                    || candidateCost > addWeighting(preferredCost, waitAllowance))
                 {
                     continue;
                 }
@@ -834,26 +937,31 @@ namespace OpenLoco::Vehicles::PathSignals
         };
 
         const auto preferredSearchTruncated = appendCandidates(preferredRouting);
-        scoreCandidates(0);
+        scoreBaselineCandidates(0);
+        truncateCandidates(0);
+        scoreClaimedCandidates(0);
         // Routing capacity must not make a shorter route that misses the current target preferable.
         if (preferredSearchTruncated && target.hasTarget
             && std::ranges::none_of(candidates, [](const auto& candidate) { return candidate.baselineTargetsReached != 0; }))
         {
-            mustReachCurrentTarget = getLookaheadScore(firstPos, preferredRouting, head, requiredMods, queryMods, target, nullptr, 0, nullptr).numTargetsReached != 0;
+            const auto unrestrictedScore = getLookaheadScore(firstPos, preferredRouting, head, requiredMods, queryMods, target, nullptr, 0, nullptr, speedProfile);
+            mustReachCurrentTarget = unrestrictedScore.has_value() && unrestrictedScore->numTargetsReached != 0;
         }
         auto* best = findBestCandidate();
         if (best == nullptr)
         {
-            const auto firstAlternateCandidate = candidates.size();
             const auto preferredBasicTaD = preferredRouting & Track::AdditionalTaDFlags::basicTaDMask;
             for (const auto firstRouting : firstRoutings)
             {
                 if ((firstRouting & Track::AdditionalTaDFlags::basicTaDMask) != preferredBasicTaD)
                 {
+                    const auto firstCandidate = candidates.size();
                     appendCandidates(firstRouting);
+                    scoreBaselineCandidates(firstCandidate);
+                    truncateCandidates(firstCandidate);
+                    scoreClaimedCandidates(firstCandidate);
                 }
             }
-            scoreCandidates(firstAlternateCandidate);
             best = findBestCandidate();
             if (best == nullptr)
             {

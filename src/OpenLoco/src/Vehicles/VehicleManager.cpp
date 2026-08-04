@@ -18,6 +18,7 @@
 #include "Vehicles/Orders.h"
 #include "Vehicles/PathSignals.h"
 #include "Vehicles/RoutingManager.h"
+#include "Vehicles/RailTraffic.h"
 #include "Vehicles/Vehicle.h"
 #include "Vehicles/Vehicle1.h"
 #include "Vehicles/Vehicle2.h"
@@ -36,10 +37,12 @@ namespace OpenLoco::VehicleManager
     {
         if (Game::hasFlags(GameStateFlags::tileManagerLoaded) && !SceneManager::isEditorMode())
         {
+            Vehicles::RailTraffic::beginTick();
             for (auto* v : VehicleList())
             {
                 v->updateVehicle();
             }
+            Vehicles::RailTraffic::endTick();
         }
     }
 
@@ -61,6 +64,7 @@ namespace OpenLoco::VehicleManager
             {
                 v->updateDaily();
             }
+            Vehicles::RailTraffic::updateDaily();
             Ui::WindowManager::invalidate(Ui::WindowType::vehicleList);
         }
     }

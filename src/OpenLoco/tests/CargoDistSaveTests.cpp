@@ -102,7 +102,8 @@ namespace
         const Vehicles::SharedOrderManager::State* sharedOrderState = nullptr,
         const Vehicles::RoutingManager::State* pathReservationState = nullptr,
         const Vehicles::VehicleAutoRenewal::State* vehicleAutoRenewalState = nullptr,
-        bool legacyPathReservations = false)
+        bool legacyPathReservations = false,
+        const Vehicles::RailTraffic::State* railTrafficState = nullptr)
     {
         SawyerStreamWriter writer(stream);
         S5::Header header{};
@@ -118,11 +119,17 @@ namespace
 
         std::array<std::byte, sizeof(S5::TileElement)> tile{};
         writer.writeChunk(SawyerEncoding::uncompressed, tile.data(), tile.size());
-        if (cargoDistState != nullptr || sharedOrderState != nullptr || pathReservationState != nullptr || vehicleAutoRenewalState != nullptr)
+        if (cargoDistState != nullptr || sharedOrderState != nullptr || pathReservationState != nullptr || vehicleAutoRenewalState != nullptr || railTrafficState != nullptr)
         {
             auto encoded = legacyExtension
                 ? encodeState(*cargoDistState)
-                : S5::SaveExtension::encode({ cargoDistState, sharedOrderState, pathReservationState, vehicleAutoRenewalState });
+                : S5::SaveExtension::encode({
+                      .cargoDistState = cargoDistState,
+                      .sharedOrderState = sharedOrderState,
+                      .pathReservationState = pathReservationState,
+                      .vehicleAutoRenewalState = vehicleAutoRenewalState,
+                      .railTrafficState = railTrafficState,
+                  });
             if (legacyPathReservations)
             {
                 constexpr std::array pathReservationsTag{ std::byte{ 'P' }, std::byte{ 'R' }, std::byte{ 'E' }, std::byte{ 'S' } };
@@ -247,8 +254,10 @@ TEST(CargoDistSave, S5TailRoundTripsExtension)
     pathReservations.pathReservedRoutings[7] = uint64_t{ 1 } << 3;
     Vehicles::VehicleAutoRenewal::State vehicleAutoRenewal;
     vehicleAutoRenewal.companies[3] = { true, 40 };
+    Vehicles::RailTraffic::State railTraffic;
+    railTraffic.history.push_back({ { 320, 352, 32, 0, 0 }, 12 * Vehicles::RailTraffic::kOneTick, 0, 7 });
     MemoryStream stream;
-    writeMinimalSave(stream, &original, false, &sharedOrders, &pathReservations, &vehicleAutoRenewal);
+    writeMinimalSave(stream, &original, false, &sharedOrders, &pathReservations, &vehicleAutoRenewal, false, &railTraffic);
 
     const auto save = S5::loadSave(stream);
 
@@ -261,6 +270,8 @@ TEST(CargoDistSave, S5TailRoundTripsExtension)
     EXPECT_FALSE(save->discardPathReservationsOnLoad);
     ASSERT_TRUE(save->vehicleAutoRenewalState.has_value());
     EXPECT_EQ(*save->vehicleAutoRenewalState, vehicleAutoRenewal);
+    ASSERT_TRUE(save->railTrafficState.has_value());
+    EXPECT_EQ(*save->railTrafficState, railTraffic);
 }
 
 TEST(CargoDistSave, MarksVersionOnePathReservationsForRecalculation)

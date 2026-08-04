@@ -8,6 +8,7 @@
 #include <limits>
 #include <ranges>
 #include <stdexcept>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 
@@ -58,6 +59,12 @@ namespace OpenLoco::S5::SaveExtension
             std::byte{ 'R' },
             std::byte{ 'E' },
             std::byte{ 'N' },
+        };
+        constexpr std::array<std::byte, 4> kRailTrafficTag = {
+            std::byte{ 'R' },
+            std::byte{ 'T' },
+            std::byte{ 'F' },
+            std::byte{ 'C' },
         };
         constexpr uint16_t kVersion = 1;
         constexpr uint16_t kHeaderSize = 16;
@@ -290,6 +297,98 @@ namespace OpenLoco::S5::SaveExtension
             return state;
         }
 
+        void writeRailTrafficEdge(Writer& output, const Vehicles::RailTraffic::Edge& edge)
+        {
+            output.write(static_cast<uint16_t>(edge.x));
+            output.write(static_cast<uint16_t>(edge.y));
+            output.write(static_cast<uint16_t>(edge.z));
+            output.write(edge.tad);
+            output.write(edge.trackType);
+        }
+
+        Vehicles::RailTraffic::Edge readRailTrafficEdge(Reader& input)
+        {
+            return {
+                static_cast<int16_t>(input.read<uint16_t>()),
+                static_cast<int16_t>(input.read<uint16_t>()),
+                static_cast<int16_t>(input.read<uint16_t>()),
+                input.read<uint16_t>(),
+                input.read<uint8_t>(),
+            };
+        }
+
+        bool railTrafficEdgeLess(const Vehicles::RailTraffic::HistoryEntry& lhs, const Vehicles::RailTraffic::HistoryEntry& rhs)
+        {
+            const auto& a = lhs.edge;
+            const auto& b = rhs.edge;
+            return std::tie(a.x, a.y, a.z, a.trackType, a.tad) < std::tie(b.x, b.y, b.z, b.trackType, b.tad);
+        }
+
+        std::vector<std::byte> encodeRailTraffic(Vehicles::RailTraffic::State state)
+        {
+            require(Vehicles::RailTraffic::validateState(state), "Invalid rail traffic state");
+            std::ranges::sort(state.history, railTrafficEdgeLess);
+            std::ranges::sort(state.active, {}, &Vehicles::RailTraffic::ActiveTraversal::vehicle);
+
+            Writer payload;
+            payload.write(static_cast<uint32_t>(state.history.size()));
+            for (const auto& entry : state.history)
+            {
+                writeRailTrafficEdge(payload, entry.edge);
+                payload.write(entry.meanTraversalTime);
+                payload.write(entry.lastObservedDay);
+                payload.write(entry.confidence);
+            }
+            payload.write(static_cast<uint16_t>(state.active.size()));
+            for (const auto& traversal : state.active)
+            {
+                payload.write(static_cast<uint16_t>(traversal.vehicle));
+                payload.write(static_cast<uint16_t>(traversal.head));
+                writeRailTrafficEdge(payload, traversal.edge);
+                payload.write(traversal.enteredAt);
+                payload.write(static_cast<uint8_t>(traversal.completeFromStart));
+            }
+            return payload.take();
+        }
+
+        Vehicles::RailTraffic::State decodeRailTraffic(std::span<const std::byte> data)
+        {
+            Reader input(data);
+            Vehicles::RailTraffic::State state;
+            const auto historySize = input.read<uint32_t>();
+            require(historySize <= Vehicles::RailTraffic::kMaxHistoryEntries, "Too many rail traffic history entries");
+            state.history.reserve(historySize);
+            for (uint32_t i = 0; i < historySize; ++i)
+            {
+                Vehicles::RailTraffic::HistoryEntry entry;
+                entry.edge = readRailTrafficEdge(input);
+                entry.meanTraversalTime = input.read<uint64_t>();
+                entry.lastObservedDay = input.read<uint32_t>();
+                entry.confidence = input.read<uint8_t>();
+                state.history.push_back(entry);
+            }
+            const auto activeSize = input.read<uint16_t>();
+            require(activeSize <= Limits::kMaxVehicles, "Too many active rail traversals");
+            state.active.reserve(activeSize);
+            for (uint16_t i = 0; i < activeSize; ++i)
+            {
+                Vehicles::RailTraffic::ActiveTraversal traversal;
+                traversal.vehicle = static_cast<EntityId>(input.read<uint16_t>());
+                traversal.head = static_cast<EntityId>(input.read<uint16_t>());
+                traversal.edge = readRailTrafficEdge(input);
+                traversal.enteredAt = input.read<uint64_t>();
+                const auto complete = input.read<uint8_t>();
+                require(complete <= 1, "Invalid active rail traversal flag");
+                traversal.completeFromStart = complete != 0;
+                state.active.push_back(traversal);
+            }
+            require(input.empty(), "Trailing rail traffic data");
+            require(Vehicles::RailTraffic::validateState(state), "Invalid rail traffic state");
+            require(std::ranges::is_sorted(state.history, railTrafficEdgeLess), "Non-canonical rail traffic history order");
+            require(std::ranges::is_sorted(state.active, {}, &Vehicles::RailTraffic::ActiveTraversal::vehicle), "Non-canonical active rail traversal order");
+            return state;
+        }
+
         bool hasMagic(std::span<const std::byte> data, std::span<const std::byte, 8> magic)
         {
             return data.size() >= magic.size() && std::ranges::equal(data.first(magic.size()), magic);
@@ -299,11 +398,12 @@ namespace OpenLoco::S5::SaveExtension
     std::vector<std::byte> encode(const State& state)
     {
         return encode(StateView{
-            state.cargoDistState ? &*state.cargoDistState : nullptr,
-            state.sharedOrderState ? &*state.sharedOrderState : nullptr,
-            state.pathReservationState ? &*state.pathReservationState : nullptr,
-            state.vehicleAutoRenewalState ? &*state.vehicleAutoRenewalState : nullptr,
-            state.discardPathReservationsOnLoad,
+            .cargoDistState = state.cargoDistState ? &*state.cargoDistState : nullptr,
+            .sharedOrderState = state.sharedOrderState ? &*state.sharedOrderState : nullptr,
+            .pathReservationState = state.pathReservationState ? &*state.pathReservationState : nullptr,
+            .vehicleAutoRenewalState = state.vehicleAutoRenewalState ? &*state.vehicleAutoRenewalState : nullptr,
+            .discardPathReservationsOnLoad = state.discardPathReservationsOnLoad,
+            .railTrafficState = state.railTrafficState ? &*state.railTrafficState : nullptr,
         });
     }
 
@@ -330,6 +430,11 @@ namespace OpenLoco::S5::SaveExtension
         {
             const auto vehicleAutoRenewal = encodeVehicleAutoRenewal(*state.vehicleAutoRenewalState);
             appendSection(payload, kVehicleAutoRenewalTag, vehicleAutoRenewal, kSectionRequired);
+        }
+        if (state.railTrafficState != nullptr)
+        {
+            const auto railTraffic = encodeRailTraffic(*state.railTrafficState);
+            appendSection(payload, kRailTrafficTag, railTraffic, kSectionRequired);
         }
 
         require(payload.size() <= std::numeric_limits<uint32_t>::max(), "Save extension is too large");
@@ -366,6 +471,7 @@ namespace OpenLoco::S5::SaveExtension
         bool hasSharedOrders = false;
         bool hasPathReservations = false;
         bool hasVehicleAutoRenewal = false;
+        bool hasRailTraffic = false;
         while (!sections.empty())
         {
             const auto tag = sections.readBytes(4);
@@ -405,6 +511,14 @@ namespace OpenLoco::S5::SaveExtension
                 hasVehicleAutoRenewal = true;
                 require(version == kSectionVersion, "Unsupported vehicle auto-renewal section version");
                 state.vehicleAutoRenewalState = decodeVehicleAutoRenewal(sectionData);
+            }
+            else if (std::ranges::equal(tag, kRailTrafficTag))
+            {
+                require((flags & ~kKnownSectionFlags) == 0, "Invalid rail traffic section flags");
+                require(!hasRailTraffic, "Duplicate rail traffic save extension section");
+                hasRailTraffic = true;
+                require(version == kSectionVersion, "Unsupported rail traffic section version");
+                state.railTrafficState = decodeRailTraffic(sectionData);
             }
             else
             {

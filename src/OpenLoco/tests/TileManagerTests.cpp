@@ -21,6 +21,7 @@
 #include <OpenLoco/Vehicles/Orders.h>
 #include <OpenLoco/Vehicles/PathSignals.h>
 #include <OpenLoco/Vehicles/RailPathfinding.h>
+#include <OpenLoco/Vehicles/RailTraffic.h>
 #include <OpenLoco/Vehicles/RoutingManager.h>
 #include <OpenLoco/Vehicles/Vehicle.h>
 #include <OpenLoco/Vehicles/Vehicle1.h>
@@ -103,6 +104,7 @@ namespace
             OpenLoco::EntityManager::reset();
             OpenLoco::Vehicles::OrderManager::reset();
             OpenLoco::Vehicles::RoutingManager::resetRoutingTable();
+            OpenLoco::Vehicles::RailTraffic::reset();
         }
 
         void TearDown() override
@@ -111,6 +113,7 @@ namespace
             OpenLoco::EntityManager::reset();
             OpenLoco::Vehicles::OrderManager::reset();
             OpenLoco::Vehicles::RoutingManager::resetRoutingTable();
+            OpenLoco::Vehicles::RailTraffic::reset();
         }
 
         template<typename T>
@@ -164,6 +167,8 @@ namespace
                 component->trackAndDirection = OpenLoco::Vehicles::TrackAndDirection(routing >> 3, routing & 0x7);
                 component->routingHandle = *routingHandle;
             }
+            veh2->maxSpeed = OpenLoco::Speed16{ 60 };
+            veh2->rackRailMaxSpeed = OpenLoco::Speed16{ 60 };
             OpenLoco::Vehicles::RoutingManager::setRouting(*routingHandle, routing);
             OpenLoco::Vehicles::OrderManager::allocateOrders(*head);
             return head;
@@ -215,7 +220,10 @@ namespace
             auto* trackEntry = &*trackIt;
             auto& track = trackEntry->get<TrackElement>();
             track.setHasStationElement(true);
-            auto* stationEntry = TileManager::insertElementAfterNoReorg<StationElement>(trackEntry, pos, track.baseZ(), 0xF);
+            auto* previousEntry = track.hasSignal() && trackEntry->next()->as<SignalElement>() != nullptr
+                ? trackEntry->next()
+                : trackEntry;
+            auto* stationEntry = TileManager::insertElementAfterNoReorg<StationElement>(previousEntry, pos, track.baseZ(), 0xF);
             ASSERT_NE(stationEntry, nullptr);
             auto& station = stationEntry->get<StationElement>();
             station.setClearZ(track.clearZ());
@@ -242,6 +250,15 @@ namespace
             auto handle = head.routingHandle;
             handle.setIndex(handle.getIndex() + 2);
             return OpenLoco::Vehicles::RoutingManager::getRouting(handle) & OpenLoco::World::Track::AdditionalTaDFlags::basicTaDMask;
+        }
+
+        static void recordSlowTrack(const Pos3& pos, const uint16_t tad)
+        {
+            const OpenLoco::Vehicles::RailTraffic::Edge edge{ pos.x, pos.y, pos.z, tad, 0 };
+            for (auto i = 0; i < 16; ++i)
+            {
+                OpenLoco::Vehicles::RailTraffic::recordTraversal(edge, 200 * OpenLoco::Vehicles::RailTraffic::kOneTick);
+            }
         }
     };
 
@@ -1328,10 +1345,34 @@ TEST_F(PathSignalsTest, DetectsCongestionBeyondPrevious64PieceLookahead)
     ASSERT_NE(reservingTrain, nullptr);
     const auto blockedPos = firstPos + Pos3{ -128 - (continuationLength - 1) * kTileSize, 0, 0 };
     ASSERT_NE(createTrain(blockedPos, kStraightWest), nullptr);
+    recordSlowTrack(firstPos + Pos3{ -128 - 70 * kTileSize, 0, 0 }, kStraightWest);
 
     ASSERT_TRUE(OpenLoco::Vehicles::PathSignals::tryReservePath(*reservingTrain, firstPos, kStraightWest));
 
     EXPECT_EQ(getSecondReservedRouting(*reservingTrain), kTurnNorth);
+}
+
+TEST_F(PathSignalsTest, RejectsDisconnectedStationRouteAtLookaheadLimit)
+{
+    constexpr Pos3 firstPos{ 200 * kTileSize, 350 * kTileSize, 32 };
+    constexpr auto stationDistance = 264;
+    addTwoRouteJunction(firstPos);
+    addTrack(firstPos + Pos3{ -4 * kTileSize, 0, 0 }, 0, 0);
+    for (auto i = 4; i <= stationDistance; ++i)
+    {
+        addTrack(firstPos + Pos3{ -kTileSize, -i * kTileSize, 0 }, 0, 3);
+    }
+    const auto stationPos = firstPos + Pos3{ -kTileSize, -stationDistance * kTileSize, 0 };
+    addTrainStation(stationPos, 0, 3, OpenLoco::StationId(0));
+
+    auto* train = createTrain(firstPos + Pos3{ kTileSize, 0, 0 }, kStraightWest);
+    ASSERT_NE(train, nullptr);
+    const OpenLoco::Vehicles::OrderStopAt order{ OpenLoco::StationId(0) };
+    OpenLoco::Vehicles::OrderManager::insertOrder(train, 0, &order);
+
+    ASSERT_TRUE(OpenLoco::Vehicles::PathSignals::tryReservePath(*train, firstPos, kStraightWest));
+
+    EXPECT_EQ(getSecondReservedRouting(*train), kTurnNorth);
 }
 
 TEST_F(PathSignalsTest, ChoosesLongerRouteWhenShortRouteBeyondSignalIsReserved)
@@ -1585,7 +1626,7 @@ TEST_F(PathSignalsTest, LooksBeyondStationWhenReservingPlatform)
     EXPECT_EQ(getSecondReservedRouting(*train), kTurnNorth);
 }
 
-TEST(RailPathfindingResultTest, BoundsDetoursTakenToAvoidBlockedSignals)
+TEST(RailPathfindingResultTest, UsesProjectedTimeInsteadOfSignalClass)
 {
     using namespace OpenLoco::Vehicles::RailPathfinding;
 
@@ -1596,10 +1637,73 @@ TEST(RailPathfindingResultTest, BoundsDetoursTakenToAvoidBlockedSignals)
 
     EXPECT_TRUE(isBetterRoute(disconnectedPlatform, blockedRoute));
     EXPECT_FALSE(isBetterRoute(blockedRoute, disconnectedPlatform));
-    EXPECT_TRUE(isBetterRoute(blockedRoute, localClearDetour));
-    EXPECT_FALSE(isBetterRoute(localClearDetour, blockedRoute));
+    EXPECT_FALSE(isBetterRoute(blockedRoute, localClearDetour));
+    EXPECT_TRUE(isBetterRoute(localClearDetour, blockedRoute));
     EXPECT_FALSE(isBetterRoute(blockedRoute, excessiveClearDetour));
     EXPECT_TRUE(isBetterRoute(excessiveClearDetour, blockedRoute));
+}
+
+TEST_F(RailPathfindingTest, DoesNotChooseDisconnectedTargetFallback)
+{
+    constexpr Pos3 currentPos{ 352, 320, 32 };
+    constexpr Pos3 junction{ 320, 320, 32 };
+    constexpr auto wrongBranchLength = 5;
+    constexpr auto northLength = 2;
+    constexpr auto destinationDistance = 8;
+    addTrack(currentPos, 0, 0);
+    addTrack(junction, 0, 0);
+    addTrack(junction, 2, 0);
+    for (auto i = 1; i < wrongBranchLength; ++i)
+    {
+        addTrack(junction + Pos3{ -i * kTileSize, 0, 0 }, 0, 0);
+    }
+    for (auto i = 1; i <= northLength; ++i)
+    {
+        addTrack(junction + Pos3{ 0, -i * kTileSize, 0 }, 0, 3);
+    }
+    const auto westTurn = junction + Pos3{ 0, -(northLength + 1) * kTileSize, 0 };
+    addTrack(westTurn, 3, 3);
+    for (auto i = 1; i <= destinationDistance; ++i)
+    {
+        addTrack(westTurn + Pos3{ -i * kTileSize, 0, 0 }, 0, 0);
+    }
+    const auto targetPos = westTurn + Pos3{ -destinationDistance * kTileSize, 0, 0 };
+    addTrainStation(targetPos, 0, 0, OpenLoco::StationId(0));
+    auto* station = OpenLoco::StationManager::get(OpenLoco::StationId(0));
+    station->x = targetPos.x;
+    station->y = targetPos.y;
+    station->z = targetPos.z;
+
+    auto* train = createTrain(currentPos, kStraightWest);
+    ASSERT_NE(train, nullptr);
+    const OpenLoco::Vehicles::OrderStopAt order{ OpenLoco::StationId(0) };
+    OpenLoco::Vehicles::OrderManager::insertOrder(train, 0, &order);
+
+    const auto result = train->sub_4ACEE7(0xD4CB00, 0xD4CB00, false);
+
+    EXPECT_EQ(result.status, 0);
+    auto nextHandle = train->routingHandle;
+    nextHandle.setIndex(nextHandle.getIndex() + 1);
+    EXPECT_EQ(OpenLoco::Vehicles::RoutingManager::getRouting(nextHandle) & OpenLoco::World::Track::AdditionalTaDFlags::basicTaDMask, kTurnNorth);
+}
+
+TEST_F(RailPathfindingTest, ReportsNoRouteWhenNoBranchReachesTarget)
+{
+    constexpr Pos3 currentPos{ 352, 320, 32 };
+    addTrack(currentPos, 0, 0);
+    addTrack(kFirstPos, 0, 0);
+    addTrack(kFirstPos, 2, 0);
+    auto* train = createTrain(currentPos, kStraightWest);
+    ASSERT_NE(train, nullptr);
+    const OpenLoco::Vehicles::OrderRouteWaypoint waypoint{ TilePos2{ 20, 20 }, 4, 0, 0 };
+    OpenLoco::Vehicles::OrderManager::insertOrder(train, 0, &waypoint);
+
+    const auto result = train->sub_4ACEE7(0xD4CB00, 0xD4CB00, false);
+
+    EXPECT_EQ(result.status, 2);
+    auto nextHandle = train->routingHandle;
+    nextHandle.setIndex(nextHandle.getIndex() + 1);
+    EXPECT_EQ(OpenLoco::Vehicles::RoutingManager::getRouting(nextHandle), OpenLoco::Vehicles::RoutingManager::kAllocatedButFreeRouting);
 }
 
 TEST_F(RailPathfindingTest, LooksBeyondStationToSelectConnectedPlatform)
@@ -1632,6 +1736,91 @@ TEST_F(RailPathfindingTest, LooksBeyondStationToSelectConnectedPlatform)
     EXPECT_EQ(through.numTargetsReached, 2);
     EXPECT_TRUE(OpenLoco::Vehicles::RailPathfinding::isBetterRoute(deadEnd, through));
     EXPECT_FALSE(OpenLoco::Vehicles::RailPathfinding::isBetterRoute(through, deadEnd));
+}
+
+TEST_F(RailPathfindingTest, AssociatesStationWithSelectedJunctionBranch)
+{
+    constexpr Pos3 junction{ 200 * kTileSize, 200 * kTileSize, 32 };
+    addTrack(junction, 0, 0);
+    addTrack(junction, 2, 0);
+    addTrainStation(junction, 0, 0, OpenLoco::StationId(0));
+
+    OpenLoco::Vehicles::RailPathfinding::Target target{};
+    target.stationId = OpenLoco::StationId(0);
+    target.pos = junction;
+
+    const auto platform = OpenLoco::Vehicles::RailPathfinding::findRoute(junction, kStraightWest, OpenLoco::CompanyId(0), 0, 0, 0, target);
+    const auto bypass = OpenLoco::Vehicles::RailPathfinding::findRoute(junction, kTurnNorth, OpenLoco::CompanyId(0), 0, 0, 0, target);
+
+    EXPECT_EQ(platform.numTargetsReached, 1);
+    EXPECT_EQ(bypass.numTargetsReached, 0);
+}
+
+TEST_F(RailPathfindingTest, DoesNotReachWaypointBehindWrongWaySignal)
+{
+    addTrack(kFirstPos, 0, 0, true, SignalMode::oneWayPath);
+    auto tile = TileManager::get(kFirstPos);
+    const auto trackIt = std::ranges::find_if(tile, [](const auto& entry) { return entry.template as<TrackElement>() != nullptr; });
+    ASSERT_NE(trackIt, tile.end());
+    auto* track = trackIt->as<TrackElement>();
+    auto* signal = trackIt->next()->as<SignalElement>();
+    ASSERT_NE(signal, nullptr);
+    signal->getLeft().setHasSignal(false);
+    signal->getRight().setHasSignal(true);
+    track->setRightSignalMode(SignalMode::oneWayPath);
+    OpenLoco::Vehicles::RailPathfinding::Target target{};
+    target.pos = kFirstPos;
+    target.tad = kStraightWest;
+
+    const auto result = OpenLoco::Vehicles::RailPathfinding::findRoute(kFirstPos, kStraightWest | OpenLoco::World::Track::AdditionalTaDFlags::hasSignal, OpenLoco::CompanyId(0), 0, 0, 0, target);
+
+    EXPECT_EQ(result.numTargetsReached, 0);
+}
+
+TEST_F(RailPathfindingTest, AppliesSignalPenaltyBeforeSelectingGoal)
+{
+    constexpr Pos3 currentPos{ 352, 320, 32 };
+    addTrack(currentPos, 0, 0);
+    addTrack(kFirstPos, 0, 0, true);
+    addTrack(kFirstPos, 2, 0, true);
+    addTrainStation(kFirstPos, 0, 0, OpenLoco::StationId(0));
+    addTrainStation(kFirstPos, 2, 0, OpenLoco::StationId(0));
+    auto tile = TileManager::get(kFirstPos);
+    const auto directTrack = std::ranges::find_if(tile, [](const auto& entry) {
+        const auto* track = entry.template as<TrackElement>();
+        return track != nullptr && track->trackId() == 0;
+    });
+    ASSERT_NE(directTrack, tile.end());
+    auto* directSignal = directTrack->next()->as<SignalElement>();
+    ASSERT_NE(directSignal, nullptr);
+    directSignal->getLeft().setIsOccupied(true);
+
+    OpenLoco::Vehicles::RailPathfinding::Target target{};
+    target.stationId = OpenLoco::StationId(0);
+    target.pos = kFirstPos;
+    const OpenLoco::Vehicles::RailTraffic::SpeedProfile speedProfile{ OpenLoco::Speed16{ 60 }, OpenLoco::Speed16{ 60 } };
+
+    const auto result = OpenLoco::Vehicles::RailPathfinding::findRoute(currentPos, kStraightWest, OpenLoco::CompanyId(0), 0, 0, 0, speedProfile, target);
+
+    EXPECT_EQ(result.numTargetsReached, 1);
+    EXPECT_EQ(result.signalState, OpenLoco::Vehicles::RailPathfinding::SignalState::signalClear);
+    EXPECT_EQ(result.bestTrackWeighting, OpenLoco::Vehicles::RailTraffic::getFreeFlowTime(speedProfile, kStraightWest, 0));
+}
+
+TEST_F(RailPathfindingTest, AdvancesConsecutiveTargetsOnSameStationTrack)
+{
+    addTrack(kFirstPos, 0, 0);
+    addTrainStation(kFirstPos, 0, 0, OpenLoco::StationId(0));
+    OpenLoco::Vehicles::RailPathfinding::Target waypoint{};
+    waypoint.pos = kFirstPos;
+    waypoint.tad = kStraightWest;
+    OpenLoco::Vehicles::RailPathfinding::Target station{};
+    station.stationId = OpenLoco::StationId(0);
+    station.pos = kFirstPos;
+
+    const auto result = OpenLoco::Vehicles::RailPathfinding::findRoute(kFirstPos, kStraightWest, OpenLoco::CompanyId(0), 0, 0, 0, waypoint, &station);
+
+    EXPECT_EQ(result.numTargetsReached, 2);
 }
 
 TEST_F(RailPathfindingTest, FindsLongStationRouteThatInitiallyMovesAwayFromTarget)
@@ -1668,8 +1857,8 @@ TEST_F(RailPathfindingTest, FindsLongStationRouteThatInitiallyMovesAwayFromTarge
     const auto direct = OpenLoco::Vehicles::RailPathfinding::findRoute(junction, kStraightWest, OpenLoco::CompanyId(0), 0, 0, 0, target);
     const auto detour = OpenLoco::Vehicles::RailPathfinding::findRoute(junction, kTurnNorth, OpenLoco::CompanyId(0), 0, 0, 0, target);
 
-    EXPECT_NE(direct.bestDistToTarget, 0);
-    ASSERT_EQ(detour.bestDistToTarget, 0);
+    EXPECT_EQ(direct.numTargetsReached, 0);
+    ASSERT_EQ(detour.numTargetsReached, 1);
     EXPECT_TRUE(OpenLoco::Vehicles::RailPathfinding::isBetterRoute(direct, detour));
 }
 

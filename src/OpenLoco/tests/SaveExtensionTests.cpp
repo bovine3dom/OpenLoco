@@ -3,6 +3,7 @@
 
 #include <OpenLoco/CargoDist/Save.h>
 #include <OpenLoco/Vehicles/VehicleAutoRenewal.h>
+#include <OpenLoco/Vehicles/RailTraffic.h>
 #include <algorithm>
 #include <cstdint>
 #include <gtest/gtest.h>
@@ -50,6 +51,14 @@ namespace
         Vehicles::VehicleAutoRenewal::State state;
         state.companies[2] = { true, 35 };
         state.companies[8] = { false, 70 };
+        return state;
+    }
+
+    Vehicles::RailTraffic::State railTrafficState()
+    {
+        Vehicles::RailTraffic::State state;
+        state.history.push_back({ { 320, 352, 32, 4, 0 }, 12 * Vehicles::RailTraffic::kOneTick, 123, 7 });
+        state.active.push_back({ entity(9), entity(3), { 288, 352, 32, 0, 0 }, 100 * Vehicles::RailTraffic::kOneTick, true });
         return state;
     }
 
@@ -199,6 +208,34 @@ TEST(SaveExtension, RoundTripsVehicleAutoRenewal)
     EXPECT_EQ(readU16(encoded, 20), 1);
     EXPECT_EQ(readU16(encoded, 22), 1);
     EXPECT_EQ(readU32(encoded, 24), Limits::kMaxCompanies * 2);
+}
+
+TEST(SaveExtension, RoundTripsRailTraffic)
+{
+    const auto traffic = railTrafficState();
+    const auto encoded = S5::SaveExtension::encode({ .railTrafficState = &traffic });
+    const auto decoded = S5::SaveExtension::decode(encoded);
+
+    ASSERT_TRUE(decoded.railTrafficState.has_value());
+    EXPECT_EQ(*decoded.railTrafficState, traffic);
+    EXPECT_EQ(S5::SaveExtension::encode(decoded), encoded);
+    expectTag(encoded, 16, "RTFC");
+    EXPECT_EQ(readU16(encoded, 20), 1);
+    EXPECT_EQ(readU16(encoded, 22), 1);
+}
+
+TEST(SaveExtension, RailTrafficEncodingIsDeterministic)
+{
+    auto first = railTrafficState();
+    first.history.push_back({ { 288, 352, 32, 0, 0 }, 8 * Vehicles::RailTraffic::kOneTick, 124, 3 });
+    first.active.push_back({ entity(5), entity(2), { 256, 352, 32, 0, 0 }, 101 * Vehicles::RailTraffic::kOneTick, false });
+    auto second = first;
+    std::ranges::reverse(second.history);
+    std::ranges::reverse(second.active);
+
+    EXPECT_EQ(
+        S5::SaveExtension::encode({ .railTrafficState = &first }),
+        S5::SaveExtension::encode({ .railTrafficState = &second }));
 }
 
 TEST(SaveExtension, VehicleAutoRenewalEncodingIsDeterministic)
