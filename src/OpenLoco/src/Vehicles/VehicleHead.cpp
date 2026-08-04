@@ -39,6 +39,7 @@
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/Orders.h"
 #include "Vehicles/PathSignals.h"
+#include "Vehicles/RailPathfinding.h"
 #include "Vehicles/RoutingManager.h"
 #include "Vehicles/Vehicle1.h"
 #include "Vehicles/Vehicle2.h"
@@ -83,23 +84,8 @@ namespace OpenLoco::Vehicles
     static constexpr uint16_t kUnbunchingRoundTripMask = kUnbunchingReleased - 1;
     static constexpr uint32_t kUnbunchingTickQuantum = 32;
 
-    // In order of preference when finding a route
-    enum class RouteSignalState : uint32_t
-    {
-        noSignals = 1,
-        signalClear = 2,
-        signalBlockedOneWay = 3,
-        signalBlockedTwoWay = 4,
-        signalNoRoute = 6, // E.g. its a one way track and we are going the wrong way
-        null = 0xFFFFFFFFU,
-    };
-
-    struct RoutingResult
-    {
-        uint16_t bestDistToTarget;    // 0x01136448
-        uint32_t bestTrackWeighting;  // 0x01136444
-        RouteSignalState signalState; // 0x0113644C
-    };
+    using RouteSignalState = RailPathfinding::SignalState;
+    using RoutingResult = RailPathfinding::RouteResult;
 
     struct Sub4AC3D3State
     {
@@ -5723,250 +5709,6 @@ namespace OpenLoco::Vehicles
         return state.unkFlags;
     }
 
-    // 0x004AC98B
-    static void trackUpdateDistanceToTarget(const Pos3 curPos, const Sub4AC94FTarget& target, Sub4AC94FState& state)
-    {
-        const uint32_t xDiff = std::abs(curPos.x - target.pos.x);
-        const uint32_t yDiff = std::abs(curPos.y - target.pos.y);
-        const uint32_t zDiff = std::abs(curPos.z - target.pos.z);
-
-        const auto dist = std::min(xDiff, yDiff) / 4 + std::max(xDiff, yDiff) + zDiff;
-        if (dist <= state.result.bestDistToTarget)
-        {
-            if (dist < state.result.bestDistToTarget || state.totalTrackWeighting <= state.result.bestTrackWeighting)
-            {
-                state.result.bestDistToTarget = static_cast<uint16_t>(dist);
-                state.result.bestTrackWeighting = state.totalTrackWeighting;
-            }
-        }
-    }
-
-    static void trackTargetedPathingRecurse(const World::Pos3 pos, const uint16_t tad, const CompanyId companyId, const uint8_t trackType, const uint8_t requiredMods, const uint8_t queryMods, const Sub4AC94FTarget& target, Sub4AC94FState& state)
-    {
-        // 0x01135FAE (copy in from the tc)
-        StationId curStationId = StationId::null;
-        if (state.recursionDepth >= 5)
-        {
-            return;
-        }
-        auto curPos = pos;
-        TrackAndDirection::_TrackAndDirection curTad{ 0, 0 };
-        curTad._data = tad;
-        for (; true;)
-        {
-            bool hasReachedTarget = false;
-            if (target.stationId != StationId::null)
-            {
-                hasReachedTarget = (curStationId == target.stationId);
-            }
-            else
-            {
-                if (curPos == target.pos && (curTad._data & World::Track::AdditionalTaDFlags::basicTaDMask) == target.tad)
-                {
-                    hasReachedTarget = true;
-                }
-                else if (curPos == target.reversePos && (curTad._data & World::Track::AdditionalTaDFlags::basicTaDMask) == target.reverseTad)
-                {
-                    hasReachedTarget = true;
-                }
-            }
-            if (hasReachedTarget)
-            {
-                // 0x004AC9FD
-                if (processReachedTargetRouteEnd(state))
-                {
-                    break;
-                }
-            }
-            else
-            {
-                // 0x004AC98B
-                trackUpdateDistanceToTarget(curPos, target, state);
-            }
-
-            // 0x004ACAAD
-            if (curTad._data & World::Track::AdditionalTaDFlags::hasSignal)
-            {
-                TrackAndDirection::_TrackAndDirection basicTad{ 0, 0 };
-                // This looks so wrong! Why aren't we just doing basic tad mask?
-                basicTad._data = curTad._data & ~World::Track::AdditionalTaDFlags::hasSignal;
-                const auto sigState = getSignalState(curPos, basicTad, trackType, 0);
-
-                if ((sigState & SignalStateFlags::blockedNoRoute) != SignalStateFlags::none)
-                {
-                    // Root blocked by one way signal facing opposite direction
-                    if (state.result.signalState == RouteSignalState::null)
-                    {
-                        state.result.signalState = RouteSignalState::signalNoRoute;
-                    }
-                    break;
-                }
-                else if ((sigState & SignalStateFlags::occupied) != SignalStateFlags::none)
-                {
-                    if (state.result.signalState == RouteSignalState::null)
-                    {
-                        state.result.signalState = RouteSignalState::signalBlockedTwoWay;
-                        // Its a one way signal facing our direction
-                        if ((sigState & SignalStateFlags::occupiedOneWay) != SignalStateFlags::none)
-                        {
-                            state.result.signalState = RouteSignalState::signalBlockedOneWay;
-                        }
-                    }
-                }
-                else
-                {
-                    // Has signal and signal is green
-                    if (state.result.signalState == RouteSignalState::null)
-                    {
-                        state.result.signalState = RouteSignalState::signalClear;
-                    }
-                }
-            }
-
-            state.totalTrackWeighting += World::TrackData::getTrackMiscData(curTad.id()).unkWeighting;
-            if (state.totalTrackWeighting > 1280)
-            {
-                break;
-            }
-
-            auto [nextPos, nextRotation] = Track::getTrackConnectionEnd(curPos, curTad._data & World::Track::AdditionalTaDFlags::basicTaDMask);
-            auto tc = World::Track::getTrackConnections(nextPos, nextRotation, companyId, trackType, requiredMods, queryMods);
-
-            if (tc.connections.empty())
-            {
-                break;
-            }
-            curPos = nextPos;
-            curTad._data = tc.connections.front() & World::Track::AdditionalTaDFlags::basicTaDWithSignalMask;
-            curStationId = tc.stationId;
-            if (tc.connections.size() == 1)
-            {
-                continue;
-            }
-
-            auto unk11360CC = state.result.signalState;
-            for (auto& connection : tc.connections)
-            {
-                const auto connectTad = connection & World::Track::AdditionalTaDFlags::basicTaDWithSignalMask;
-                auto recurseState = state;
-                recurseState.recursionDepth++;
-                trackTargetedPathingRecurse(curPos, connectTad, companyId, trackType, requiredMods, queryMods, target, recurseState);
-                // TODO: May need to copy over results
-                unk11360CC = std::min(unk11360CC, recurseState.result.signalState);
-                state.result.bestDistToTarget = recurseState.result.bestDistToTarget;
-                state.result.bestTrackWeighting = recurseState.result.bestTrackWeighting;
-            }
-            state.result.signalState = unk11360CC;
-            break;
-        }
-    }
-
-    // 0x004AC94F
-    // pos.x : ax
-    // pos.y : cx
-    // pos.z : dx
-    // tad : bp
-    // companyId : bl
-    // trackType : bh
-    // requiredMods : 0x0113601A
-    // queryMods : 0x0113601B
-    // target : see above
-    // state : see above
-    static RoutingResult trackTargetedPathing(const World::Pos3 pos, const uint16_t tad, const CompanyId companyId, const uint8_t trackType, const uint8_t requiredMods, const uint8_t queryMods, const Sub4AC94FTarget& target)
-    {
-        Sub4AC94FState state{};
-        state.result.bestDistToTarget = std::numeric_limits<uint16_t>::max();
-        state.result.bestTrackWeighting = std::numeric_limits<uint32_t>::max();
-        state.result.signalState = RouteSignalState::null;
-        trackTargetedPathingRecurse(pos, tad, companyId, trackType, requiredMods, queryMods, target, state);
-        return state.result;
-    }
-
-    // 0x004AC6DA
-    static bool isTrackRoutingResultBetter(const RoutingResult& base, const RoutingResult& newResult)
-    {
-        if (base.signalState == RouteSignalState::null)
-        {
-            return true;
-        }
-        const bool newReachedTarget = newResult.bestDistToTarget == 0;
-        const bool baseReachedTarget = base.bestDistToTarget == 0;
-        if (newReachedTarget && newResult.signalState == RouteSignalState::signalBlockedOneWay)
-        {
-            if (base.signalState <= RouteSignalState::signalClear && base.bestTrackWeighting > 288)
-            {
-                const auto adjustedWeighting = newResult.bestTrackWeighting * 5 / 4;
-                if (adjustedWeighting <= base.bestTrackWeighting)
-                {
-                    return true;
-                }
-            }
-        }
-        if (baseReachedTarget && base.signalState == RouteSignalState::signalBlockedOneWay)
-        {
-            if (newResult.signalState <= RouteSignalState::signalClear && newResult.bestTrackWeighting > 288)
-            {
-                const auto adjustedWeighting = base.bestTrackWeighting * 5 / 4;
-                if (adjustedWeighting <= newResult.bestTrackWeighting)
-                {
-                    return false;
-                }
-            }
-        }
-        if (!newReachedTarget && newResult.signalState == RouteSignalState::signalBlockedOneWay)
-        {
-            if (!baseReachedTarget && base.signalState == RouteSignalState::signalClear)
-            {
-                const auto adjustedDist = newResult.bestDistToTarget * 5 / 4;
-                if (adjustedDist <= base.bestDistToTarget
-                    || newResult.bestDistToTarget + 320 <= base.bestDistToTarget)
-                {
-                    return true;
-                }
-            }
-        }
-        if (!baseReachedTarget && base.signalState == RouteSignalState::signalBlockedOneWay)
-        {
-            if (!newReachedTarget && newResult.signalState == RouteSignalState::signalClear)
-            {
-                const auto adjustedDist = base.bestDistToTarget * 5 / 4;
-                if (adjustedDist <= newResult.bestDistToTarget
-                    || base.bestDistToTarget + 320 <= newResult.bestDistToTarget)
-                {
-                    return false;
-                }
-            }
-        }
-        if (newReachedTarget && !baseReachedTarget)
-        {
-            return true;
-        }
-        if (!newReachedTarget && baseReachedTarget)
-        {
-            return false;
-        }
-        if (newResult.signalState < base.signalState)
-        {
-            return true;
-        }
-        if (newResult.signalState > base.signalState)
-        {
-            return false;
-        }
-        if (newResult.bestDistToTarget < base.bestDistToTarget)
-        {
-            return true;
-        }
-        else if (newResult.bestDistToTarget == base.bestDistToTarget)
-        {
-            if (newResult.bestTrackWeighting <= base.bestTrackWeighting)
-            {
-                return true;
-            }
-        }
-        return false;
-    }
-
     // 0x004AC3D3
     // pos.x : ax
     // pos.y : cx
@@ -6004,7 +5746,7 @@ namespace OpenLoco::Vehicles
         auto* routeOrder = curOrder->as<OrderRouteWaypoint>();
         if (stationOrder != nullptr || routeOrder != nullptr)
         {
-            Sub4AC94FTarget target{};
+            RailPathfinding::Target target{};
             if (stationOrder != nullptr)
             {
                 // 0x004AC504
@@ -6044,13 +5786,13 @@ namespace OpenLoco::Vehicles
                     return tc.connections[i];
                 }
 
-                auto newResult = trackTargetedPathing(pos, connection, companyId, trackType, requiredMods, queryMods, target);
+                auto newResult = RailPathfinding::findRoute(pos, connection, companyId, trackType, requiredMods, queryMods, target);
                 if (newResult.signalState == RouteSignalState::null)
                 {
                     newResult.signalState = RouteSignalState::signalClear;
                 }
 
-                if (isTrackRoutingResultBetter(state.result, newResult))
+                if (RailPathfinding::isBetterRoute(state.result, newResult))
                 {
                     // 0x004AC807
                     state.result = newResult;

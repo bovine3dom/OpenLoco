@@ -1,0 +1,46 @@
+#pragma once
+
+#include "Types.hpp"
+#include <OpenLoco/Engine/World.hpp>
+#include <cstdint>
+#include <limits>
+
+namespace OpenLoco::Vehicles::RailPathfinding
+{
+    // In order of preference when finding a route.
+    enum class SignalState : uint32_t
+    {
+        noSignals = 1,
+        signalClear = 2,
+        signalBlockedOneWay = 3,
+        signalBlockedTwoWay = 4,
+        signalNoRoute = 6,
+        null = std::numeric_limits<uint32_t>::max(),
+    };
+
+    struct RouteResult
+    {
+        uint16_t bestDistToTarget;
+        uint32_t bestTrackWeighting;
+        SignalState signalState;
+    };
+
+    struct Target
+    {
+        StationId stationId = StationId::null;
+        World::Pos3 pos{};
+        uint16_t tad{};
+        World::Pos3 reversePos{};
+        uint16_t reverseTad{};
+    };
+
+    RouteResult findRoute(
+        World::Pos3 pos,
+        uint16_t tad,
+        CompanyId company,
+        uint8_t trackType,
+        uint8_t requiredMods,
+        uint8_t queryMods,
+        const Target& target);
+    bool isBetterRoute(const RouteResult& base, const RouteResult& candidate);
+}

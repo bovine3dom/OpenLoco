@@ -17,6 +17,7 @@
 #include <OpenLoco/S5/S5TileElement.h>
 #include <OpenLoco/Vehicles/OrderManager.h>
 #include <OpenLoco/Vehicles/PathSignals.h>
+#include <OpenLoco/Vehicles/RailPathfinding.h>
 #include <OpenLoco/Vehicles/RoutingManager.h>
 #include <OpenLoco/Vehicles/Vehicle.h>
 #include <OpenLoco/Vehicles/Vehicle1.h>
@@ -231,6 +232,10 @@ namespace
             handle.setIndex(handle.getIndex() + 2);
             return OpenLoco::Vehicles::RoutingManager::getRouting(handle) & OpenLoco::World::Track::AdditionalTaDFlags::basicTaDMask;
         }
+    };
+
+    class RailPathfindingTest : public PathSignalsTest
+    {
     };
 
     constexpr TilePos2 kTestTile{ 10, 5 };
@@ -1235,6 +1240,65 @@ TEST_F(PathSignalsTest, ChoosesShorterRouteWhenBothRoutesAreClear)
     ASSERT_TRUE(OpenLoco::Vehicles::PathSignals::tryReservePath(*reservingTrain, kFirstPos, kStraightWest));
 
     EXPECT_EQ(getSecondReservedRouting(*reservingTrain), kStraightWest);
+}
+
+TEST_F(RailPathfindingTest, FindsLongStationRouteThatInitiallyMovesAwayFromTarget)
+{
+    constexpr Pos3 junction{ 320 * kTileSize, 200 * kTileSize, 32 };
+    constexpr auto wrongBranchLength = 60;
+    constexpr auto northLength = 5;
+    constexpr auto destinationDistance = 250;
+    addTrack(junction, 0, 0);
+    addTrack(junction, 2, 0);
+    for (auto i = 1; i < wrongBranchLength; ++i)
+    {
+        addTrack(junction + Pos3{ -i * kTileSize, 0, 0 }, 0, 0);
+    }
+
+    for (auto i = 1; i <= northLength; ++i)
+    {
+        addTrack(junction + Pos3{ 0, -i * kTileSize, 0 }, 0, 3);
+    }
+    const auto westTurn = junction + Pos3{ 0, -(northLength + 1) * kTileSize, 0 };
+    addTrack(westTurn, 3, 3);
+    for (auto i = 1; i <= destinationDistance; ++i)
+    {
+        addTrack(westTurn + Pos3{ -i * kTileSize, 0, 0 }, 0, 0);
+    }
+
+    const auto targetPos = westTurn + Pos3{ -destinationDistance * kTileSize, 0, 0 };
+    auto targetTile = TileManager::get(targetPos);
+    TileElementEntry* targetTrackEntry = nullptr;
+    for (auto& element : targetTile)
+    {
+        const auto* track = element.as<TrackElement>();
+        if (track != nullptr && track->trackId() == 0 && track->rotation() == 0)
+        {
+            targetTrackEntry = &element;
+            break;
+        }
+    }
+    ASSERT_NE(targetTrackEntry, nullptr);
+    auto* targetTrack = targetTrackEntry->as<TrackElement>();
+    targetTrack->setHasStationElement(true);
+    auto* stationEntry = TileManager::insertElementAfterNoReorg<StationElement>(targetTrackEntry, targetPos, targetTrack->baseZ(), 0xF);
+    ASSERT_NE(stationEntry, nullptr);
+    auto& station = stationEntry->get<StationElement>();
+    station.setClearZ(targetTrack->clearZ());
+    station.setOwner(OpenLoco::CompanyId(0));
+    station.setStationId(OpenLoco::StationId(0));
+    station.setStationType(OpenLoco::StationType::trainStation);
+
+    OpenLoco::Vehicles::RailPathfinding::Target target{};
+    target.stationId = OpenLoco::StationId(0);
+    target.pos = targetPos;
+
+    const auto direct = OpenLoco::Vehicles::RailPathfinding::findRoute(junction, kStraightWest, OpenLoco::CompanyId(0), 0, 0, 0, target);
+    const auto detour = OpenLoco::Vehicles::RailPathfinding::findRoute(junction, kTurnNorth, OpenLoco::CompanyId(0), 0, 0, 0, target);
+
+    EXPECT_NE(direct.bestDistToTarget, 0);
+    ASSERT_EQ(detour.bestDistToTarget, 0);
+    EXPECT_TRUE(OpenLoco::Vehicles::RailPathfinding::isBetterRoute(direct, detour));
 }
 
 TEST_F(TileManagerTest, InsertElementAfterNoReorgTypedTemplateReturnsTypedPointer)
