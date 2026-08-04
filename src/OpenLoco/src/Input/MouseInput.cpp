@@ -128,8 +128,8 @@ namespace OpenLoco::Input
     });
 
     constexpr int32_t kDropdownItemUndefined = -1;
-    constexpr currency32_t kVehicleStartedFeedback = 5'742'730;  // STARTED
-    constexpr currency32_t kVehicleStoppedFeedback = -5'709'930; // STOPPED
+    constexpr currency32_t kVehicleStartedFeedback = 1;
+    constexpr currency32_t kVehicleStoppedFeedback = -1;
 
     void initMouse()
     {
