@@ -1,6 +1,8 @@
 #include <OpenLoco/Engine/World.hpp>
 #include <OpenLoco/Entities/EntityManager.h>
 #include <OpenLoco/GameCommands/Track/CreateSignal.h>
+#include <OpenLoco/GameCommands/Track/RemoveSignal.h>
+#include <OpenLoco/GameCommands/Track/RemoveTrack.h>
 #include <OpenLoco/GameState.h>
 #include <OpenLoco/Map/RoadElement.h>
 #include <OpenLoco/Map/SignalElement.h>
@@ -84,6 +86,7 @@ namespace
         static constexpr Pos3 kFirstPos{ 320, 320, 32 };
         static constexpr uint16_t kStraightWest = 0;
         static constexpr uint16_t kTurnNorth = 2 << 3;
+        OpenLoco::CompanyId _previousUpdatingCompany{};
 
         static void SetUpTestSuite()
         {
@@ -92,6 +95,8 @@ namespace
 
         void SetUp() override
         {
+            _previousUpdatingCompany = OpenLoco::GameCommands::getUpdatingCompanyId();
+            OpenLoco::GameCommands::setUpdatingCompanyId(OpenLoco::CompanyId(0));
             TileManager::initialise();
             OpenLoco::EntityManager::reset();
             OpenLoco::Vehicles::OrderManager::reset();
@@ -100,6 +105,7 @@ namespace
 
         void TearDown() override
         {
+            OpenLoco::GameCommands::setUpdatingCompanyId(_previousUpdatingCompany);
             OpenLoco::EntityManager::reset();
             OpenLoco::Vehicles::OrderManager::reset();
             OpenLoco::Vehicles::RoutingManager::resetRoutingTable();
@@ -1071,6 +1077,60 @@ TEST_F(PathSignalsTest, ReportsOnlyFutureRoutingEntriesAsReserved)
 
     OpenLoco::Vehicles::RoutingManager::freeRouting(nextHandle);
     EXPECT_FALSE(OpenLoco::Vehicles::PathSignals::isPathReserved({ currentPos.x - kTileSize, currentPos.y, currentPos.z }, straightWest));
+}
+
+TEST_F(PathSignalsTest, GhostInfrastructureRemovalIgnoresFutureRouting)
+{
+    constexpr Pos3 currentPos{ 320, 160, 32 };
+    constexpr Pos3 ghostPos{ currentPos.x - kTileSize, currentPos.y, currentPos.z };
+    addTrack(ghostPos, 0, 0);
+
+    auto* head = createTrain(currentPos, kStraightWest);
+    ASSERT_NE(head, nullptr);
+    auto nextHandle = head->routingHandle;
+    nextHandle.setIndex(nextHandle.getIndex() + 1);
+    OpenLoco::Vehicles::RoutingManager::setRouting(nextHandle, kStraightWest);
+    ASSERT_TRUE(OpenLoco::Vehicles::PathSignals::isPathReserved(ghostPos, kStraightWest));
+
+    auto tile = TileManager::get(ghostPos);
+    const auto trackIt = std::ranges::find_if(tile, [](const auto& entry) { return entry.template as<TrackElement>() != nullptr; });
+    ASSERT_NE(trackIt, tile.end());
+
+    OpenLoco::GameCommands::TrackRemovalArgs args{};
+    args.pos = ghostPos;
+    args.rotation = 0;
+    args.trackId = 0;
+    args.index = 0;
+    args.trackObjectId = 0;
+    const auto commandFlags = OpenLoco::GameCommands::Flags::apply | OpenLoco::GameCommands::Flags::noErrorWindow | OpenLoco::GameCommands::Flags::noPayment;
+
+    EXPECT_EQ(OpenLoco::GameCommands::doCommand(args, commandFlags), OpenLoco::GameCommands::kFailure);
+    trackIt->get<TrackElement>().setGhost(true);
+    EXPECT_EQ(OpenLoco::GameCommands::doCommand(args, commandFlags | OpenLoco::GameCommands::Flags::ghost), 0U);
+    EXPECT_EQ(TileManager::get(ghostPos).size(), 1U);
+
+    addTrack(ghostPos, 0, 0, true);
+    auto signalTile = TileManager::get(ghostPos);
+    const auto signalTrackIt = std::ranges::find_if(signalTile, [](const auto& entry) { return entry.template as<TrackElement>() != nullptr; });
+    ASSERT_NE(signalTrackIt, signalTile.end());
+    auto* trackEntry = &*signalTrackIt;
+    auto& track = trackEntry->get<TrackElement>();
+    auto& signal = trackEntry->next()->get<SignalElement>();
+    signal.setGhost(true);
+    signal.setLeftGhost(true);
+
+    OpenLoco::GameCommands::SignalRemovalArgs signalArgs{};
+    signalArgs.pos = ghostPos;
+    signalArgs.rotation = 0;
+    signalArgs.trackId = 0;
+    signalArgs.index = 0;
+    signalArgs.trackObjType = 0;
+    signalArgs.flags = 1U << 15;
+
+    EXPECT_EQ(OpenLoco::GameCommands::doCommand(signalArgs, commandFlags), OpenLoco::GameCommands::kFailure);
+    EXPECT_EQ(OpenLoco::GameCommands::doCommand(signalArgs, commandFlags | OpenLoco::GameCommands::Flags::ghost), 0U);
+    EXPECT_FALSE(track.hasSignal());
+    EXPECT_EQ(TileManager::get(ghostPos).size(), 2U);
 }
 
 TEST_F(PathSignalsTest, MarksExactPathReservationEntries)

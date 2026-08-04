@@ -112,13 +112,13 @@ namespace OpenLoco::GameCommands
         const auto trackStart = args.pos - World::Pos3{ Math::Vector::rotate(World::Pos2{ trackPiece.x, trackPiece.y }, args.rotation), trackPiece.z };
 
         const auto tad = (args.trackId << 3) | args.rotation;
-        if (Vehicles::PathSignals::isPathReserved(trackStart, tad))
+        if (!(flags & (Flags::ghost | Flags::aiAllocated)) && Vehicles::PathSignals::isPathReserved(trackStart, tad))
         {
             setErrorText(StringIds::vehicle_approaching_or_in_the_way);
             return kFailure;
         }
 
-        currency32_t cost = signalRemoveCost(args, trackPieces[0], trackStart);
+        currency32_t cost = (flags & Flags::ghost) ? 0 : signalRemoveCost(args, trackPieces[0], trackStart);
 
         if (static_cast<uint32_t>(cost) == kFailure)
         {

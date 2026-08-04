@@ -138,7 +138,7 @@ namespace OpenLoco::GameCommands
         const auto& selectedPiece = World::TrackData::getTrackPiece(args.trackId)[args.index];
         const auto trackStart = args.pos - World::Pos3{ Math::Vector::rotate(World::Pos2{ selectedPiece.x, selectedPiece.y }, args.rotation), selectedPiece.z };
         const auto tad = (args.trackId << 3) | args.rotation;
-        if (Vehicles::PathSignals::isPathReserved(trackStart, tad))
+        if (!(flags & (Flags::ghost | Flags::aiAllocated)) && Vehicles::PathSignals::isPathReserved(trackStart, tad))
         {
             setErrorText(StringIds::vehicle_approaching_or_in_the_way);
             return kFailure;
@@ -213,7 +213,7 @@ namespace OpenLoco::GameCommands
         const auto trackPieces = World::TrackData::getTrackPiece(args.trackId);
 
         // NB: moved out of the loop below (was at 0x0049CC1B)
-        const currency32_t pieceRemovalCost = trackRemoveCost(args, trackPieces[0], trackStart, flags);
+        const currency32_t pieceRemovalCost = (flags & Flags::ghost) ? 0 : trackRemoveCost(args, trackPieces[0], trackStart, flags);
 
         bool trackHadBridge = false; // 0x0113605B
         int8_t trackBridgeId = -1;   // 0x0113605C
@@ -250,7 +250,7 @@ namespace OpenLoco::GameCommands
 
         totalRemovalCost += pieceRemovalCost;
 
-        if (trackHadBridge)
+        if (trackHadBridge && !(flags & Flags::ghost))
         {
             const auto* bridgeObj = ObjectManager::get<BridgeObject>(trackBridgeId);
             const auto bridgeBaseCost = Economy::getInflationAdjustedCost(bridgeObj->sellCostFactor, bridgeObj->costIndex, 10);
