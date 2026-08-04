@@ -1,11 +1,17 @@
 #include "Scenario/Scenario.h"
+#include <SDL3/SDL_events.h>
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <cstring>
 #include <iostream>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <utility>
+#include <vector>
 
 #ifdef _WIN32
 // timeGetTime is unavailable if we use lean and mean
@@ -26,8 +32,11 @@
 #include "Entities/EntityTweener.h"
 #include "Environment.h"
 #include "GameCommands/GameCommands.h"
+#include "GameState.h"
 #include "Graphics/Colour.h"
 #include "Graphics/Gfx.h"
+#include "Graphics/RenderTarget.h"
+#include "Graphics/SoftwareDrawingEngine.h"
 #include "Gui.h"
 #include "Input.h"
 #include "Input/Shortcuts.h"
@@ -455,6 +464,196 @@ namespace OpenLoco
 
             Scenes::GameScene::tick();
         }
+    }
+
+    bool runRenderBenchmark(const fs::path& savePath, int32_t warmupFrames, int32_t frames, int32_t width, int32_t height, float scaleFactor)
+    {
+        auto& config = Config::get();
+        struct BenchmarkStateGuard
+        {
+            Config::Config& config;
+            Config::Config originalConfig;
+            bool writesEnabled;
+            bool audioEnabled;
+
+            ~BenchmarkStateGuard()
+            {
+                if (Audio::isAudioEnabled() != audioEnabled)
+                {
+                    Audio::toggleSound();
+                }
+                config = std::move(originalConfig);
+                Config::setWriteEnabled(writesEnabled);
+            }
+        } stateGuard{ config, config, Config::setWriteEnabled(false), Audio::isAudioEnabled() };
+
+        config.display.mode = Config::ScreenMode::window;
+        config.display.windowResolution = { width, height };
+        config.display.vsync = false;
+        config.scaleFactor = scaleFactor;
+        config.nativeViewportRendering = true;
+        config.showFPS = false;
+        config.allowMultipleInstances = true;
+
+        Ui::createWindow(config.display);
+        initialise();
+        if (Audio::isAudioEnabled())
+        {
+            Audio::toggleSound();
+        }
+        Gfx::loadDefaultPalette();
+        Gfx::invalidateScreen();
+        SceneManager::addSceneFlags(SceneManager::Flags::initialised);
+        const auto loadRequested = Scenes::BootScene::loadFile(savePath);
+        const auto sceneChanged = SceneManager::applySceneTransition();
+
+        auto& drawingEngine = Gfx::getDrawingEngine();
+        drawingEngine.resize(width, height);
+        Gui::resize();
+        Gfx::invalidateScreen();
+        const auto outputSize = drawingEngine.getOutputSize();
+        const auto presentationSize = drawingEngine.getPresentationSize();
+        if (!loadRequested
+            || !sceneChanged
+            || SceneManager::isSceneTransitionPending()
+            || SceneManager::getCurrentScene() != SceneManager::SceneId::gameplay
+            || !drawingEngine.shouldUseSeparateWorld()
+            || !drawingEngine.setVSync(false)
+            || WindowManager::find(WindowType::topToolbar) == nullptr
+            || presentationSize.width <= 0
+            || presentationSize.height <= 0
+            || outputSize.width != width
+            || outputSize.height != height)
+        {
+            Logging::error(
+                "Render benchmark setup failed (gameplay: {}, pending transition: {}, native renderer: {}, requested framebuffer: {}x{}, actual: {}x{})",
+                SceneManager::getCurrentScene() == SceneManager::SceneId::gameplay,
+                SceneManager::isSceneTransitionPending(),
+                drawingEngine.shouldUseSeparateWorld(),
+                width,
+                height,
+                outputSize.width,
+                outputSize.height);
+            return false;
+        }
+
+        _numFrameUpdates = 1;
+        _time_since_last_tick = Engine::UpdateRateInMs;
+        const auto processEvents = [&] {
+            SDL_Event event{};
+            while (SDL_PollEvent(&event))
+            {
+                if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
+                {
+                    throw std::runtime_error("Render benchmark window was closed");
+                }
+            }
+
+            const auto currentSize = drawingEngine.getPresentationSize();
+            if (currentSize.width != presentationSize.width || currentSize.height != presentationSize.height)
+            {
+                throw std::runtime_error("Presentation size changed during render benchmark");
+            }
+        };
+        constexpr std::array<float, 4> kTweenFrames = { 0.0F, 0.25F, 0.5F, 0.75F };
+        auto& tweener = EntityTweener::get();
+        auto prepareFrame = [&](int32_t frame) {
+            const auto tweenFrame = static_cast<size_t>(frame) % kTweenFrames.size();
+            if (tweenFrame == 0)
+            {
+                tweener.preTick();
+                Scenes::GameScene::tick();
+                Scenes::GameScene::tickInterface();
+                tweener.postTick();
+                if (SceneManager::isSceneTransitionPending())
+                {
+                    throw std::runtime_error("Scene transition requested during render benchmark");
+                }
+            }
+            tweener.tween(kTweenFrames[tweenFrame]);
+            SceneManager::update();
+        };
+
+        for (int32_t frame = 0; frame < warmupFrames; ++frame)
+        {
+            processEvents();
+            prepareFrame(frame);
+            drawingEngine.render();
+            if (!drawingEngine.present())
+            {
+                throw std::runtime_error("Renderer presentation failed during benchmark warmup");
+            }
+        }
+
+        using BenchmarkClock = std::chrono::steady_clock;
+        std::vector<uint64_t> frameTotals(static_cast<size_t>(frames));
+        std::vector<uint64_t> renderTotals(static_cast<size_t>(frames));
+        std::vector<uint64_t> presentTotals(static_cast<size_t>(frames));
+        for (int32_t frame = 0; frame < frames; ++frame)
+        {
+            processEvents();
+            prepareFrame(frame + warmupFrames);
+
+            const auto index = static_cast<size_t>(frame);
+            const auto renderStart = BenchmarkClock::now();
+            drawingEngine.render();
+            renderTotals[index] = std::chrono::duration_cast<std::chrono::nanoseconds>(BenchmarkClock::now() - renderStart).count();
+
+            const auto presentStart = BenchmarkClock::now();
+            if (!drawingEngine.present())
+            {
+                throw std::runtime_error("Renderer presentation failed during benchmark");
+            }
+            presentTotals[index] = std::chrono::duration_cast<std::chrono::nanoseconds>(BenchmarkClock::now() - presentStart).count();
+            frameTotals[index] = renderTotals[index] + presentTotals[index];
+        }
+
+        const auto logMetric = [](std::string_view name, std::vector<uint64_t> values) {
+            std::ranges::sort(values);
+            const auto median = values[values.size() / 2];
+            const auto p95 = values[(values.size() * 95 + 99) / 100 - 1];
+            const auto toMilliseconds = [](uint64_t nanoseconds) { return static_cast<double>(nanoseconds) / 1'000'000.0; };
+            Logging::info("  {:<18} median={:>8.3f} ms  p95={:>8.3f} ms", name, toMilliseconds(median), toMilliseconds(p95));
+        };
+
+        const auto hashFrame = [&] {
+            const auto& screenshot = drawingEngine.getScreenshotRT();
+            uint64_t hash = 14695981039346656037ULL;
+            const auto screenshotStride = screenshot.width + screenshot.pitch;
+            for (int32_t y = 0; y < screenshot.height; ++y)
+            {
+                for (int32_t x = 0; x < screenshot.width; ++x)
+                {
+                    hash ^= screenshot.bits[static_cast<size_t>(y) * screenshotStride + x];
+                    hash *= 1099511628211ULL;
+                }
+            }
+            return hash;
+        };
+        const auto frameHash = hashFrame();
+        Gfx::invalidateScreen();
+        drawingEngine.render();
+        const auto fullRenderHash = hashFrame();
+        tweener.restore();
+        if (frameHash != fullRenderHash)
+        {
+            Logging::error("Incremental render hash 0x{:016X} differs from full render hash 0x{:016X}", frameHash, fullRenderHash);
+            return false;
+        }
+
+        Logging::info("--------------------------------");
+        Logging::info("- Render benchmark");
+        Logging::info("--------------------------------");
+        Logging::info("  path:               {}", savePath.u8string());
+        Logging::info("  framebuffer:        {}x{} at {:.2f}x", width, height, scaleFactor);
+        Logging::info("  presentation:       {}x{}", presentationSize.width, presentationSize.height);
+        Logging::info("  warmup / measured:  {} / {} frames", warmupFrames, frames);
+        Logging::info("  scenario ticks:     {}", getGameState().scenarioTicks);
+        Logging::info("  framebuffer hash:   0x{:016X}", frameHash);
+        logMetric("frame total", std::move(frameTotals));
+        logMetric("render total", std::move(renderTotals));
+        logMetric("present total", std::move(presentTotals));
+        return true;
     }
 
 }

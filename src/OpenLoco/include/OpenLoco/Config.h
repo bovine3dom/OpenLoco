@@ -222,4 +222,5 @@ namespace OpenLoco::Config
 
     Config& read();
     void write();
+    bool setWriteEnabled(bool enabled);
 }

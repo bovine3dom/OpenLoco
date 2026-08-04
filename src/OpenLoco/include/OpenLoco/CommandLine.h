@@ -14,6 +14,7 @@ namespace OpenLoco
         join,
         uncompress,
         simulate,
+        renderBenchmark,
         signalFuzz,
         signalReplay,
         compare,
@@ -29,6 +30,11 @@ namespace OpenLoco
         std::string path;
         std::string path2;
         std::optional<int32_t> ticks;
+        std::optional<int32_t> frames;
+        std::optional<int32_t> warmupFrames;
+        std::optional<int32_t> width;
+        std::optional<int32_t> height;
+        std::optional<float> scaleFactor;
         std::optional<int32_t> cases;
         std::optional<int32_t> seed;
         std::string focusTown;

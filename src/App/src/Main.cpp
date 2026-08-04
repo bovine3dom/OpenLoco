@@ -18,6 +18,7 @@
 #include <OpenLoco/Version.hpp>
 #include <SDL3/SDL_main.h>
 #include <fmt/chrono.h>
+#include <cmath>
 #include <iostream>
 
 using namespace OpenLoco::Diagnostics;
@@ -38,6 +39,7 @@ namespace OpenLoco
         std::cout << "                join [options] <address>" << std::endl;
         std::cout << "                uncompress [options] <path>" << std::endl;
         std::cout << "                simulate [options] <path> <ticks> [path]" << std::endl;
+        std::cout << "                render-benchmark [options] <path>" << std::endl;
         std::cout << "                signal-fuzz [options] <path>" << std::endl;
         std::cout << "                signal-replay [options] <case.yml>" << std::endl;
         std::cout << "                compare [options] <path1> <path2>" << std::endl;
@@ -51,6 +53,11 @@ namespace OpenLoco
         std::cout << "--intro                     Run the game intro" << std::endl;
         std::cout << "--cases                     Signal fuzz cases (default: 100)" << std::endl;
         std::cout << "--ticks                     Signal fuzz ticks per case (default: 20000)" << std::endl;
+        std::cout << "--frames                    Render benchmark measured frames (default: 300)" << std::endl;
+        std::cout << "--warmup-frames             Render benchmark warmup frames (default: 30)" << std::endl;
+        std::cout << "--width                     Render benchmark framebuffer width (default: 1920)" << std::endl;
+        std::cout << "--height                    Render benchmark framebuffer height (default: 1080)" << std::endl;
+        std::cout << "--scale-factor              Render benchmark UI scale (default: 2)" << std::endl;
         std::cout << "--seed                      Signal fuzz seed (default: 1)" << std::endl;
         std::cout << "--focus-town                Signal fuzz focus town (default: Beachtown)" << std::endl;
         std::cout << "--layout                    Signal fuzz layout: fixture, flat-merge, flat-fan," << std::endl;
@@ -211,6 +218,38 @@ namespace OpenLoco
         return EXIT_SUCCESS;
     }
 
+    static int renderBenchmark(const CommandLineOptions& options)
+    {
+        if (options.path.empty())
+        {
+            Logging::error("No save specified for render benchmark");
+            return EXIT_FAILURE;
+        }
+
+        const auto frames = options.frames.value_or(300);
+        const auto warmupFrames = options.warmupFrames.value_or(30);
+        const auto width = options.width.value_or(1920);
+        const auto height = options.height.value_or(1080);
+        const auto scaleFactor = options.scaleFactor.value_or(2.0F);
+        if (frames <= 0 || warmupFrames < 0 || width <= 0 || height <= 0 || !std::isfinite(scaleFactor) || scaleFactor <= 1.0F || scaleFactor > 4.0F)
+        {
+            Logging::error("Render benchmark requires positive dimensions and frames, non-negative warmup frames, and a scale factor in (1, 4]");
+            return EXIT_FAILURE;
+        }
+
+        try
+        {
+            return runRenderBenchmark(fs::u8path(options.path), warmupFrames, frames, width, height, scaleFactor)
+                ? EXIT_SUCCESS
+                : EXIT_FAILURE;
+        }
+        catch (const std::exception& e)
+        {
+            Logging::error("Unable to run render benchmark: {}", e.what());
+            return EXIT_FAILURE;
+        }
+    }
+
     static int signalFuzz(const CommandLineOptions& options)
     {
         const auto cases = options.cases.value_or(100);
@@ -317,6 +356,8 @@ namespace OpenLoco
                 return uncompressFile(options);
             case CommandLineAction::simulate:
                 return simulate(options);
+            case CommandLineAction::renderBenchmark:
+                return renderBenchmark(options);
             case CommandLineAction::signalFuzz:
                 return signalFuzz(options);
             case CommandLineAction::signalReplay:
@@ -391,7 +432,17 @@ int main(int argc, const char** argv)
 {
     OpenLoco::Platform::initialise();
 
-    auto options = OpenLoco::parseCommandLine(OpenLoco::Platform::getCmdLineVector(argc, argv));
+    std::optional<OpenLoco::CommandLineOptions> options;
+    try
+    {
+        options = OpenLoco::parseCommandLine(OpenLoco::Platform::getCmdLineVector(argc, argv));
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "Invalid command line: " << e.what() << std::endl;
+        OpenLoco::printHelp();
+        return EXIT_FAILURE;
+    }
     if (!options)
     {
         OpenLoco::printHelp();

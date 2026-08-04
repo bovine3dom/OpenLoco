@@ -13,12 +13,20 @@ namespace OpenLoco::Config
 {
     static Config _config;
     static YAML::Node _configYaml;
+    static bool _writeEnabled = true;
 
     constexpr ObjectHeader kDefaultPreferredCurrency = { 0x00000082u, { 'C', 'U', 'R', 'R', 'D', 'O', 'L', 'L' }, 0u };
 
     Config& get()
     {
         return _config;
+    }
+
+    bool setWriteEnabled(bool enabled)
+    {
+        const auto previous = _writeEnabled;
+        _writeEnabled = enabled;
+        return previous;
     }
 
     static void readShortcutConfig(const YAML::Node& scNode)
@@ -209,6 +217,11 @@ namespace OpenLoco::Config
 
     void write()
     {
+        if (!_writeEnabled)
+        {
+            return;
+        }
+
         auto configPath = Environment::getPathNoWarning(Environment::PathId::openlocoYML);
         auto dir = configPath.parent_path();
         Environment::autoCreateDirectory(dir);

@@ -277,13 +277,20 @@ namespace OpenLoco
             return getArg("", index);
         }
 
-        template<typename int32_t>
-        std::optional<int32_t> getArg(std::string_view name, size_t index = 0)
+        template<typename T>
+        std::optional<T> getArg(std::string_view name, size_t index = 0)
         {
             auto arg = getArg(name, index);
             if (arg.size() != 0)
             {
-                return std::stoi(std::string(arg));
+                const auto valueString = std::string(arg);
+                size_t parsedLength{};
+                const auto value = std::stoi(valueString, &parsedLength);
+                if (parsedLength != valueString.size())
+                {
+                    throw std::invalid_argument("Invalid integer argument: " + valueString);
+                }
+                return static_cast<T>(value);
             }
             return {};
         }
@@ -306,6 +313,11 @@ namespace OpenLoco
                           .registerOption("--intro")
                           .registerOption("--cases", 1)
                           .registerOption("--ticks", 1)
+                          .registerOption("--frames", 1)
+                          .registerOption("--warmup-frames", 1)
+                          .registerOption("--width", 1)
+                          .registerOption("--height", 1)
+                          .registerOption("--scale-factor", 1)
                           .registerOption("--seed", 1)
                           .registerOption("--focus-town", 1)
                           .registerOption("--layout", 1)
@@ -356,6 +368,26 @@ namespace OpenLoco
                 options.path = parser.getArg(1);
                 options.ticks = parser.getArg<int32_t>(2);
                 options.path2 = parser.getArg(3);
+            }
+            else if (firstArg == "render-benchmark")
+            {
+                options.action = CommandLineAction::renderBenchmark;
+                options.path = parser.getArg(1);
+                options.frames = parser.getArg<int32_t>("--frames");
+                options.warmupFrames = parser.getArg<int32_t>("--warmup-frames");
+                options.width = parser.getArg<int32_t>("--width");
+                options.height = parser.getArg<int32_t>("--height");
+                const auto scaleFactor = parser.getArg("--scale-factor");
+                if (!scaleFactor.empty())
+                {
+                    const auto valueString = std::string(scaleFactor);
+                    size_t parsedLength{};
+                    options.scaleFactor = std::stof(valueString, &parsedLength);
+                    if (parsedLength != valueString.size())
+                    {
+                        throw std::invalid_argument("Invalid scale factor: " + valueString);
+                    }
+                }
             }
             else if (firstArg == "signal-fuzz")
             {

@@ -42,7 +42,7 @@ namespace OpenLoco::Gfx
         void render(const Ui::Rect& rect);
 
         // Presents the final image to the screen.
-        void present();
+        bool present();
 
         // Invalidates a region, this forces it to be rendered next frame.
         void invalidateRegion(int32_t left, int32_t top, int32_t right, int32_t bottom);
@@ -68,6 +68,7 @@ namespace OpenLoco::Gfx
 
         const Ui::ScreenInfo& getScreenInfo() const;
         Ui::Size getOutputSize() const;
+        Ui::Size getPresentationSize() const;
         bool hasSeparateWorldResources() const;
         bool shouldUseSeparateWorld() const;
 
@@ -77,9 +78,10 @@ namespace OpenLoco::Gfx
         void destroyScaledScreenResources();
         void destroySeparateWorldResources();
         void destroyScreenResources();
-        void renderSeparateWorld();
+        void renderSeparateWorld(const Ui::Rect& rect);
+        void renderDirtyWorldRegions();
         void renderSeparateUi();
-        void presentSeparate();
+        bool presentSeparate();
         void renderDirtyRegions();
 
         SDL_Renderer* _renderer{};
@@ -98,6 +100,8 @@ namespace OpenLoco::Gfx
 
         std::vector<PaletteIndex_t> _uiBase;
         std::vector<uint8_t> _uiCoverage;
+        std::vector<int32_t> _uiToWorldX;
+        std::vector<int32_t> _uiToWorldY;
 
         uint8_t _pixelScaleFactor = 1;
 
@@ -105,6 +109,7 @@ namespace OpenLoco::Gfx
         InvalidationGrid _invalidationGrid;
 
         bool _vsync = false;
+        bool _worldTextureDirty = true;
         int32_t _outputWidth{};
         int32_t _outputHeight{};
     };
