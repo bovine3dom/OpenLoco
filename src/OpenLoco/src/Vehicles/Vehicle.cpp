@@ -5,6 +5,7 @@
 #include "Entities/EntityManager.h"
 #include "GameState.h"
 #include "Map/RoadElement.h"
+#include "Map/StationElement.h"
 #include "Map/TileManager.h"
 #include "Map/Track/SubpositionData.h"
 #include "Map/Track/Track.h"
@@ -14,8 +15,10 @@
 #include "Objects/ObjectManager.h"
 #include "Objects/RoadObject.h"
 #include "Ui/WindowManager.h"
-#include "Vehicles/RoutingManager.h"
+#include "Vehicles/OrderManager.h"
+#include "Vehicles/Orders.h"
 #include "Vehicles/RailTraffic.h"
+#include "Vehicles/RoutingManager.h"
 #include "Vehicles/Vehicle1.h"
 #include "Vehicles/Vehicle2.h"
 #include "Vehicles/VehicleBody.h"
@@ -329,6 +332,23 @@ namespace OpenLoco::Vehicles
             if (tc.hasLevelCrossing)
             {
                 flags |= UpdateVar1136114Flags::approachingGradeCrossing;
+            }
+            // Let the head process its stop order before a reserved route carries it beyond the platform.
+            if (component.isVehicleHead())
+            {
+                auto* head = component.asVehicleHead();
+                const auto* station = World::TileManager::get(pos).trainStation(
+                    component.trackAndDirection.track.id(), component.trackAndDirection.track.cardinalDirection(), component.tileBaseZ);
+                const auto stationId = station != nullptr && !station->isGhost() && !station->isAiAllocated()
+                    ? station->stationId()
+                    : StationId::null;
+                const auto currentOrder = head->getCurrentOrders().begin();
+                const auto* stopOrder = currentOrder->as<OrderStopAt>();
+                if (stopOrder != nullptr && stopOrder->getStation() == stationId
+                    && head->stationId != stationId && tc.stationId != stationId)
+                {
+                    return false;
+                }
             }
             bool routingFound = false;
             for (auto& connection : tc.connections)
