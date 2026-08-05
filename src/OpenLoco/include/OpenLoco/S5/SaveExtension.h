@@ -13,7 +13,7 @@
 
 namespace OpenLoco::S5::SaveExtension
 {
-    constexpr size_t kMaxDataSize = CargoDist::kMaxSaveDataSize + Vehicles::RailTraffic::kMaxSaveDataSize + 64 * 1024;
+    constexpr size_t kMaxDataSize = CargoDist::kMaxSaveDataSize + Vehicles::RailTraffic::kMaxSaveDataSize + Vehicles::RoutingManager::kMaxSaveDataSize + 64 * 1024;
 
     struct State
     {

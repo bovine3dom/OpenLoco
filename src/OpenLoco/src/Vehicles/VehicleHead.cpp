@@ -4445,6 +4445,7 @@ namespace OpenLoco::Vehicles
     static Sub4ACEE7Result sub_4ACEF1(VehicleHead& head, uint32_t unk1, uint32_t var_113612C, bool isPlaceDown)
     {
         // TRACK only
+        RoutingManager::materializeReservedContinuation(head);
 
         {
             auto iter = RoutingManager::RingView(head.routingHandle).begin();
@@ -4573,6 +4574,11 @@ namespace OpenLoco::Vehicles
         auto routings = RoutingManager::RingView(head.routingHandle);
         uint16_t connection = tc.connections[0];
         const auto reservedRouting = RoutingManager::getRouting(*++routings.begin());
+        if (reservedRouting == RoutingManager::kAllocatedButFreeRouting
+            && !RoutingManager::getReservedContinuation(head.routingHandle).empty())
+        {
+            return Sub4ACEE7Result{ 1, 0, StationId::null };
+        }
         std::optional<TrackAndDirection::_TrackAndDirection> deferredCurrentPathSignal;
         if (reservedRouting != RoutingManager::kAllocatedButFreeRouting)
         {
@@ -6022,6 +6028,7 @@ namespace OpenLoco::Vehicles
     // 0x004AD93A
     void VehicleHead::sub_4AD93A()
     {
+        RoutingManager::clearPathReservations(routingHandle);
         if (mode == TransportMode::road)
         {
             roadResetHead(*this);
@@ -6924,6 +6931,7 @@ namespace OpenLoco::Vehicles
     // 0x004B08DD
     void VehicleHead::liftUpVehicle()
     {
+        RoutingManager::clearPathReservations(routingHandle);
         if (tileX == -1)
         {
             return;

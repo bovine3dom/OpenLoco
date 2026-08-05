@@ -104,7 +104,7 @@ namespace OpenLoco::Vehicles::SignalFuzzer
             std::array<uint16_t, 5> routings;
             uint8_t status;
             uint8_t breakdownFlags;
-            uint8_t reservedPieces;
+            uint16_t reservedPieces;
         };
 
         struct TraceFrame
@@ -253,14 +253,14 @@ namespace OpenLoco::Vehicles::SignalFuzzer
             return enumValue(flags);
         }
 
-        static uint8_t getReservedPieces(const VehicleHead& head)
+        static uint16_t getReservedPieces(const VehicleHead& head)
         {
-            uint8_t count = 0;
+            uint16_t count = 0;
             for ([[maybe_unused]] const auto handle : RoutingManager::RingView(head.routingHandle))
             {
                 count++;
             }
-            return count == 0 ? 0 : count - 1;
+            return (count == 0 ? 0 : count - 1) + static_cast<uint16_t>(RoutingManager::getReservedContinuation(head.routingHandle).size());
         }
 
         static std::array<uint16_t, 5> getRoutings(const VehicleHead& head)
@@ -289,7 +289,6 @@ namespace OpenLoco::Vehicles::SignalFuzzer
             std::map<std::tuple<coord_t, coord_t, coord_t>, std::map<EntityId, Claim>> claims;
             for (const auto& resource : PathSignals::getClaimedResources())
             {
-                const auto pathReserved = RoutingManager::isPathReserved(resource.handle);
                 if (std::abs(static_cast<int32_t>(resource.pos.x) - focus.centre.x) + std::abs(static_cast<int32_t>(resource.pos.y) - focus.centre.y) > focus.radius)
                 {
                     continue;
@@ -297,7 +296,7 @@ namespace OpenLoco::Vehicles::SignalFuzzer
                 auto& claim = claims[{ resource.pos.x, resource.pos.y, resource.pos.z }][resource.vehicle];
                 claim.mask |= resource.conflictMask;
                 claim.occupiedMask |= resource.occupied ? resource.conflictMask : 0;
-                claim.pathReservedMask |= pathReserved ? resource.conflictMask : 0;
+                claim.pathReservedMask |= resource.pathReserved ? resource.conflictMask : 0;
             }
 
             std::optional<RouteConflict> unprotectedConflict;

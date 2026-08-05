@@ -1,16 +1,108 @@
 #include "Vehicles/RoutingManager.h"
 #include "GameState.h"
+#include "Map/Track/Track.h"
+#include "Map/Track/TrackData.h"
+#include "Vehicles/Vehicle.h"
+#include "Vehicles/VehicleHead.h"
 #include <algorithm>
 #include <bit>
+#include <deque>
 
 namespace OpenLoco::Vehicles::RoutingManager
 {
     static auto& routings() { return getGameState().routings; }
     static auto& pathReservedRoutings() { return getGameState().pathReservedRoutings; }
+    static std::array<std::deque<uint16_t>, Limits::kMaxVehicles> _continuations;
 
     static uint64_t getRoutingMask(const RoutingHandle handle)
     {
         return uint64_t{ 1 } << handle.getIndex();
+    }
+
+    static bool isValidTrackRouting(const uint16_t routing)
+    {
+        if (routing == kAllocatedButFreeRouting || routing == kRoutingNull)
+        {
+            return false;
+        }
+        TrackAndDirection::_TrackAndDirection tad{ 0, 0 };
+        tad._data = routing & World::Track::AdditionalTaDFlags::basicTaDMask;
+        return tad.id() < World::TrackData::kTrackPieceCount;
+    }
+
+    static const VehicleHead* findVehicleHead(const GameState& gameState, const uint16_t vehicleRef)
+    {
+        for (const auto& entity : gameState.entities)
+        {
+            const auto* vehicle = entity.asBase<VehicleBase>();
+            if (vehicle != nullptr && vehicle->isVehicleHead())
+            {
+                const auto* head = vehicle->asVehicleHead();
+                if (head->routingHandle.getVehicleRef() == vehicleRef)
+                {
+                    return head;
+                }
+            }
+        }
+        return nullptr;
+    }
+
+    static bool validateContinuation(const State& state, const GameState& gameState, const uint16_t vehicleRef)
+    {
+        const auto& continuation = state.continuations[vehicleRef];
+        if (continuation.empty())
+        {
+            return true;
+        }
+        const auto* head = findVehicleHead(gameState, vehicleRef);
+        if (head == nullptr || head->mode != TransportMode::rail || !head->isPlaced()
+            || head->status == Status::crashed || head->status == Status::stuck)
+        {
+            return false;
+        }
+
+        const auto& vehicleRoutings = gameState.routings[vehicleRef];
+        if (!isValidTrackRouting(vehicleRoutings[head->routingHandle.getIndex()]))
+        {
+            return false;
+        }
+        auto index = head->routingHandle.getIndex();
+        uint64_t futureMask = 0;
+        bool foundFreeSlot = false;
+        for (size_t i = 1; i < Limits::kMaxRoutingsPerVehicle; ++i)
+        {
+            index = (index + 1) & (Limits::kMaxRoutingsPerVehicle - 1);
+            const auto routing = vehicleRoutings[index];
+            if (routing == kAllocatedButFreeRouting)
+            {
+                foundFreeSlot = true;
+                break;
+            }
+            if (!isValidTrackRouting(routing))
+            {
+                return false;
+            }
+            futureMask |= uint64_t{ 1 } << index;
+        }
+        if (!foundFreeSlot)
+        {
+            return false;
+        }
+        const auto reservationMask = state.pathReservedRoutings[vehicleRef];
+        const auto requiredMask = futureMask != 0 ? futureMask : uint64_t{ 1 } << head->routingHandle.getIndex();
+        if ((reservationMask & requiredMask) != requiredMask)
+        {
+            return false;
+        }
+
+        for (const auto routing : continuation)
+        {
+            if (!isValidTrackRouting(routing))
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     static std::optional<uint16_t> findFreeRoutingVehicleRef()
@@ -45,6 +137,7 @@ namespace OpenLoco::Vehicles::RoutingManager
             auto& vehRoutingArr = routings()[*vehicleRef];
             std::fill(std::begin(vehRoutingArr), std::end(vehRoutingArr), kAllocatedButFreeRouting);
             pathReservedRoutings()[*vehicleRef] = 0;
+            _continuations[*vehicleRef].clear();
             return { RoutingHandle(*vehicleRef, 0) };
         }
         return std::nullopt;
@@ -69,6 +162,75 @@ namespace OpenLoco::Vehicles::RoutingManager
         setRouting(handle, kAllocatedButFreeRouting);
     }
 
+    bool materializeReservedContinuation(const VehicleHead& head)
+    {
+        const auto headHandle = head.routingHandle;
+        auto& continuation = _continuations[headHandle.getVehicleRef()];
+        if (continuation.empty())
+        {
+            return true;
+        }
+        if (head.mode != TransportMode::rail || !head.isPlaced()
+            || head.status == Status::crashed || head.status == Status::stuck)
+        {
+            return false;
+        }
+
+        if (!isValidTrackRouting(getRouting(headHandle)))
+        {
+            return false;
+        }
+        auto handle = headHandle;
+        for (size_t i = 1; i < Limits::kMaxRoutingsPerVehicle; ++i)
+        {
+            handle.setIndex((handle.getIndex() + 1) & (Limits::kMaxRoutingsPerVehicle - 1));
+            const auto routing = getRouting(handle);
+            if (routing == kAllocatedButFreeRouting)
+            {
+                break;
+            }
+            if (!isValidTrackRouting(routing))
+            {
+                return false;
+            }
+        }
+
+        size_t freeSlots = 0;
+        auto freeHandle = handle;
+        for (size_t i = 0; i < Limits::kMaxRoutingsPerVehicle; ++i)
+        {
+            if (getRouting(handle) != kAllocatedButFreeRouting)
+            {
+                break;
+            }
+            ++freeSlots;
+            handle.setIndex((handle.getIndex() + 1) & (Limits::kMaxRoutingsPerVehicle - 1));
+        }
+
+        const auto numToMaterialize = std::min(freeSlots > kRequiredFreeRoutingSlots ? freeSlots - kRequiredFreeRoutingSlots : 0, continuation.size());
+        for (size_t i = 0; i < numToMaterialize; ++i)
+        {
+            if (!isValidTrackRouting(continuation[i]))
+            {
+                return false;
+            }
+        }
+        for (size_t i = 0; i < numToMaterialize; ++i)
+        {
+            setRouting(freeHandle, continuation.front());
+            markPathReserved(freeHandle);
+            continuation.pop_front();
+            freeHandle.setIndex((freeHandle.getIndex() + 1) & (Limits::kMaxRoutingsPerVehicle - 1));
+        }
+        return true;
+    }
+
+    void freeTailRoutingAndRefill(const RoutingHandle oldTailHandle, const VehicleHead& head)
+    {
+        freeRouting(oldTailHandle);
+        materializeReservedContinuation(head);
+    }
+
     void markPathReserved(const RoutingHandle handle)
     {
         pathReservedRoutings()[handle.getVehicleRef()] |= getRoutingMask(handle);
@@ -81,17 +243,41 @@ namespace OpenLoco::Vehicles::RoutingManager
 
     bool hasPathReservations()
     {
-        return std::ranges::any_of(pathReservedRoutings(), [](const auto mask) { return mask != 0; });
+        return std::ranges::any_of(pathReservedRoutings(), [](const auto mask) { return mask != 0; })
+            || std::ranges::any_of(_continuations, [](const auto& continuation) { return !continuation.empty(); });
     }
 
     bool hasPathReservations(const RoutingHandle handle)
     {
-        return pathReservedRoutings()[handle.getVehicleRef()] != 0;
+        return pathReservedRoutings()[handle.getVehicleRef()] != 0 || !_continuations[handle.getVehicleRef()].empty();
+    }
+
+    bool hasPathReservations(const State& state)
+    {
+        return std::ranges::any_of(state.pathReservedRoutings, [](const auto mask) { return mask != 0; })
+            || std::ranges::any_of(state.continuations, [](const auto& continuation) { return !continuation.empty(); });
     }
 
     void clearPathReservations(const RoutingHandle handle)
     {
         pathReservedRoutings()[handle.getVehicleRef()] = 0;
+        clearReservedContinuation(handle);
+    }
+
+    const std::deque<uint16_t>& getReservedContinuation(const RoutingHandle handle)
+    {
+        return _continuations[handle.getVehicleRef()];
+    }
+
+    void setReservedContinuation(const RoutingHandle handle, std::vector<uint16_t> entries)
+    {
+        auto& continuation = _continuations[handle.getVehicleRef()];
+        continuation.assign(entries.begin(), entries.end());
+    }
+
+    void clearReservedContinuation(const RoutingHandle handle)
+    {
+        _continuations[handle.getVehicleRef()].clear();
     }
 
     // 0x004B1E77
@@ -106,13 +292,26 @@ namespace OpenLoco::Vehicles::RoutingManager
     void resetRoutingTable()
     {
         std::fill_n(&routings()[0][0], Limits::kMaxVehicles * Limits::kMaxRoutingsPerVehicle, kRoutingNull);
+        resetPathReservationState();
+    }
+
+    void resetPathReservationState()
+    {
         std::fill(std::begin(pathReservedRoutings()), std::end(pathReservedRoutings()), 0);
+        for (auto& continuation : _continuations)
+        {
+            continuation.clear();
+        }
     }
 
     State captureState()
     {
         State state;
         std::ranges::copy(pathReservedRoutings(), state.pathReservedRoutings.begin());
+        for (size_t vehicleRef = 0; vehicleRef < _continuations.size(); ++vehicleRef)
+        {
+            state.continuations[vehicleRef].assign(_continuations[vehicleRef].begin(), _continuations[vehicleRef].end());
+        }
         return state;
     }
 
@@ -129,11 +328,22 @@ namespace OpenLoco::Vehicles::RoutingManager
             while (reservationMask != 0)
             {
                 const auto routing = gameState.routings[vehicleRef][std::countr_zero(reservationMask)];
-                if (routing == kAllocatedButFreeRouting || routing == kRoutingNull)
+                if (!isValidTrackRouting(routing))
                 {
                     return false;
                 }
                 reservationMask &= reservationMask - 1;
+            }
+            const auto& continuation = state.continuations[vehicleRef];
+            if (continuation.size() > kMaxContinuationEntriesPerVehicle
+                || (!continuation.empty() && (state.pathReservedRoutings[vehicleRef] == 0 || gameState.routings[vehicleRef][0] == kRoutingNull))
+                || std::ranges::any_of(continuation, [](const auto routing) { return !isValidTrackRouting(routing); }))
+            {
+                return false;
+            }
+            if (!validateContinuation(state, gameState, static_cast<uint16_t>(vehicleRef)))
+            {
+                return false;
             }
         }
         return true;
@@ -145,7 +355,13 @@ namespace OpenLoco::Vehicles::RoutingManager
         {
             return false;
         }
+        decltype(_continuations) restoredContinuations;
+        for (size_t vehicleRef = 0; vehicleRef < state.continuations.size(); ++vehicleRef)
+        {
+            restoredContinuations[vehicleRef].assign(state.continuations[vehicleRef].begin(), state.continuations[vehicleRef].end());
+        }
         std::ranges::copy(state.pathReservedRoutings, std::begin(pathReservedRoutings()));
+        _continuations.swap(restoredContinuations);
         return true;
     }
 

@@ -3,6 +3,7 @@
 #include "Routing.h"
 
 #include <array>
+#include <deque>
 #include <iterator>
 #include <optional>
 #include <string>
@@ -14,14 +15,24 @@ namespace OpenLoco
     struct GameState;
 }
 
+namespace OpenLoco::Vehicles
+{
+    struct VehicleHead;
+}
+
 namespace OpenLoco::Vehicles::RoutingManager
 {
     constexpr uint16_t kAllocatedButFreeRouting = 0xFFFEU; // Indicates that this array entry is allocated to a vehicle but no routing has been set.
     constexpr uint16_t kRoutingNull = 0xFFFFU;             // Indicates that this array entry is unallocated to any vehicle.
+    constexpr size_t kRequiredFreeRoutingSlots = 3;
+    constexpr size_t kMaxContinuationEntriesPerVehicle = 4096;
+    constexpr size_t kMaxContinuationEntries = Limits::kMaxVehicles * kMaxContinuationEntriesPerVehicle;
+    constexpr size_t kMaxSaveDataSize = sizeof(uint64_t) * Limits::kMaxVehicles + sizeof(uint16_t) + sizeof(uint16_t) * 2 * Limits::kMaxVehicles + sizeof(uint16_t) * kMaxContinuationEntries;
 
     struct State
     {
         std::array<uint64_t, Limits::kMaxVehicles> pathReservedRoutings{};
+        std::array<std::vector<uint16_t>, Limits::kMaxVehicles> continuations{};
 
         bool operator==(const State&) const = default;
     };
@@ -33,15 +44,22 @@ namespace OpenLoco::Vehicles::RoutingManager
     uint16_t getRouting(const RoutingHandle handle);
     void setRouting(const RoutingHandle handle, uint16_t routing);
     void freeRouting(const RoutingHandle handle);
+    bool materializeReservedContinuation(const VehicleHead& head);
+    void freeTailRoutingAndRefill(RoutingHandle oldTailHandle, const VehicleHead& head);
     void markPathReserved(const RoutingHandle handle);
     bool isPathReserved(const RoutingHandle handle);
     bool hasPathReservations();
     bool hasPathReservations(const RoutingHandle handle);
+    bool hasPathReservations(const State& state);
     void clearPathReservations(const RoutingHandle handle);
+    const std::deque<uint16_t>& getReservedContinuation(RoutingHandle handle);
+    void setReservedContinuation(RoutingHandle handle, std::vector<uint16_t> entries);
+    void clearReservedContinuation(RoutingHandle handle);
     // Equivalent of calling freeRouting on all routings for a single vehicle
     void resetRoutings(const RoutingHandle handle);
     bool isEmptyRoutingSlotAvailable();
     void resetRoutingTable();
+    void resetPathReservationState();
     State captureState();
     bool validateState(const State& state);
     bool validateState(const State& state, const GameState& gameState);

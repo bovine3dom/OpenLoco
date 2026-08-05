@@ -7,6 +7,7 @@
 #include "Map/Track/TrackData.h"
 #include "Map/TrackElement.h"
 #include "Vehicles/RoutingManager.h"
+#include "Vehicles/VehicleHead.h"
 #include "ViewportManager.h"
 
 using namespace OpenLoco::Literals;
@@ -90,7 +91,8 @@ namespace OpenLoco::Vehicles
 
         const auto ref = RoutingManager::getRouting(_oldRoutingHandle);
         TrackAndDirection trackAndDir((ref & 0x1F8) >> 3, ref & 0x7);
-        RoutingManager::freeRouting(_oldRoutingHandle);
+        const auto* vehicleHead = EntityManager::get<VehicleHead>(head);
+        RoutingManager::freeTailRoutingAndRefill(_oldRoutingHandle, *vehicleHead);
 
         if (mode == TransportMode::road)
         {

@@ -71,6 +71,7 @@ namespace OpenLoco::S5::SaveExtension
         constexpr uint16_t kSectionVersion = 1;
         // Version 1 reservations may contain routes that bypass their active waypoint.
         constexpr uint16_t kPathReservationsSectionVersion = 2;
+        constexpr uint16_t kPathReservationContinuationsSectionVersion = 3;
         constexpr uint16_t kSectionRequired = 1U << 0;
         constexpr uint16_t kKnownSectionFlags = kSectionRequired;
         constexpr size_t kSectionHeaderSize = 12;
@@ -252,18 +253,69 @@ namespace OpenLoco::S5::SaveExtension
             {
                 payload.write(mask);
             }
+            const auto continuationCount = static_cast<uint16_t>(std::ranges::count_if(state.continuations, [](const auto& continuation) { return !continuation.empty(); }));
+            if (continuationCount != 0)
+            {
+                payload.write(continuationCount);
+                for (size_t vehicleRef = 0; vehicleRef < state.continuations.size(); ++vehicleRef)
+                {
+                    const auto& continuation = state.continuations[vehicleRef];
+                    if (continuation.empty())
+                    {
+                        continue;
+                    }
+                    require(state.pathReservedRoutings[vehicleRef] != 0, "Path continuation has no materialized reservation");
+                    require(continuation.size() <= Vehicles::RoutingManager::kMaxContinuationEntriesPerVehicle, "Too many path continuation entries");
+                    payload.write(static_cast<uint16_t>(vehicleRef));
+                    payload.write(static_cast<uint16_t>(continuation.size()));
+                    for (const auto routing : continuation)
+                    {
+                        require(routing != Vehicles::RoutingManager::kAllocatedButFreeRouting && routing != Vehicles::RoutingManager::kRoutingNull, "Invalid path continuation routing");
+                        payload.write(routing);
+                    }
+                }
+            }
             return payload.take();
         }
 
-        Vehicles::RoutingManager::State decodePathReservations(std::span<const std::byte> data)
+        Vehicles::RoutingManager::State decodePathReservations(std::span<const std::byte> data, const uint16_t version)
         {
-            require(data.size() == Limits::kMaxVehicles * sizeof(uint64_t), "Invalid path reservation data size");
+            constexpr auto kMaskDataSize = Limits::kMaxVehicles * sizeof(uint64_t);
+            require(data.size() >= kMaskDataSize, "Invalid path reservation data size");
             Reader input(data);
             Vehicles::RoutingManager::State state;
             for (auto& mask : state.pathReservedRoutings)
             {
                 mask = input.read<uint64_t>();
             }
+            if (version != kPathReservationContinuationsSectionVersion)
+            {
+                require(input.empty(), "Invalid path reservation data size");
+                return state;
+            }
+
+            const auto continuationCount = input.read<uint16_t>();
+            require(continuationCount != 0 && continuationCount <= Limits::kMaxVehicles, "Invalid path continuation count");
+            uint16_t previousVehicleRef = 0;
+            for (uint16_t i = 0; i < continuationCount; ++i)
+            {
+                const auto vehicleRef = input.read<uint16_t>();
+                const auto entryCount = input.read<uint16_t>();
+                require(vehicleRef < Limits::kMaxVehicles && (i == 0 || previousVehicleRef < vehicleRef), "Non-canonical path continuation order");
+                require(entryCount != 0 && entryCount <= Vehicles::RoutingManager::kMaxContinuationEntriesPerVehicle, "Invalid path continuation size");
+                require(entryCount <= input.remaining() / sizeof(uint16_t), "Truncated path continuation");
+                require(state.pathReservedRoutings[vehicleRef] != 0, "Path continuation has no materialized reservation");
+                auto& continuation = state.continuations[vehicleRef];
+                continuation.reserve(entryCount);
+                for (uint16_t j = 0; j < entryCount; ++j)
+                {
+                    const auto routing = input.read<uint16_t>();
+                    require(routing != Vehicles::RoutingManager::kAllocatedButFreeRouting && routing != Vehicles::RoutingManager::kRoutingNull, "Invalid path continuation routing");
+                    continuation.push_back(routing);
+                }
+                previousVehicleRef = vehicleRef;
+            }
+            require(input.empty(), "Trailing path reservation data");
             return state;
         }
 
@@ -422,8 +474,13 @@ namespace OpenLoco::S5::SaveExtension
         }
         if (state.pathReservationState != nullptr)
         {
+            const auto hasContinuations = std::ranges::any_of(state.pathReservationState->continuations, [](const auto& continuation) { return !continuation.empty(); });
+            require(!state.discardPathReservationsOnLoad || !hasContinuations, "Legacy path reservations cannot contain continuations");
             const auto pathReservations = encodePathReservations(*state.pathReservationState);
-            const auto version = state.discardPathReservationsOnLoad ? kSectionVersion : kPathReservationsSectionVersion;
+            const auto version = state.discardPathReservationsOnLoad
+                ? kSectionVersion
+                : hasContinuations ? kPathReservationContinuationsSectionVersion
+                                   : kPathReservationsSectionVersion;
             appendSection(payload, kPathReservationsTag, pathReservations, kSectionRequired, version);
         }
         if (state.vehicleAutoRenewalState != nullptr)
@@ -500,8 +557,8 @@ namespace OpenLoco::S5::SaveExtension
                 require((flags & ~kKnownSectionFlags) == 0, "Invalid path reservation section flags");
                 require(!hasPathReservations, "Duplicate path reservation save extension section");
                 hasPathReservations = true;
-                require(version == kSectionVersion || version == kPathReservationsSectionVersion, "Unsupported path reservation section version");
-                state.pathReservationState = decodePathReservations(sectionData);
+                require(version == kSectionVersion || version == kPathReservationsSectionVersion || version == kPathReservationContinuationsSectionVersion, "Unsupported path reservation section version");
+                state.pathReservationState = decodePathReservations(sectionData, version);
                 state.discardPathReservationsOnLoad = version == kSectionVersion;
             }
             else if (std::ranges::equal(tag, kVehicleAutoRenewalTag))

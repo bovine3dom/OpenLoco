@@ -587,7 +587,7 @@ namespace OpenLoco::S5
                 {
                     throw Exception::RuntimeError("Invalid path reservation state");
                 }
-                const auto hasPathReservations = std::ranges::any_of(pathReservationState.pathReservedRoutings, [](const auto mask) { return mask != 0; });
+                const auto hasPathReservations = Vehicles::RoutingManager::hasPathReservations(pathReservationState);
                 const auto vehicleAutoRenewalState = Vehicles::VehicleAutoRenewal::captureState();
                 if (!Vehicles::VehicleAutoRenewal::validateState(vehicleAutoRenewalState))
                 {
@@ -1030,6 +1030,7 @@ namespace OpenLoco::S5
             dst = std::move(*importedGameState);
             CargoDist::reset();
             Vehicles::SharedOrderManager::reset();
+            Vehicles::RoutingManager::resetPathReservationState();
             Vehicles::VehicleAutoRenewal::reset();
             Vehicles::RailTraffic::reset();
 

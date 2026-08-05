@@ -18,10 +18,10 @@ namespace OpenLoco::Vehicles::PathSignals
     struct ClaimedResource
     {
         EntityId vehicle;
-        RoutingHandle handle;
         World::Pos3 pos;
         uint32_t conflictMask; // Four occupied-quarter bits per track connection flag.
         bool occupied;
+        bool pathReserved;
     };
 
     bool tryReservePath(VehicleHead& head, const World::Pos3& firstPos, uint16_t firstRouting);

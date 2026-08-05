@@ -252,6 +252,7 @@ TEST(CargoDistSave, S5TailRoundTripsExtension)
     sharedOrders.groups = { { { entity(3), entity(8) } } };
     Vehicles::RoutingManager::State pathReservations;
     pathReservations.pathReservedRoutings[7] = uint64_t{ 1 } << 3;
+    pathReservations.continuations[7] = { 0 };
     Vehicles::VehicleAutoRenewal::State vehicleAutoRenewal;
     vehicleAutoRenewal.companies[3] = { true, 40 };
     Vehicles::RailTraffic::State railTraffic;

@@ -174,6 +174,7 @@ namespace OpenLoco::Vehicles
     void VehicleBase::destroyTrain()
     {
         Vehicle train(this->getHead());
+        RoutingManager::clearReservedContinuation(train.head->routingHandle);
 
         if (train.head->status != Status::crashed && train.head->status != Status::stuck)
         {
