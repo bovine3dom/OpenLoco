@@ -7,7 +7,7 @@ so far:
 - path signals (one-way: cannot pass behind, normal: may pass behind. double signal: basically never use this it is a trap and you will get deadlock)
 - rail pathfinding for path signals (nb: pretty buggy. trains take passengers on involuntary rail tours)
 - undo
-- water pathfinding
+- water pathfinding including diagonals
 - construction while paused
 - ~30x faster partial development (coding...) rebuilds
 - cargo visualisation

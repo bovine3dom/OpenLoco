@@ -13,10 +13,16 @@ using namespace OpenLoco::World;
 namespace
 {
     constexpr MicroZ kWaterLevel = 5;
+    constexpr uint32_t kCardinalStepCost = 1000;
+    constexpr uint32_t kDiagonalStepCost = 1414;
     constexpr uint8_t kWest = 0;
-    constexpr uint8_t kSouth = 1;
-    constexpr uint8_t kEast = 2;
-    constexpr uint8_t kNorth = 3;
+    constexpr uint8_t kSouthWest = 8;
+    constexpr uint8_t kSouth = 16;
+    constexpr uint8_t kSouthEast = 24;
+    constexpr uint8_t kEast = 32;
+    constexpr uint8_t kNorthEast = 40;
+    constexpr uint8_t kNorth = 48;
+    constexpr uint8_t kNorthWest = 56;
 
     class WaterPathfindingTest : public ::testing::Test
     {
@@ -54,6 +60,35 @@ namespace
             }
         }
 
+        static void setWaterRectangle(const TilePos2 topLeft, const TilePos2 bottomRight)
+        {
+            for (auto y = topLeft.y; y <= bottomRight.y; ++y)
+            {
+                setHorizontalWater(topLeft.x, bottomRight.x, y);
+            }
+        }
+
+        static uint8_t getStepYaw(const TilePos2 from, const TilePos2 to)
+        {
+            const auto delta = to - from;
+            if (delta.x < 0)
+            {
+                return delta.y < 0 ? kNorthWest : delta.y > 0 ? kSouthWest
+                                                              : kWest;
+            }
+            if (delta.x > 0)
+            {
+                return delta.y < 0 ? kNorthEast : delta.y > 0 ? kSouthEast
+                                                              : kEast;
+            }
+            return delta.y < 0 ? kNorth : kSouth;
+        }
+
+        static bool isAdjacent(const TilePos2 lhs, const TilePos2 rhs)
+        {
+            return Math::Vector::chebyshevDistance2D(lhs, rhs) == 1;
+        }
+
         static void expectPosition(const TilePos2 actual, const TilePos2 expected)
         {
             EXPECT_EQ(actual.x, expected.x);
@@ -87,12 +122,9 @@ TEST_F(WaterPathfindingTest, FindsRouteThatInitiallyMovesAwayFromTarget)
         if (steps == 0)
         {
             expectPosition(result.nextTile, { 19, 20 });
-            EXPECT_EQ(result.remainingDistance, 60U);
+            EXPECT_EQ(result.remainingDistance, 60U * kCardinalStepCost);
         }
-        direction = result.nextTile.x < current.x ? kWest
-            : result.nextTile.x > current.x       ? kEast
-            : result.nextTile.y < current.y       ? kNorth
-                                                  : kSouth;
+        direction = getStepYaw(current, result.nextTile);
         current = result.nextTile;
         ++steps;
     }
@@ -137,7 +169,7 @@ TEST_F(WaterPathfindingTest, SelectsNearestGoal)
 
     EXPECT_EQ(result.status, RouteStatus::found);
     EXPECT_EQ(result.goal, 1U);
-    EXPECT_EQ(result.remainingDistance, 5U);
+    EXPECT_EQ(result.remainingDistance, 5U * kCardinalStepCost);
     expectPosition(result.nextTile, { 11, 10 });
 }
 
@@ -154,16 +186,115 @@ TEST_F(WaterPathfindingTest, ReportsArrivalAtGoal)
     EXPECT_EQ(result.remainingDistance, 0U);
 }
 
+TEST_F(WaterPathfindingTest, UsesDiagonalRouteAcrossOpenWater)
+{
+    constexpr TilePos2 start{ 10, 10 };
+    constexpr TilePos2 goal{ 13, 13 };
+    setWaterRectangle(start, goal);
+
+    const std::array goals = { goal };
+    const auto result = findNextTile(start, kWaterLevel, goals, {}, kSouthEast);
+
+    EXPECT_EQ(result.status, RouteStatus::found);
+    EXPECT_EQ(result.remainingDistance, 3U * kDiagonalStepCost);
+    expectPosition(result.nextTile, { 11, 11 });
+}
+
+TEST_F(WaterPathfindingTest, SelectsGoalByGeometricRouteCost)
+{
+    constexpr TilePos2 start{ 10, 10 };
+    setWaterRectangle(start, { 16, 15 });
+
+    const std::array goals = { TilePos2{ 15, 15 }, TilePos2{ 16, 10 } };
+    const auto result = findNextTile(start, kWaterLevel, goals, {}, kEast);
+
+    EXPECT_EQ(result.status, RouteStatus::found);
+    EXPECT_EQ(result.goal, 1U);
+    EXPECT_EQ(result.remainingDistance, 6U * kCardinalStepCost);
+    expectPosition(result.nextTile, { 11, 10 });
+}
+
+TEST_F(WaterPathfindingTest, DoesNotConnectWaterAcrossDryCorner)
+{
+    constexpr TilePos2 start{ 10, 10 };
+    constexpr TilePos2 goal{ 11, 11 };
+    setWater(start);
+    setWater(goal);
+
+    const std::array goals = { goal };
+    const auto result = findNextTile(start, kWaterLevel, goals, {}, kSouthEast);
+
+    EXPECT_EQ(result.status, RouteStatus::unreachable);
+}
+
+TEST_F(WaterPathfindingTest, DoesNotCutPastDrySideTile)
+{
+    constexpr TilePos2 start{ 10, 10 };
+    constexpr TilePos2 goal{ 11, 11 };
+    setWater(start);
+    setWater({ 11, 10 });
+    setWater(goal);
+
+    const std::array goals = { goal };
+    const auto result = findNextTile(start, kWaterLevel, goals, {}, kSouthEast);
+
+    EXPECT_EQ(result.status, RouteStatus::found);
+    EXPECT_EQ(result.remainingDistance, 2U * kCardinalStepCost);
+    expectPosition(result.nextTile, { 11, 10 });
+}
+
+TEST_F(WaterPathfindingTest, SelectsFirstGoalWhenCostsAreEqual)
+{
+    constexpr TilePos2 start{ 11, 10 };
+    setHorizontalWater(10, 12, 10);
+
+    const std::array westFirst = { TilePos2{ 10, 10 }, TilePos2{ 12, 10 } };
+    const std::array eastFirst = { TilePos2{ 12, 10 }, TilePos2{ 10, 10 } };
+    const auto westResult = findNextTile(start, kWaterLevel, westFirst, {}, kEast);
+    const auto eastResult = findNextTile(start, kWaterLevel, eastFirst, {}, kWest);
+
+    EXPECT_EQ(westResult.goal, 0U);
+    expectPosition(westResult.nextTile, westFirst[0]);
+    EXPECT_EQ(eastResult.goal, 0U);
+    expectPosition(eastResult.nextTile, eastFirst[0]);
+}
+
+TEST_F(WaterPathfindingTest, CachedRouteExpandsAfterArrivalQuery)
+{
+    constexpr TilePos2 goal{ 10, 10 };
+    constexpr TilePos2 start{ 11, 10 };
+    setHorizontalWater(goal.x, start.x, goal.y);
+    const std::array goals = { goal };
+
+    EXPECT_EQ(findNextTile(goal, kWaterLevel, goals, {}, kWest).status, RouteStatus::arrived);
+    const auto result = findNextTile(start, kWaterLevel, goals, {}, kWest);
+
+    EXPECT_EQ(result.status, RouteStatus::found);
+    expectPosition(result.nextTile, goal);
+}
+
 TEST_F(WaterPathfindingTest, PrefersCurrentHeadingBetweenEqualRoutes)
 {
-    for (tile_coord_t y = 10; y <= 11; ++y)
+    constexpr TilePos2 start{ 10, 10 };
+    constexpr TilePos2 goal{ 12, 12 };
+    constexpr std::array waterTiles = {
+        start,
+        TilePos2{ 11, 10 },
+        TilePos2{ 12, 10 },
+        TilePos2{ 12, 11 },
+        goal,
+        TilePos2{ 10, 11 },
+        TilePos2{ 10, 12 },
+        TilePos2{ 11, 12 },
+    };
+    for (const auto tile : waterTiles)
     {
-        setHorizontalWater(10, 11, y);
+        setWater(tile);
     }
-    const std::array goals = { TilePos2{ 11, 11 } };
+    const std::array goals = { goal };
 
-    const auto eastResult = findNextTile({ 10, 10 }, kWaterLevel, goals, {}, kEast);
-    const auto southResult = findNextTile({ 10, 10 }, kWaterLevel, goals, {}, kSouth);
+    const auto eastResult = findNextTile(start, kWaterLevel, goals, {}, kEast);
+    const auto southResult = findNextTile(start, kWaterLevel, goals, {}, kSouth);
 
     expectPosition(eastResult.nextTile, { 11, 10 });
     expectPosition(southResult.nextTile, { 10, 11 });
@@ -200,7 +331,7 @@ TEST_F(WaterPathfindingTest, TakesLongerDetourAroundTemporaryBlockage)
     auto direction = kEast;
     for (auto step = 0; step < 10 && current != goals[0]; ++step)
     {
-        const auto isBlockerAdjacent = Math::Vector::manhattanDistance2D(current, blocked[0]) == 1;
+        const auto isBlockerAdjacent = isAdjacent(current, blocked[0]);
         const auto activeBlockers = isBlockerAdjacent ? std::span<const TilePos2>{ blocked } : std::span<const TilePos2>{};
         const auto result = findNextTile(current, kWaterLevel, goals, activeBlockers, direction);
         ASSERT_EQ(result.status, RouteStatus::found);
@@ -208,10 +339,7 @@ TEST_F(WaterPathfindingTest, TakesLongerDetourAroundTemporaryBlockage)
         {
             expectPosition(result.nextTile, { 10, 11 });
         }
-        direction = result.nextTile.x < current.x ? kWest
-            : result.nextTile.x > current.x       ? kEast
-            : result.nextTile.y < current.y       ? kNorth
-                                                  : kSouth;
+        direction = getStepYaw(current, result.nextTile);
         current = result.nextTile;
     }
     expectPosition(current, goals[0]);
@@ -280,6 +408,27 @@ TEST_F(WaterPathfindingTest, RevalidatesRouteAfterAiElementBecomesReal)
     EXPECT_EQ(findNextTile(start, kWaterLevel, goals, {}, kEast).status, RouteStatus::unreachable);
 }
 
+TEST_F(WaterPathfindingTest, RevalidatesDiagonalAfterSideElementBecomesReal)
+{
+    constexpr TilePos2 start{ 10, 10 };
+    constexpr TilePos2 side{ 11, 10 };
+    constexpr TilePos2 goal{ 11, 11 };
+    setWaterRectangle(start, goal);
+
+    auto* obstacle = TileManager::insertElement<TrackElement>(toWorldSpace(side), kWaterLevel * kMicroToSmallZStep, 0xF);
+    ASSERT_NE(obstacle, nullptr);
+    obstacle->setAiAllocated(true);
+
+    const std::array goals = { goal };
+    expectPosition(findNextTile(start, kWaterLevel, goals, {}, kSouthEast).nextTile, goal);
+
+    obstacle->setAiAllocated(false);
+    const auto result = findNextTile(start, kWaterLevel, goals, {}, kSouthEast);
+    EXPECT_EQ(result.status, RouteStatus::found);
+    EXPECT_EQ(result.remainingDistance, 2U * kCardinalStepCost);
+    expectPosition(result.nextTile, { 10, 11 });
+}
+
 TEST_F(WaterPathfindingTest, RevalidatesBlockedDetourAfterAiElementBecomesReal)
 {
     constexpr TilePos2 start{ 10, 10 };
@@ -301,15 +450,12 @@ TEST_F(WaterPathfindingTest, RevalidatesBlockedDetourAfterAiElementBecomesReal)
     auto direction = kSouth;
     for (auto step = 0; step < 20 && current != goals[0]; ++step)
     {
-        const auto isBlockerAdjacent = Math::Vector::manhattanDistance2D(current, blocked[0]) == 1;
+        const auto isBlockerAdjacent = isAdjacent(current, blocked[0]);
         const auto activeBlockers = isBlockerAdjacent ? std::span<const TilePos2>{ blocked } : std::span<const TilePos2>{};
         const auto result = findNextTile(current, kWaterLevel, goals, activeBlockers, direction);
         ASSERT_EQ(result.status, RouteStatus::found);
         EXPECT_NE(result.nextTile, TilePos2(11, 11));
-        direction = result.nextTile.x < current.x ? kWest
-            : result.nextTile.x > current.x       ? kEast
-            : result.nextTile.y < current.y       ? kNorth
-                                                  : kSouth;
+        direction = getStepYaw(current, result.nextTile);
         current = result.nextTile;
     }
     expectPosition(current, goals[0]);
@@ -318,13 +464,13 @@ TEST_F(WaterPathfindingTest, RevalidatesBlockedDetourAfterAiElementBecomesReal)
 TEST_F(WaterPathfindingTest, HandlesMapEdge)
 {
     constexpr TilePos2 start{ 0, 0 };
-    constexpr TilePos2 goal{ 0, 1 };
-    setWater(start);
-    setWater(goal);
+    constexpr TilePos2 goal{ 1, 1 };
+    setWaterRectangle(start, goal);
 
     const std::array goals = { goal };
-    const auto result = findNextTile(start, kWaterLevel, goals, {}, kSouth);
+    const auto result = findNextTile(start, kWaterLevel, goals, {}, kSouthEast);
 
     EXPECT_EQ(result.status, RouteStatus::found);
+    EXPECT_EQ(result.remainingDistance, kDiagonalStepCost);
     expectPosition(result.nextTile, goal);
 }

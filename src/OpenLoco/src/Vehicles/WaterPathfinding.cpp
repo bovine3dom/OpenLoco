@@ -16,10 +16,12 @@
 #include "World/StationManager.h"
 #include <algorithm>
 #include <array>
-#include <deque>
+#include <functional>
 #include <iterator>
 #include <limits>
 #include <optional>
+#include <queue>
+#include <tuple>
 #include <vector>
 
 using namespace OpenLoco::World;
@@ -29,6 +31,20 @@ namespace OpenLoco::Vehicles::WaterPathfinding
     static constexpr uint32_t kUnreachable = std::numeric_limits<uint32_t>::max();
     static constexpr uint16_t kNoGoal = std::numeric_limits<uint16_t>::max();
     static constexpr size_t kMaxCachedRoutes = 8;
+    static constexpr uint32_t kCardinalStepCost = 1000;
+    static constexpr uint32_t kDiagonalStepCost = 1414;
+
+    // Ordered to match sprite yaw, starting at west and rotating towards south.
+    static constexpr std::array<TilePos2, 8> kDirectionOffsets = {
+        TilePos2{ -1, 0 },
+        TilePos2{ -1, 1 },
+        TilePos2{ 0, 1 },
+        TilePos2{ 1, 1 },
+        TilePos2{ 1, 0 },
+        TilePos2{ 1, -1 },
+        TilePos2{ 0, -1 },
+        TilePos2{ -1, -1 },
+    };
 
     static constexpr size_t getTileIndex(const TilePos2 pos)
     {
@@ -77,17 +93,65 @@ namespace OpenLoco::Vehicles::WaterPathfinding
         return std::ranges::find(blockedTiles, tilePos) != blockedTiles.end();
     }
 
-    static constexpr std::array<uint8_t, 4> getDirectionOrder(const uint8_t currentDirection)
+    static constexpr bool isDiagonal(const uint8_t direction)
     {
+        return (direction & 1) != 0;
+    }
+
+    static constexpr uint32_t getStepCost(const uint8_t direction)
+    {
+        return isDiagonal(direction) ? kDiagonalStepCost : kCardinalStepCost;
+    }
+
+    static bool isNavigableTransition(const TilePos2 start, const uint8_t direction, const MicroZ waterLevel)
+    {
+        const auto offset = kDirectionOffsets[direction];
+        if (!isNavigable(start + offset, waterLevel))
+        {
+            return false;
+        }
+        if (!isDiagonal(direction))
+        {
+            return true;
+        }
+        return isNavigable(start + TilePos2{ offset.x, 0 }, waterLevel)
+            && isNavigable(start + TilePos2{ 0, offset.y }, waterLevel);
+    }
+
+    static bool isBlockedTransition(const TilePos2 start, const uint8_t direction, std::span<const TilePos2> blockedTiles)
+    {
+        const auto offset = kDirectionOffsets[direction];
+        if (isBlocked(start + offset, blockedTiles))
+        {
+            return true;
+        }
+        if (!isDiagonal(direction))
+        {
+            return false;
+        }
+        return isBlocked(start + TilePos2{ offset.x, 0 }, blockedTiles)
+            || isBlocked(start + TilePos2{ 0, offset.y }, blockedTiles);
+    }
+
+    static constexpr std::array<uint8_t, 8> getDirectionOrder(const uint8_t currentYaw)
+    {
+        const auto currentDirection = static_cast<uint8_t>(((currentYaw + 3) >> 3) & 7);
         return {
-            static_cast<uint8_t>(currentDirection & 3),
-            static_cast<uint8_t>((currentDirection + 1) & 3),
-            static_cast<uint8_t>((currentDirection + 3) & 3),
-            static_cast<uint8_t>((currentDirection + 2) & 3),
+            currentDirection,
+            static_cast<uint8_t>((currentDirection + 1) & 7),
+            static_cast<uint8_t>((currentDirection + 7) & 7),
+            static_cast<uint8_t>((currentDirection + 2) & 7),
+            static_cast<uint8_t>((currentDirection + 6) & 7),
+            static_cast<uint8_t>((currentDirection + 3) & 7),
+            static_cast<uint8_t>((currentDirection + 5) & 7),
+            static_cast<uint8_t>((currentDirection + 4) & 7),
         };
     }
 
-    // Reverse BFS fields are expanded lazily and shared by ships with the same destination.
+    using FrontierEntry = std::tuple<uint32_t, uint16_t, size_t>;
+    using Frontier = std::priority_queue<FrontierEntry, std::vector<FrontierEntry>, std::greater<>>;
+
+    // Reverse shortest-path fields are expanded lazily and shared by ships with the same destination.
     struct RouteCache
     {
         MicroZ waterLevel;
@@ -95,12 +159,14 @@ namespace OpenLoco::Vehicles::WaterPathfinding
         std::vector<TilePos2> blockedTiles;
         std::vector<uint32_t> distances;
         std::vector<uint16_t> goalIndices;
-        std::deque<size_t> frontier;
+        std::vector<bool> settled;
+        Frontier frontier;
         uint64_t lastUse{};
 
         RouteCache(const MicroZ level, std::span<const TilePos2> routeGoals, std::span<const TilePos2> routeBlockedTiles = {})
             : distances(kMapSize, kUnreachable)
             , goalIndices(kMapSize, kNoGoal)
+            , settled(kMapSize, false)
         {
             initialise(level, routeGoals, routeBlockedTiles);
         }
@@ -112,7 +178,8 @@ namespace OpenLoco::Vehicles::WaterPathfinding
             blockedTiles.assign(routeBlockedTiles.begin(), routeBlockedTiles.end());
             std::ranges::fill(distances, kUnreachable);
             std::ranges::fill(goalIndices, kNoGoal);
-            frontier.clear();
+            std::fill(settled.begin(), settled.end(), false);
+            frontier = {};
 
             for (size_t i = 0; i < goals.size(); ++i)
             {
@@ -130,40 +197,53 @@ namespace OpenLoco::Vehicles::WaterPathfinding
 
                 distances[index] = 0;
                 goalIndices[index] = static_cast<uint16_t>(i);
-                frontier.push_back(index);
+                frontier.emplace(0, static_cast<uint16_t>(i), index);
             }
         }
 
         void expandTo(const TilePos2 destination)
         {
             const auto destinationIndex = getTileIndex(destination);
-            while (distances[destinationIndex] == kUnreachable && !frontier.empty())
+            while (!settled[destinationIndex] && !frontier.empty())
             {
-                const auto index = frontier.front();
-                frontier.pop_front();
+                const auto [distance, goal, index] = frontier.top();
+                frontier.pop();
+                if (settled[index] || distances[index] != distance || goalIndices[index] != goal)
+                {
+                    continue;
+                }
+                settled[index] = true;
 
                 const auto tilePos = getTilePos(index);
-                for (auto direction = 0U; direction < 4; ++direction)
+                for (auto direction = 0U; direction < kDirectionOffsets.size(); ++direction)
                 {
-                    const auto nextPos = tilePos + toTileSpace(kRotationOffset[direction]);
+                    const auto nextPos = tilePos + kDirectionOffsets[direction];
                     if (!validCoords(nextPos))
                     {
                         continue;
                     }
 
                     const auto nextIndex = getTileIndex(nextPos);
-                    if (distances[nextIndex] != kUnreachable)
-                    {
-                        continue;
-                    }
-                    if (isBlocked(nextPos, blockedTiles) || !isNavigable(nextPos, waterLevel))
+                    if (settled[nextIndex])
                     {
                         continue;
                     }
 
-                    distances[nextIndex] = distances[index] + 1;
-                    goalIndices[nextIndex] = goalIndices[index];
-                    frontier.push_back(nextIndex);
+                    const auto nextDistance = distance + getStepCost(direction);
+                    if (nextDistance > distances[nextIndex]
+                        || (nextDistance == distances[nextIndex] && goal >= goalIndices[nextIndex]))
+                    {
+                        continue;
+                    }
+                    if (!isNavigableTransition(tilePos, direction, waterLevel)
+                        || isBlockedTransition(tilePos, direction, blockedTiles))
+                    {
+                        continue;
+                    }
+
+                    distances[nextIndex] = nextDistance;
+                    goalIndices[nextIndex] = goal;
+                    frontier.emplace(nextDistance, goal, nextIndex);
                 }
             }
         }
@@ -235,7 +315,7 @@ namespace OpenLoco::Vehicles::WaterPathfinding
         const RouteCache& route,
         const TilePos2 start,
         std::span<const TilePos2> blockedTiles,
-        const uint8_t currentDirection,
+        const uint8_t currentYaw,
         bool& hasStaleRoute)
     {
         SearchResult result{ RouteStatus::unreachable, start, kNoGoal, kUnreachable };
@@ -251,9 +331,9 @@ namespace OpenLoco::Vehicles::WaterPathfinding
         }
 
         bool hasBlockedRoute = false;
-        for (const auto direction : getDirectionOrder(currentDirection))
+        for (const auto direction : getDirectionOrder(currentYaw))
         {
-            const auto nextPos = start + toTileSpace(kRotationOffset[direction]);
+            const auto nextPos = start + kDirectionOffsets[direction];
             if (!validCoords(nextPos))
             {
                 continue;
@@ -261,16 +341,18 @@ namespace OpenLoco::Vehicles::WaterPathfinding
 
             const auto nextIndex = getTileIndex(nextPos);
             const auto nextDistance = route.distances[nextIndex];
-            if (nextDistance == kUnreachable || nextDistance + 1 != distance)
+            if (nextDistance == kUnreachable
+                || nextDistance + getStepCost(direction) != distance
+                || route.goalIndices[nextIndex] != route.goalIndices[startIndex])
             {
                 continue;
             }
-            if (!isNavigable(nextPos, route.waterLevel))
+            if (!isNavigableTransition(start, direction, route.waterLevel))
             {
                 hasStaleRoute = true;
                 continue;
             }
-            if (isBlocked(nextPos, blockedTiles))
+            if (isBlockedTransition(start, direction, blockedTiles))
             {
                 hasBlockedRoute = true;
                 continue;
@@ -290,7 +372,7 @@ namespace OpenLoco::Vehicles::WaterPathfinding
         const MicroZ waterLevel,
         std::span<const TilePos2> goals,
         std::span<const TilePos2> blockedTiles,
-        const uint8_t currentDirection,
+        const uint8_t currentYaw,
         const bool canRefresh)
     {
         SearchResult result{ RouteStatus::unreachable, start, kNoGoal, kUnreachable };
@@ -303,12 +385,12 @@ namespace OpenLoco::Vehicles::WaterPathfinding
         route.expandTo(start);
 
         bool hasStaleRoute = false;
-        result = selectNextTile(route, start, blockedTiles, currentDirection, hasStaleRoute);
+        result = selectNextTile(route, start, blockedTiles, currentYaw, hasStaleRoute);
         if (hasStaleRoute && canRefresh)
         {
             _routeCache.clear();
             _detourCache.reset();
-            return findNextTileImpl(start, waterLevel, goals, blockedTiles, currentDirection, false);
+            return findNextTileImpl(start, waterLevel, goals, blockedTiles, currentYaw, false);
         }
         if (result.status != RouteStatus::temporarilyBlocked)
         {
@@ -320,11 +402,11 @@ namespace OpenLoco::Vehicles::WaterPathfinding
         auto& detour = getDetourRoute(waterLevel, goals, blockedTiles);
         detour.expandTo(start);
         bool hasStaleDetour = false;
-        const auto detourResult = selectNextTile(detour, start, {}, currentDirection, hasStaleDetour);
+        const auto detourResult = selectNextTile(detour, start, {}, currentYaw, hasStaleDetour);
         if (hasStaleDetour && canRefresh)
         {
             _detourCache.reset();
-            return findNextTileImpl(start, waterLevel, goals, blockedTiles, currentDirection, false);
+            return findNextTileImpl(start, waterLevel, goals, blockedTiles, currentYaw, false);
         }
         return detourResult.status == RouteStatus::found ? detourResult : result;
     }
@@ -334,9 +416,9 @@ namespace OpenLoco::Vehicles::WaterPathfinding
         const MicroZ waterLevel,
         std::span<const TilePos2> goals,
         std::span<const TilePos2> blockedTiles,
-        const uint8_t currentDirection)
+        const uint8_t currentYaw)
     {
-        return findNextTileImpl(start, waterLevel, goals, blockedTiles, currentDirection, true);
+        return findNextTileImpl(start, waterLevel, goals, blockedTiles, currentYaw, true);
     }
 
     struct DockTarget
@@ -389,9 +471,9 @@ namespace OpenLoco::Vehicles::WaterPathfinding
     static std::vector<TilePos2> findBlockedNeighbours(const VehicleHead& head, const TilePos2 start)
     {
         std::vector<TilePos2> blockedTiles;
-        for (auto direction = 0U; direction < 4; ++direction)
+        for (const auto offset : kDirectionOffsets)
         {
-            const auto tilePos = start + toTileSpace(kRotationOffset[direction]);
+            const auto tilePos = start + offset;
             if (!validCoords(tilePos))
             {
                 continue;
@@ -423,22 +505,22 @@ namespace OpenLoco::Vehicles::WaterPathfinding
     static PathingResult findEgressTarget(
         const TilePos2 start,
         const MicroZ waterLevel,
-        const uint8_t currentDirection,
+        const uint8_t currentYaw,
         std::span<const TilePos2> blockedTiles)
     {
         bool hasBlockedTarget = false;
-        for (const auto direction : getDirectionOrder(currentDirection))
+        for (const auto direction : getDirectionOrder(currentYaw))
         {
-            const auto target = start + toTileSpace(kRotationOffset[direction]);
-            if (!isNavigable(target, waterLevel))
+            if (!isNavigableTransition(start, direction, waterLevel))
             {
                 continue;
             }
-            if (isBlocked(target, blockedTiles))
+            if (isBlockedTransition(start, direction, blockedTiles))
             {
                 hasBlockedTarget = true;
                 continue;
             }
+            const auto target = start + kDirectionOffsets[direction];
             return makeResult(RouteStatus::found, toWorldSpace(target) + Pos2{ 16, 16 });
         }
         return makeResult(hasBlockedTarget ? RouteStatus::temporarilyBlocked : RouteStatus::unreachable, toWorldSpace(start) + Pos2{ 16, 16 });
@@ -447,7 +529,7 @@ namespace OpenLoco::Vehicles::WaterPathfinding
     static PathingResult findDockRoute(
         const TilePos2 start,
         const MicroZ waterLevel,
-        const uint8_t currentDirection,
+        const uint8_t currentYaw,
         std::span<const TilePos2> blockedTiles,
         std::span<const DockTarget> targets,
         const bool isLeavingDock)
@@ -459,22 +541,23 @@ namespace OpenLoco::Vehicles::WaterPathfinding
             goals.push_back(target.tile);
         }
 
-        const auto route = findNextTile(start, waterLevel, goals, blockedTiles, currentDirection);
+        const auto route = findNextTile(start, waterLevel, goals, blockedTiles, currentYaw);
         if (route.status != RouteStatus::found && route.status != RouteStatus::arrived)
         {
             return makeResult(route.status, toWorldSpace(start) + Pos2{ 16, 16 });
         }
         if (route.status == RouteStatus::arrived && isLeavingDock)
         {
-            return findEgressTarget(start, waterLevel, currentDirection, blockedTiles);
+            return findEgressTarget(start, waterLevel, currentYaw, blockedTiles);
         }
 
         const auto& target = targets[route.goal];
-        if ((route.status == RouteStatus::arrived || route.remainingDistance == 1) && target.occupied)
+        const auto isAtTarget = route.status == RouteStatus::arrived || route.nextTile == target.tile;
+        if (isAtTarget && target.occupied)
         {
             return makeResult(RouteStatus::temporarilyBlocked, toWorldSpace(start) + Pos2{ 16, 16 });
         }
-        if (route.status == RouteStatus::arrived || route.remainingDistance == 1)
+        if (isAtTarget)
         {
             return { RouteStatus::found, target.headTarget, target.stationId, target.stationPos };
         }
@@ -489,7 +572,7 @@ namespace OpenLoco::Vehicles::WaterPathfinding
         const Vehicle train(head);
         const auto& vehicle2 = *train.veh2;
         const auto waterLevel = static_cast<MicroZ>(vehicle2.position.z / kMicroZStep);
-        const auto currentDirection = static_cast<uint8_t>(((vehicle2.spriteYaw + 7) >> 4) & 3);
+        const auto currentYaw = vehicle2.spriteYaw;
         const auto blockedTiles = findBlockedNeighbours(head, start);
 
         const auto orders = head.getCurrentOrders();
@@ -497,14 +580,14 @@ namespace OpenLoco::Vehicles::WaterPathfinding
         if (const auto* waypointOrder = currentOrder->as<OrderRouteWaypoint>(); waypointOrder != nullptr)
         {
             const std::array goals = { toTileSpace(waypointOrder->getWaypoint()) };
-            const auto route = findNextTile(start, waterLevel, goals, blockedTiles, currentDirection);
+            const auto route = findNextTile(start, waterLevel, goals, blockedTiles, currentYaw);
             if (route.status == RouteStatus::found)
             {
                 return makeResult(RouteStatus::found, toWorldSpace(route.nextTile) + Pos2{ 16, 16 });
             }
             if (route.status == RouteStatus::arrived)
             {
-                return findEgressTarget(start, waterLevel, currentDirection, blockedTiles);
+                return findEgressTarget(start, waterLevel, currentYaw, blockedTiles);
             }
             return makeResult(route.status, currentTarget);
         }
@@ -514,7 +597,7 @@ namespace OpenLoco::Vehicles::WaterPathfinding
         {
             if (isLeavingDock)
             {
-                return findEgressTarget(start, waterLevel, currentDirection, blockedTiles);
+                return findEgressTarget(start, waterLevel, currentYaw, blockedTiles);
             }
             return makeResult(RouteStatus::unreachable, currentTarget);
         }
@@ -529,12 +612,12 @@ namespace OpenLoco::Vehicles::WaterPathfinding
         std::ranges::copy_if(targets, std::back_inserter(freeTargets), [](const auto& target) { return !target.occupied; });
         if (!freeTargets.empty())
         {
-            const auto result = findDockRoute(start, waterLevel, currentDirection, blockedTiles, freeTargets, isLeavingDock);
+            const auto result = findDockRoute(start, waterLevel, currentYaw, blockedTiles, freeTargets, isLeavingDock);
             if (result.status != RouteStatus::unreachable)
             {
                 return result;
             }
         }
-        return findDockRoute(start, waterLevel, currentDirection, blockedTiles, targets, isLeavingDock);
+        return findDockRoute(start, waterLevel, currentYaw, blockedTiles, targets, isLeavingDock);
     }
 }

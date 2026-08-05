@@ -25,7 +25,7 @@ namespace OpenLoco::Vehicles::WaterPathfinding
         RouteStatus status;
         World::TilePos2 nextTile;
         uint16_t goal;
-        uint32_t remainingDistance;
+        uint32_t remainingDistance; // Fixed-point geometric route cost.
     };
 
     struct PathingResult
@@ -42,6 +42,6 @@ namespace OpenLoco::Vehicles::WaterPathfinding
         World::MicroZ waterLevel,
         std::span<const World::TilePos2> goals,
         std::span<const World::TilePos2> blockedTiles,
-        uint8_t currentDirection);
+        uint8_t currentYaw);
     PathingResult getNextTarget(const VehicleHead& head, bool isLeavingDock);
 }
