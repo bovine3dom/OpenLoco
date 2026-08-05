@@ -17,6 +17,6 @@ namespace OpenLoco::Ui::ViewportManager
     Viewport* create(Window* window, int viewportIndex, Ui::Point origin, Ui::Size size, ZoomLevel zoom, World::Pos3 tile);
     void destroy(Viewport* vp);
     void invalidate(Station* station);
-    void invalidate(EntityBase* t, ZoomLevel zoom);
+    void invalidate(EntityBase* t, ZoomLevel zoom, int32_t padding = 0);
     void invalidate(World::Pos2 pos, coord_t zMin, coord_t zMax, ZoomLevel zoom = ZoomLevel::eighth, int radius = 32);
 }

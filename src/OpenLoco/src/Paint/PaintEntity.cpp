@@ -2,6 +2,7 @@
 #include "Config.h"
 #include "Effects/Effect.h"
 #include "Entities/EntityManager.h"
+#include "Entities/EntityTweener.h"
 #include "Graphics/RenderTarget.h"
 #include "Map/Tile.h"
 #include "Paint/Paint.h"
@@ -35,21 +36,22 @@ namespace OpenLoco::Paint
             auto top = session.getWorldY();
             auto right = left + session.getWorldWidth();
             auto bottom = top + session.getWorldHeight();
+            const auto renderPadding = session.getZoom() < ZoomLevel::full ? EntityTweener::kRenderPadding : 0;
 
             // TODO: Create a rect from sprite dims and use a contains function
-            if (entity->spriteTop > bottom)
+            if (entity->spriteTop - renderPadding > bottom)
             {
                 continue;
             }
-            if (entity->spriteBottom <= top)
+            if (entity->spriteBottom + renderPadding <= top)
             {
                 continue;
             }
-            if (entity->spriteLeft > right)
+            if (entity->spriteLeft - renderPadding > right)
             {
                 continue;
             }
-            if (entity->spriteRight <= left)
+            if (entity->spriteRight + renderPadding <= left)
             {
                 continue;
             }
@@ -58,7 +60,8 @@ namespace OpenLoco::Paint
                 continue;
             }
             session.setCurrentItem(entity);
-            session.setEntityPosition(entity->position);
+            const auto rasterOffset = EntityTweener::get().getInterpolatedRasterOffset(*entity, session.getRotation(), session.getZoom());
+            session.setEntityPosition(entity->position, rasterOffset);
             session.setItemType(InteractionItem::entity);
             switch (entity->baseType)
             {

@@ -36,8 +36,8 @@ namespace OpenLoco::Gfx
         void drawRectInset(int32_t x, int32_t y, int32_t dx, int32_t dy, AdvancedColour colour, RectInsetFlags flags) override;
         void drawLine(const Ui::Point& a, const Ui::Point& b, PaletteIndex_t colour) override;
         void drawCircle(const Ui::Point& centre, int32_t radius, int32_t lineWidth, PaletteIndex_t colour) override;
-        void drawImage(ZoomLevel zoom, const Ui::Point& worldPos, const ImageId& image) override;
-        void drawImageMasked(ZoomLevel zoom, const Ui::Point& worldPos, const ImageId& image, const ImageId& maskImage) override;
+        void drawImage(ZoomLevel zoom, const Ui::Point& worldPos, const ImageId& image, const Ui::Point& rasterOffset = {}) override;
+        void drawImageMasked(ZoomLevel zoom, const Ui::Point& worldPos, const ImageId& image, const ImageId& maskImage, const Ui::Point& rasterOffset = {}) override;
         void drawImageSolid(const Ui::Point& pos, const ImageId& image, PaletteIndex_t paletteIndex) override;
         void drawImagePaletteSet(const Ui::Point& pos, const ImageId& image, PaletteMap::View palette, const G1Element* noiseImage) override;
     };

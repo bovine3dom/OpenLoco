@@ -100,9 +100,10 @@ namespace OpenLoco::Paint
 
             auto worldPosition = World::gameToScreen(money->position, viewport.getRotation());
             worldPosition.x += money->offsetX;
+            const auto viewOrigin = viewport.getViewOriginInRaster();
             auto position = viewport.rasterToUiNearest({
-                                viewport.zoom.applyInversedTo(worldPosition.x) - viewport.zoom.applyInversedTo(viewport.viewX),
-                                viewport.zoom.applyInversedTo(worldPosition.y) - viewport.zoom.applyInversedTo(viewport.viewY),
+                                viewport.zoom.applyInversedTo(worldPosition.x) - viewOrigin.x,
+                                viewport.zoom.applyInversedTo(worldPosition.y) - viewOrigin.y,
                             })
                 + Ui::Point{ viewport.x, viewport.y };
             position.x -= tr.getStringWidth(buffer) / 2;

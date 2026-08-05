@@ -85,7 +85,7 @@ namespace OpenLoco::Gfx
 
         virtual void drawCircle(const Ui::Point& centre, int32_t radius, int32_t lineWidth, PaletteIndex_t colour) = 0;
 
-        virtual void drawImage(ZoomLevel zoom, const Ui::Point& pos, const ImageId& image) = 0;
+        virtual void drawImage(ZoomLevel zoom, const Ui::Point& pos, const ImageId& image, const Ui::Point& rasterOffset = {}) = 0;
 
         void drawImage(ZoomLevel zoom, int32_t x, int32_t y, uint32_t image)
         {
@@ -97,7 +97,7 @@ namespace OpenLoco::Gfx
             drawImage(zoom, pos, ImageId::fromUInt32(image));
         }
 
-        virtual void drawImageMasked(ZoomLevel zoom, const Ui::Point& pos, const ImageId& image, const ImageId& maskImage) = 0;
+        virtual void drawImageMasked(ZoomLevel zoom, const Ui::Point& pos, const ImageId& image, const ImageId& maskImage, const Ui::Point& rasterOffset = {}) = 0;
 
         virtual void drawImageSolid(const Ui::Point& pos, const ImageId& image, PaletteIndex_t paletteIndex) = 0;
 

@@ -96,13 +96,15 @@ namespace OpenLoco::Ui
         int32_t viewHeight; // 0x0E
         int32_t rasterWidth;
         int32_t rasterHeight;
-        ZoomLevel zoom;      // 0x10
-        uint8_t pad_11;      // 0x11
-        ViewportFlags flags; // 0x12
+        Point viewRasterOffset; // Render-only phase for magnified viewports.
+        ZoomLevel zoom;         // 0x10
+        uint8_t pad_11;         // 0x11
+        ViewportFlags flags;    // 0x12
 
-        constexpr bool contains(const viewport_pos& vpos)
+        constexpr bool contains(const viewport_pos& vpos) const
         {
-            return (vpos.y >= viewY && vpos.y < viewY + viewHeight && vpos.x >= viewX && vpos.x < viewX + viewWidth);
+            const auto viewRect = getViewRect();
+            return vpos.y >= viewRect.top && vpos.y < viewRect.bottom && vpos.x >= viewRect.left && vpos.x < viewRect.right;
         }
 
         constexpr bool containsWindowPos(const Point& pos) const
@@ -167,24 +169,41 @@ namespace OpenLoco::Ui
             };
         }
 
-        constexpr bool intersects(const ViewportRect& vpos)
+        constexpr ViewportRect getViewRect() const
         {
-            if (vpos.right <= viewX)
+            if (zoom >= ZoomLevel::full)
+            {
+                return { viewX, viewY, viewY + viewHeight, viewX + viewWidth };
+            }
+
+            const auto origin = getViewOriginInRaster();
+            return {
+                zoom.applyTo(origin.x),
+                zoom.applyTo(origin.y),
+                zoom.applyTo(origin.y + rasterHeight - 1) + 1,
+                zoom.applyTo(origin.x + rasterWidth - 1) + 1,
+            };
+        }
+
+        constexpr bool intersects(const ViewportRect& vpos) const
+        {
+            const auto viewRect = getViewRect();
+            if (vpos.right <= viewRect.left)
             {
                 return false;
             }
 
-            if (vpos.bottom <= viewY)
+            if (vpos.bottom <= viewRect.top)
             {
                 return false;
             }
 
-            if (vpos.left >= viewX + viewWidth)
+            if (vpos.left >= viewRect.right)
             {
                 return false;
             }
 
-            if (vpos.top >= viewY + viewHeight)
+            if (vpos.top >= viewRect.bottom)
             {
                 return false;
             }
@@ -192,13 +211,14 @@ namespace OpenLoco::Ui
             return true;
         }
 
-        constexpr ViewportRect getIntersection(const ViewportRect& rect)
+        constexpr ViewportRect getIntersection(const ViewportRect& rect) const
         {
+            const auto viewRect = getViewRect();
             auto out = ViewportRect();
-            out.left = std::max(rect.left, viewX);
-            out.right = std::min(rect.right, viewX + viewWidth);
-            out.top = std::max(rect.top, viewY);
-            out.bottom = std::min(rect.bottom, viewY + viewHeight);
+            out.left = std::max(rect.left, viewRect.left);
+            out.right = std::min(rect.right, viewRect.right);
+            out.top = std::max(rect.top, viewRect.top);
+            out.bottom = std::min(rect.bottom, viewRect.bottom);
 
             return out;
         }
@@ -226,8 +246,45 @@ namespace OpenLoco::Ui
 
         viewport_pos rasterToViewport(const Point& pos) const
         {
+            if (zoom < ZoomLevel::full)
+            {
+                return {
+                    viewX + zoom.applyTo(pos.x + viewRasterOffset.x),
+                    viewY + zoom.applyTo(pos.y + viewRasterOffset.y),
+                };
+            }
             return { viewX + zoom.applyTo(pos.x), viewY + zoom.applyTo(pos.y) };
         }
+
+        constexpr Point getViewOriginInRaster() const
+        {
+            const auto rasterOffset = zoom < ZoomLevel::full ? viewRasterOffset : Point{};
+            return {
+                zoom.applyInversedTo(viewX) + rasterOffset.x,
+                zoom.applyInversedTo(viewY) + rasterOffset.y,
+            };
+        }
+
+        constexpr void rebaseViewRasterOffset(const ZoomLevel previousZoom)
+        {
+            const auto getRasterScale = [](const ZoomLevel value) {
+                return value < ZoomLevel::full ? value.applyInversedTo(1) : 1;
+            };
+            const auto previousScale = getRasterScale(previousZoom);
+            const auto rasterScale = getRasterScale(zoom);
+            const auto rescale = [previousScale, rasterScale](const int32_t value) {
+                const auto numerator = static_cast<int64_t>(value) * rasterScale;
+                return static_cast<int32_t>(numerator >= 0 ? (numerator + previousScale / 2) / previousScale : -((-numerator + previousScale / 2) / previousScale));
+            };
+
+            const Point offset{ rescale(viewRasterOffset.x), rescale(viewRasterOffset.y) };
+            viewX += offset.x / rasterScale;
+            viewY += offset.y / rasterScale;
+            viewRasterOffset = zoom < ZoomLevel::full
+                ? Point{ offset.x % rasterScale, offset.y % rasterScale }
+                : Point{};
+        }
+
         /**
          * Maps a window relative rectangle to a 2D viewport rectangle.
          */
@@ -280,6 +337,13 @@ namespace OpenLoco::Ui
         [[nodiscard]] constexpr Point scaleTransform(const Point& uiPoint, const Viewport& vp)
         {
             const auto rasterPoint = vp.uiToRaster(uiPoint);
+            if (vp.zoom < ZoomLevel::full)
+            {
+                return Point{
+                    vp.zoom.applyTo(rasterPoint.x + vp.viewRasterOffset.x),
+                    vp.zoom.applyTo(rasterPoint.y + vp.viewRasterOffset.y),
+                };
+            }
             return Point{ vp.zoom.applyTo(rasterPoint.x), vp.zoom.applyTo(rasterPoint.y) };
         }
 
@@ -303,7 +367,11 @@ namespace OpenLoco::Ui
 
         [[nodiscard]] constexpr Point scaleTransform(const Point& uiPoint, const Viewport& vp)
         {
-            const auto rasterPoint = Point{ vp.zoom.applyInversedTo(uiPoint.x), vp.zoom.applyInversedTo(uiPoint.y) };
+            auto rasterPoint = Point{ vp.zoom.applyInversedTo(uiPoint.x), vp.zoom.applyInversedTo(uiPoint.y) };
+            if (vp.zoom < ZoomLevel::full)
+            {
+                rasterPoint -= vp.viewRasterOffset;
+            }
             return vp.rasterToUiNearest(rasterPoint);
         }
 

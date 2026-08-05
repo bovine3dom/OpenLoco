@@ -151,6 +151,7 @@ namespace OpenLoco::Paint
         ImageId maskedImageId;
         PaintStruct* children;
         Ui::Point vpPos;
+        Ui::Point rasterOffset;
         World::Pos2 mapPos;
         uint16_t quadrantIndex;
         uint8_t modId; // used for track mods and signal sides
@@ -288,7 +289,7 @@ namespace OpenLoco::Paint
         void setItemType(const Ui::ViewportInteraction::InteractionItem type) { _itemType = type; }
         Ui::ViewportInteraction::InteractionItem getItemType() const { return _itemType; }
         void setTrackModId(const uint8_t mod) { _trackModId = mod; }
-        void setEntityPosition(const World::Pos2& pos);
+        void setEntityPosition(const World::Pos2& pos, const Ui::Point& rasterOffset = {});
         void setMapPosition(const World::Pos2& pos);
         void setUnkPosition(const World::Pos2& pos);
         void setVpPosition(const Ui::Point& pos);
@@ -457,6 +458,7 @@ namespace OpenLoco::Paint
         coord_t _unkPositionX{};
         int16_t _vpPositionX{};
         coord_t _spritePositionY{};
+        Ui::Point _spriteRasterOffset{};
         coord_t _unkPositionY{};
         int16_t _vpPositionY{};
         int16_t _unkVpPositionY{};

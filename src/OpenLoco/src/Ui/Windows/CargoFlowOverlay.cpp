@@ -206,10 +206,7 @@ namespace OpenLoco::Ui::Windows::CargoFlowOverlay
             const auto projected = World::gameToScreen(World::Pos3{ station.x, station.y, station.z }, viewport.getRotation());
             if (windowCoordinates)
             {
-                const auto viewOrigin = Point{
-                    viewport.zoom.applyInversedTo(viewport.viewX),
-                    viewport.zoom.applyInversedTo(viewport.viewY),
-                };
+                const auto viewOrigin = viewport.getViewOriginInRaster();
                 const auto rasterPoint = Point{
                     viewport.zoom.applyInversedTo(projected.x),
                     viewport.zoom.applyInversedTo(projected.y),
@@ -470,8 +467,8 @@ namespace OpenLoco::Ui::Windows::CargoFlowOverlay
         const auto viewportRect = windowCoordinates
             ? viewport.getUiRect()
             : Rect{
-                  viewport.zoom.applyInversedTo(viewport.viewX),
-                  viewport.zoom.applyInversedTo(viewport.viewY),
+                  viewport.getViewOriginInRaster().x,
+                  viewport.getViewOriginInRaster().y,
                   viewport.rasterWidth,
                   viewport.rasterHeight,
               };

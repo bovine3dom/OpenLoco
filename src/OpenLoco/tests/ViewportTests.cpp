@@ -1,6 +1,7 @@
 #include "Input/ZoomDeltaAccumulator.h"
 #include "LabelFrame.h"
 #include "S5/S5LabelFrame.h"
+#include "Ui/WindowManager.h"
 #include "Viewport.hpp"
 
 #include <gtest/gtest.h>
@@ -83,6 +84,83 @@ TEST(ViewportTests, AppliesViewportOffsetsScaleAndZoom)
     EXPECT_EQ(exactWorldPosition.x, 1902);
     EXPECT_EQ(exactWorldPosition.y, 2602);
     expectPoint(viewport.viewportToWindow(worldPosition), windowPosition.x, windowPosition.y);
+}
+
+TEST(ViewportTests, AppliesMagnifiedRasterViewOffset)
+{
+    Viewport viewport{};
+    viewport.width = 100;
+    viewport.height = 100;
+    viewport.rasterWidth = 100;
+    viewport.rasterHeight = 100;
+    viewport.viewX = 100;
+    viewport.viewY = 200;
+    viewport.zoom = ZoomLevel::quadrupled;
+    viewport.viewRasterOffset = { 1, 2 };
+
+    expectPoint(viewport.getViewOriginInRaster(), 401, 802);
+    const auto viewRect = viewport.getViewRect();
+    EXPECT_EQ(viewRect.left, 100);
+    EXPECT_EQ(viewRect.top, 200);
+    EXPECT_EQ(viewRect.right, 126);
+    EXPECT_EQ(viewRect.bottom, 226);
+    auto viewportPosition = viewport.rasterToViewport({ 3, 2 });
+    EXPECT_EQ(viewportPosition.x, 101);
+    EXPECT_EQ(viewportPosition.y, 201);
+    viewportPosition = viewport.windowToViewport({ 3, 2 });
+    EXPECT_EQ(viewportPosition.x, 101);
+    EXPECT_EQ(viewportPosition.y, 201);
+    expectPoint(viewport.viewportToWindow({ 101, 201 }), 3, 2);
+
+    viewport.zoom = ZoomLevel::full;
+    expectPoint(viewport.getViewOriginInRaster(), 100, 200);
+    viewportPosition = viewport.rasterToViewport({ 3, 2 });
+    EXPECT_EQ(viewportPosition.x, 103);
+    EXPECT_EQ(viewportPosition.y, 202);
+}
+
+TEST(ViewportTests, RebasesMagnifiedRasterViewOffset)
+{
+    Viewport viewport{};
+    viewport.viewX = 100;
+    viewport.viewY = 200;
+    viewport.zoom = ZoomLevel::quadrupled;
+    viewport.viewRasterOffset = { 12, -6 };
+    const auto originalOrigin = viewport.getViewOriginInRaster();
+
+    viewport.rebaseViewRasterOffset(viewport.zoom);
+    expectPoint(viewport.getViewOriginInRaster(), originalOrigin.x, originalOrigin.y);
+    EXPECT_EQ(viewport.viewX, 103);
+    EXPECT_EQ(viewport.viewY, 199);
+    expectPoint(viewport.viewRasterOffset, 0, -2);
+
+    const auto previousZoom = viewport.zoom;
+    viewport.zoom = ZoomLevel::doubled;
+    viewport.rebaseViewRasterOffset(previousZoom);
+    EXPECT_EQ(viewport.viewX, 103);
+    EXPECT_EQ(viewport.viewY, 199);
+    expectPoint(viewport.viewRasterOffset, 0, -1);
+}
+
+TEST(ViewportTests, PreservesCameraPositionWhenUnfollowing)
+{
+    Window main({ 0, 0 }, { 100, 100 });
+    Viewport viewport{};
+    viewport.viewX = 100;
+    viewport.viewY = 200;
+    viewport.zoom = ZoomLevel::quadrupled;
+    viewport.viewRasterOffset = { 12, -6 };
+    const auto originalOrigin = viewport.getViewOriginInRaster();
+    main.viewports[0] = &viewport;
+    main.viewportConfigurations[0].viewportTargetSprite = static_cast<EntityId>(1);
+
+    Windows::Main::viewportUnfocusFromEntity(main);
+
+    EXPECT_EQ(main.viewportConfigurations[0].viewportTargetSprite, EntityId::null);
+    EXPECT_EQ(main.viewportConfigurations[0].savedViewX, viewport.viewX);
+    EXPECT_EQ(main.viewportConfigurations[0].savedViewY, viewport.viewY);
+    expectPoint(viewport.getViewOriginInRaster(), originalOrigin.x, originalOrigin.y);
+    expectPoint(viewport.viewRasterOffset, 0, -2);
 }
 
 TEST(ZoomLevelTests, SupportsEightfoldAndSixteenfoldMagnification)

@@ -78,6 +78,7 @@ namespace OpenLoco::Ui::ViewportManager
         vp->y = origin.y;
         vp->zoom = zoom;
         vp->setDimensions(size, size);
+        vp->viewRasterOffset = {};
         vp->flags = ViewportFlags::none;
 
         if (Config::get().gridlinesOnLandscape)
@@ -102,6 +103,7 @@ namespace OpenLoco::Ui::ViewportManager
         w->viewportConfigurations[index].savedViewY = dest.y;
         viewport->viewX = dest.x;
         viewport->viewY = dest.y;
+        viewport->viewRasterOffset = {};
     }
 
     static void focusViewportOn(Window* w, int index, World::Pos3 tile)
@@ -116,6 +118,7 @@ namespace OpenLoco::Ui::ViewportManager
         w->viewportConfigurations[index].savedViewY = dest.y;
         viewport->viewX = dest.x;
         viewport->viewY = dest.y;
+        viewport->viewRasterOffset = {};
     }
 
     /* 0x004CA2D0
@@ -214,6 +217,13 @@ namespace OpenLoco::Ui::ViewportManager
                 right = viewport->zoom.applyInversedToCeil(right);
                 top = viewport->zoom.applyInversedTo(top);
                 bottom = viewport->zoom.applyInversedToCeil(bottom);
+                if (viewport->zoom < ZoomLevel::full)
+                {
+                    left -= viewport->viewRasterOffset.x;
+                    right -= viewport->viewRasterOffset.x;
+                    top -= viewport->viewRasterOffset.y;
+                    bottom -= viewport->viewRasterOffset.y;
+                }
 
                 const auto uiTopLeft = viewport->rasterToUi({ left, top });
                 const auto uiBottomRight = viewport->rasterToUiCeil({ right, bottom });
@@ -271,6 +281,13 @@ namespace OpenLoco::Ui::ViewportManager
                 right = viewport->zoom.applyInversedToCeil(right);
                 top = viewport->zoom.applyInversedTo(top);
                 bottom = viewport->zoom.applyInversedToCeil(bottom);
+                if (viewport->zoom < ZoomLevel::full)
+                {
+                    left -= viewport->viewRasterOffset.x;
+                    right -= viewport->viewRasterOffset.x;
+                    top -= viewport->viewRasterOffset.y;
+                    bottom -= viewport->viewRasterOffset.y;
+                }
 
                 const auto uiTopLeft = viewport->rasterToUi({ left, top });
                 const auto uiBottomRight = viewport->rasterToUiCeil({ right, bottom });
@@ -299,7 +316,7 @@ namespace OpenLoco::Ui::ViewportManager
      * @param t @<esi>
      * @param zoom
      */
-    void invalidate(EntityBase* t, ZoomLevel zoom)
+    void invalidate(EntityBase* t, ZoomLevel zoom, const int32_t padding)
     {
         if (t->spriteLeft == Location::null)
         {
@@ -307,10 +324,10 @@ namespace OpenLoco::Ui::ViewportManager
         }
 
         ViewportRect rect;
-        rect.left = t->spriteLeft;
-        rect.top = t->spriteTop;
-        rect.right = t->spriteRight;
-        rect.bottom = t->spriteBottom;
+        rect.left = t->spriteLeft - padding;
+        rect.top = t->spriteTop - padding;
+        rect.right = t->spriteRight + padding;
+        rect.bottom = t->spriteBottom + padding;
 
         auto level = ZoomLevel{ std::min<int8_t>(Config::get().vehiclesMinScale, static_cast<int8_t>(zoom)) };
         invalidate(rect, level);

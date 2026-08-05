@@ -1,6 +1,7 @@
 #include "Ui/Window.h"
 #include "Config.h"
 #include "Entities/EntityManager.h"
+#include "Entities/EntityTweener.h"
 #include "Graphics/Colour.h"
 #include "Graphics/DrawingContext.h"
 #include "Input.h"
@@ -181,17 +182,18 @@ namespace OpenLoco::Ui
     }
 
     // 0x004C68E4
-    static void viewportMove(int32_t x, int32_t y, Ui::Window* w, Ui::Viewport* vp)
+    static void viewportMove(int32_t x, int32_t y, const Ui::Point& rasterOffset, Ui::Window* w, Ui::Viewport* vp)
     {
-        int origX = vp->zoom.applyInversedTo(vp->viewX);
-        int origY = vp->zoom.applyInversedTo(vp->viewY);
-        int newX = vp->zoom.applyInversedTo(x);
-        int newY = vp->zoom.applyInversedTo(y);
-        int diffX = origX - newX;
-        int diffY = origY - newY;
+        const auto originalOrigin = vp->getViewOriginInRaster();
+        const auto newOffset = vp->zoom < ZoomLevel::full ? rasterOffset : Ui::Point{};
+        const auto newX = vp->zoom.applyInversedTo(x) + newOffset.x;
+        const auto newY = vp->zoom.applyInversedTo(y) + newOffset.y;
+        const auto diffX = originalOrigin.x - newX;
+        const auto diffY = originalOrigin.y - newY;
 
         vp->viewX = x;
         vp->viewY = y;
+        vp->viewRasterOffset = newOffset;
 
         // If no change in viewing area
         if (diffX == 0 && diffY == 0)
@@ -278,6 +280,7 @@ namespace OpenLoco::Ui
             }
 
             viewport_pos centre;
+            Ui::Point rasterOffset = viewport->viewRasterOffset;
 
             if (config->viewportTargetSprite != EntityId::null)
             {
@@ -289,6 +292,7 @@ namespace OpenLoco::Ui
                 viewportSetUndergroundFlag(underground, viewport);
 
                 centre = viewport->centre2dCoordinates(entity->position + Pos3{ 0, 0, 12 });
+                rasterOffset = EntityTweener::get().getInterpolatedRasterOffset(*entity, viewport->getRotation(), viewport->zoom);
             }
             else
             {
@@ -371,7 +375,7 @@ namespace OpenLoco::Ui
                     centre.y += viewport->viewY;
                 }
             }
-            viewportMove(centre.x, centre.y, this, viewport);
+            viewportMove(centre.x, centre.y, rasterOffset, this, viewport);
         }
     }
 
@@ -566,6 +570,11 @@ namespace OpenLoco::Ui
             return;
         }
 
+        if (this->viewports[0]->viewRasterOffset != Ui::Point{})
+        {
+            this->viewports[0]->viewRasterOffset = {};
+            Gfx::invalidateScreen();
+        }
         this->viewportConfigurations->savedViewX = pos.x;
         this->viewportConfigurations->savedViewY = pos.y;
         this->flags |= WindowFlags::scrollingToLocation;
@@ -689,6 +698,9 @@ namespace OpenLoco::Ui
 
         v->viewX = vc->savedViewX;
         v->viewY = vc->savedViewY;
+        v->rebaseViewRasterOffset(previousZoomLevel);
+        vc->savedViewX = v->viewX;
+        vc->savedViewY = v->viewY;
 
         this->invalidate();
     }
@@ -758,6 +770,7 @@ namespace OpenLoco::Ui
         viewportConfigurations->savedViewY = newCentre.y;
         viewport->viewX = newCentre.x;
         viewport->viewY = newCentre.y;
+        viewport->viewRasterOffset = {};
         invalidate();
         WindowManager::callViewportRotateEventOnAllWindows();
         EntityManager::updateSpatialIndex();
@@ -796,6 +809,7 @@ namespace OpenLoco::Ui
             }
             viewport->zoom = newSavedView.zoomLevel;
             viewport->setRotation(newSavedView.rotation);
+            viewport->viewRasterOffset = {};
 
             config.savedViewX -= viewport->viewWidth / 2;
             config.savedViewY -= viewport->viewHeight / 2;

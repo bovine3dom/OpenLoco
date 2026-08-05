@@ -78,10 +78,11 @@ namespace OpenLoco::Paint
         return screenToWorldCeil(_zoom, _renderTarget->y + _renderTarget->height) - getWorldY();
     }
 
-    void PaintSession::setEntityPosition(const World::Pos2& pos)
+    void PaintSession::setEntityPosition(const World::Pos2& pos, const Ui::Point& rasterOffset)
     {
         _spritePositionX = pos.x;
         _spritePositionY = pos.y;
+        _spriteRasterOffset = rasterOffset;
     }
     void PaintSession::setMapPosition(const World::Pos2& pos)
     {
@@ -216,8 +217,22 @@ namespace OpenLoco::Paint
         return addToPlotListAsParent(imageId, offset, offset, boundBoxSize);
     }
 
-    static constexpr bool imageWithinRT(const Ui::viewport_pos& imagePos, const Gfx::G1Element& g1, const Gfx::RenderTarget& rt, ZoomLevel zoom)
+    static constexpr bool imageWithinRT(
+        const Ui::viewport_pos& imagePos,
+        const Gfx::G1Element& g1,
+        const Gfx::RenderTarget& rt,
+        const ZoomLevel zoom,
+        const Ui::Point& rasterOffset)
     {
+        if (zoom < ZoomLevel::full)
+        {
+            const auto left = zoom.applyInversedTo(imagePos.x + g1.xOffset) + rasterOffset.x;
+            const auto top = zoom.applyInversedTo(imagePos.y + g1.yOffset) + rasterOffset.y;
+            const auto right = zoom.applyInversedTo(imagePos.x + g1.xOffset + g1.width) + rasterOffset.x;
+            const auto bottom = zoom.applyInversedTo(imagePos.y + g1.yOffset + g1.height) + rasterOffset.y;
+            return right > rt.x && bottom > rt.y && left < rt.x + rt.width && top < rt.y + rt.height;
+        }
+
         int32_t left = imagePos.x + g1.xOffset;
         int32_t bottom = imagePos.y + g1.yOffset;
 
@@ -608,7 +623,7 @@ namespace OpenLoco::Paint
 
         const auto vpPos = World::gameToScreen(swappedRotCoord, currentRotation);
 
-        if (!imageWithinRT(vpPos, *g1, *_renderTarget, _zoom))
+        if (!imageWithinRT(vpPos, *g1, *_renderTarget, _zoom, _spriteRasterOffset))
         {
             return nullptr;
         }
@@ -625,6 +640,7 @@ namespace OpenLoco::Paint
         const auto spritePos = getSpritePosition();
         ps->imageId = imageId;
         ps->vpPos = { vpPos.x, vpPos.y };
+        ps->rasterOffset = _spriteRasterOffset;
         ps->bounds.mins = rotBoundBoxOffset + World::Pos3{ spritePos.x, spritePos.y, 0 };
         ps->bounds.maxs = rotBoundBoxOffset + rotBoundBoxSize + World::Pos3{ spritePos.x, spritePos.y, 0 };
         ps->attachedPS = nullptr;
@@ -1019,11 +1035,11 @@ namespace OpenLoco::Paint
 
         if ((ps.flags & PaintStructFlags::hasMaskedImage) != PaintStructFlags::none)
         {
-            drawingCtx.drawImageMasked(zoom, imagePos, imageId, ps.maskedImageId);
+            drawingCtx.drawImageMasked(zoom, imagePos, imageId, ps.maskedImageId, ps.rasterOffset);
         }
         else
         {
-            drawingCtx.drawImage(zoom, imagePos, imageId);
+            drawingCtx.drawImage(zoom, imagePos, imageId, ps.rasterOffset);
         }
     }
 
@@ -1044,11 +1060,11 @@ namespace OpenLoco::Paint
 
         if ((attachPs.flags & PaintStructFlags::hasMaskedImage) != PaintStructFlags::none)
         {
-            drawingCtx.drawImageMasked(zoom, imagePos, imageId, attachPs.maskedImageId);
+            drawingCtx.drawImageMasked(zoom, imagePos, imageId, attachPs.maskedImageId, ps.rasterOffset);
         }
         else
         {
-            drawingCtx.drawImage(zoom, imagePos, imageId);
+            drawingCtx.drawImage(zoom, imagePos, imageId, ps.rasterOffset);
         }
     }
 

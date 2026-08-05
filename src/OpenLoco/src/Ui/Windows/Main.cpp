@@ -157,8 +157,17 @@ namespace OpenLoco::Ui::Windows::Main
             return;
         }
 
-        auto entity = EntityManager::get<EntityBase>(main.viewportConfigurations[0].viewportTargetSprite);
-        main.viewportConfigurations[0].viewportTargetSprite = EntityId::null;
+        auto* viewport = main.viewports[0];
+        auto& config = main.viewportConfigurations[0];
+        auto* entity = EntityManager::get<EntityBase>(config.viewportTargetSprite);
+        config.viewportTargetSprite = EntityId::null;
+        if (viewport->zoom < ZoomLevel::full && viewport->viewRasterOffset != Ui::Point{})
+        {
+            viewport->rebaseViewRasterOffset(viewport->zoom);
+            config.savedViewX = viewport->viewX;
+            config.savedViewY = viewport->viewY;
+            return;
+        }
         main.viewportCentreOnTile(entity->position);
     }
 

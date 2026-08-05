@@ -231,12 +231,20 @@ namespace OpenLoco::Gfx
             }
         }
 
-        static void drawImageMagnify(const RenderTarget& rt, ZoomLevel zoom, const Ui::Point& pos, const ImageId& image, const G1Element& element, const PaletteMap::View palette, const G1Element* noiseImage)
+        static void drawImageMagnify(
+            const RenderTarget& rt,
+            ZoomLevel zoom,
+            const Ui::Point& pos,
+            const ImageId& image,
+            const G1Element& element,
+            const PaletteMap::View palette,
+            const G1Element* noiseImage,
+            const Ui::Point& rasterOffset)
         {
-            const auto left = zoom.applyInversedTo(pos.x + element.xOffset);
-            const auto top = zoom.applyInversedTo(pos.y + element.yOffset);
-            const auto right = zoom.applyInversedTo(pos.x + element.xOffset + element.width);
-            const auto bottom = zoom.applyInversedTo(pos.y + element.yOffset + element.height);
+            const auto left = zoom.applyInversedTo(pos.x + element.xOffset) + rasterOffset.x;
+            const auto top = zoom.applyInversedTo(pos.y + element.yOffset) + rasterOffset.y;
+            const auto right = zoom.applyInversedTo(pos.x + element.xOffset + element.width) + rasterOffset.x;
+            const auto bottom = zoom.applyInversedTo(pos.y + element.yOffset + element.height) + rasterOffset.y;
 
             const auto width = std::min<int32_t>(right, rt.x + rt.width) - std::max<int32_t>(left, rt.x);
             const auto height = std::min<int32_t>(bottom, rt.y + rt.height) - std::max<int32_t>(top, rt.y);
@@ -269,7 +277,14 @@ namespace OpenLoco::Gfx
         }
 
         // 0x00448D90
-        static void drawImagePaletteSet(const RenderTarget& rt, ZoomLevel zoom, const Ui::Point& pos, const ImageId& image, const PaletteMap::View palette, const G1Element* noiseImage)
+        static void drawImagePaletteSet(
+            const RenderTarget& rt,
+            ZoomLevel zoom,
+            const Ui::Point& pos,
+            const ImageId& image,
+            const PaletteMap::View palette,
+            const G1Element* noiseImage,
+            const Ui::Point& rasterOffset = {})
         {
             const auto* element = getG1Element(image.getIndex());
             if (element == nullptr)
@@ -279,7 +294,7 @@ namespace OpenLoco::Gfx
 
             if (zoom < ZoomLevel::full)
             {
-                drawImageMagnify(rt, zoom, pos, image, *element, palette, noiseImage);
+                drawImageMagnify(rt, zoom, pos, image, *element, palette, noiseImage, rasterOffset);
                 return;
             }
 
@@ -331,18 +346,18 @@ namespace OpenLoco::Gfx
         }
 
         // 0x00448C79
-        static void drawImage(const RenderTarget& rt, ZoomLevel zoom, const Ui::Point& pos, const ImageId& image)
+        static void drawImage(const RenderTarget& rt, ZoomLevel zoom, const Ui::Point& pos, const ImageId& image, const Ui::Point& rasterOffset = {})
         {
             const auto* noiseImage = getNoiseMaskImageFromImage(image);
             const auto palette = PaletteMap::getForImage(image);
 
             if (!palette.has_value())
             {
-                drawImagePaletteSet(rt, zoom, pos, image, PaletteMap::getDefault(), noiseImage);
+                drawImagePaletteSet(rt, zoom, pos, image, PaletteMap::getDefault(), noiseImage, rasterOffset);
             }
             else
             {
-                drawImagePaletteSet(rt, zoom, pos, image, *palette, noiseImage);
+                drawImagePaletteSet(rt, zoom, pos, image, *palette, noiseImage, rasterOffset);
             }
         }
 
@@ -579,7 +594,13 @@ namespace OpenLoco::Gfx
                 imageDataPos);
         }
 
-        static void drawImageMaskedMagnify(const RenderTarget& rt, ZoomLevel zoom, const Ui::Point& pos, const ImageId& image, const ImageId& maskImage)
+        static void drawImageMaskedMagnify(
+            const RenderTarget& rt,
+            ZoomLevel zoom,
+            const Ui::Point& pos,
+            const ImageId& image,
+            const ImageId& maskImage,
+            const Ui::Point& rasterOffset)
         {
             const auto* g1Image = Gfx::getG1Element(image.getIndex());
             const auto* g1ImageMask = Gfx::getG1Element(maskImage.getIndex());
@@ -594,10 +615,10 @@ namespace OpenLoco::Gfx
                 return;
             }
 
-            const auto left = zoom.applyInversedTo(pos.x + g1Image->xOffset);
-            const auto top = zoom.applyInversedTo(pos.y + g1Image->yOffset);
-            const auto right = zoom.applyInversedTo(pos.x + g1Image->xOffset + g1Image->width);
-            const auto bottom = zoom.applyInversedTo(pos.y + g1Image->yOffset + g1Image->height);
+            const auto left = zoom.applyInversedTo(pos.x + g1Image->xOffset) + rasterOffset.x;
+            const auto top = zoom.applyInversedTo(pos.y + g1Image->yOffset) + rasterOffset.y;
+            const auto right = zoom.applyInversedTo(pos.x + g1Image->xOffset + g1Image->width) + rasterOffset.x;
+            const auto bottom = zoom.applyInversedTo(pos.y + g1Image->yOffset + g1Image->height) + rasterOffset.y;
 
             const auto width = std::min<int32_t>(right, rt.x + rt.width) - std::max<int32_t>(left, rt.x);
             const auto height = std::min<int32_t>(bottom, rt.y + rt.height) - std::max<int32_t>(top, rt.y);
@@ -635,11 +656,17 @@ namespace OpenLoco::Gfx
         }
 
         // 0x00450705
-        static void drawImageMasked(const RenderTarget& rt, ZoomLevel zoom, const Ui::Point& pos, const ImageId& image, const ImageId& maskImage)
+        static void drawImageMasked(
+            const RenderTarget& rt,
+            ZoomLevel zoom,
+            const Ui::Point& pos,
+            const ImageId& image,
+            const ImageId& maskImage,
+            const Ui::Point& rasterOffset = {})
         {
             if (zoom < ZoomLevel::full)
             {
-                drawImageMaskedMagnify(rt, zoom, pos, image, maskImage);
+                drawImageMaskedMagnify(rt, zoom, pos, image, maskImage, rasterOffset);
                 return;
             }
 
@@ -1172,16 +1199,16 @@ namespace OpenLoco::Gfx
         return Impl::drawCircle(rt, centre, radius, lineWidth, colour);
     }
 
-    void SoftwareDrawingContext::drawImage(ZoomLevel zoom, const Ui::Point& worldPos, const ImageId& image)
+    void SoftwareDrawingContext::drawImage(ZoomLevel zoom, const Ui::Point& worldPos, const ImageId& image, const Ui::Point& rasterOffset)
     {
         auto& rt = currentRenderTarget();
-        return Impl::drawImage(rt, zoom, worldPos, image);
+        return Impl::drawImage(rt, zoom, worldPos, image, rasterOffset);
     }
 
-    void SoftwareDrawingContext::drawImageMasked(ZoomLevel zoom, const Ui::Point& worldPos, const ImageId& image, const ImageId& maskImage)
+    void SoftwareDrawingContext::drawImageMasked(ZoomLevel zoom, const Ui::Point& worldPos, const ImageId& image, const ImageId& maskImage, const Ui::Point& rasterOffset)
     {
         auto& rt = currentRenderTarget();
-        return Impl::drawImageMasked(rt, zoom, worldPos, image, maskImage);
+        return Impl::drawImageMasked(rt, zoom, worldPos, image, maskImage, rasterOffset);
     }
 
     void SoftwareDrawingContext::drawImageSolid(const Ui::Point& pos, const ImageId& image, PaletteIndex_t paletteIndex)

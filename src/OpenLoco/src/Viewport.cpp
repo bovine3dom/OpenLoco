@@ -131,10 +131,7 @@ namespace OpenLoco::Ui
             frame.left[index] + frameWidth / 2,
             frame.top[index] + frameHeight / 2,
         };
-        const auto viewOrigin = Ui::Point{
-            zoom.applyInversedTo(viewX),
-            zoom.applyInversedTo(viewY),
-        };
+        const auto viewOrigin = getViewOriginInRaster();
         const auto uiCentre = rasterToUiNearest(frameCentre - viewOrigin) + Ui::Point{ x, y };
         const auto topLeft = uiCentre - Ui::Point{ frameWidth / 2, frameHeight / 2 };
         return Ui::Rect(topLeft.x, topLeft.y, frameWidth, frameHeight);
@@ -262,8 +259,9 @@ namespace OpenLoco::Ui
         Gfx::RenderTarget zoomViewRt{};
         zoomViewRt.width = rect.width();
         zoomViewRt.height = rect.height();
-        zoomViewRt.x = zoom.applyInversedTo(viewX) + (rect.left() - x);
-        zoomViewRt.y = zoom.applyInversedTo(viewY) + (rect.top() - y);
+        const auto viewOrigin = getViewOriginInRaster();
+        zoomViewRt.x = viewOrigin.x + (rect.left() - x);
+        zoomViewRt.y = viewOrigin.y + (rect.top() - y);
 
         zoomViewRt.pitch = rt.width + rt.pitch - zoomViewRt.width;
         zoomViewRt.bits = rt.bits + (rect.left() - rt.x) + ((rect.top() - rt.y) * (rt.width + rt.pitch));
