@@ -10,6 +10,7 @@
 #include "Map/SurfaceElement.h"
 #include "Map/TileClearance.h"
 #include "Map/TileManager.h"
+#include "Map/Track/OneWaySignalConflicts.h"
 #include "Map/Track/TrackData.h"
 #include "Map/TrackElement.h"
 #include "Map/TreeElement.h"
@@ -580,6 +581,7 @@ namespace OpenLoco::GameCommands
 
         if ((flags & Flags::apply) && !(flags & (Flags::aiAllocated | Flags::ghost)))
         {
+            World::Track::OneWaySignalConflicts::invalidateAudit();
             playConstructionPlacementSound(getPosition());
         }
         return totalCost;

@@ -11,6 +11,7 @@
 #include <OpenLoco/Map/Tile.h>
 #include <OpenLoco/Map/TileElement.h>
 #include <OpenLoco/Map/TileManager.h>
+#include <OpenLoco/Map/Track/OneWaySignalConflicts.h>
 #include <OpenLoco/Map/Track/Track.h>
 #include <OpenLoco/Map/Track/TrackData.h>
 #include <OpenLoco/Map/TrackElement.h>
@@ -38,6 +39,7 @@
 #include <vector>
 
 using namespace OpenLoco::World;
+namespace SignalConflicts = OpenLoco::World::Track::OneWaySignalConflicts;
 
 namespace
 {
@@ -109,6 +111,7 @@ namespace
 
         void TearDown() override
         {
+            SignalConflicts::clearPreview();
             OpenLoco::GameCommands::setUpdatingCompanyId(_previousUpdatingCompany);
             OpenLoco::EntityManager::reset();
             OpenLoco::Vehicles::OrderManager::reset();
@@ -230,6 +233,37 @@ namespace
             station.setOwner(OpenLoco::CompanyId(0));
             station.setStationId(stationId);
             station.setStationType(OpenLoco::StationType::trainStation);
+        }
+
+        static TrackElement* getTrack(const Pos3& pos, const uint8_t trackId = 0, const uint8_t rotation = 0)
+        {
+            auto tile = TileManager::get(pos);
+            const auto track = std::ranges::find_if(tile, [pos, trackId, rotation](const auto& entry) {
+                const auto* elTrack = entry.template as<TrackElement>();
+                return elTrack != nullptr && elTrack->baseHeight() == pos.z && elTrack->trackId() == trackId && elTrack->rotation() == rotation;
+            });
+            return track != tile.end() ? track->template as<TrackElement>() : nullptr;
+        }
+
+        static void setSignalSide(const Pos3& pos, const bool right, const SignalMode mode)
+        {
+            auto tile = TileManager::get(pos);
+            const auto trackEntry = std::ranges::find_if(tile, [](const auto& entry) { return entry.template as<TrackElement>() != nullptr; });
+            ASSERT_NE(trackEntry, tile.end());
+            auto* track = trackEntry->template as<TrackElement>();
+            auto* signal = trackEntry->next()->template as<SignalElement>();
+            ASSERT_NE(signal, nullptr);
+            signal->getLeft().setHasSignal(!right);
+            signal->getRight().setHasSignal(right);
+            track->setLeftSignalMode(right ? SignalMode::block : mode);
+            track->setRightSignalMode(right ? mode : SignalMode::block);
+        }
+
+        static bool isConflictHighlighted(const Pos3& pos)
+        {
+            const auto* track = getTrack(pos);
+            EXPECT_NE(track, nullptr);
+            return track != nullptr && SignalConflicts::isHighlighted(pos, *track, true);
         }
 
         static void addTwoRouteJunction(const Pos3& firstPos = kFirstPos)
@@ -1459,6 +1493,224 @@ TEST_F(PathSignalsTest, OneWayPathFailureReportsOneWayWaitState)
     EXPECT_EQ(result.status, 3);
     EXPECT_NE(result.flags & OpenLoco::enumValue(OpenLoco::Vehicles::SignalStateFlags::blockedNoRoute), 0);
     EXPECT_EQ(result.flags & OpenLoco::enumValue(OpenLoco::Vehicles::SignalStateFlags::occupiedOneWay), 0);
+}
+
+TEST_F(PathSignalsTest, HighlightsTrackBetweenOpposingOneWaySignals)
+{
+    constexpr Pos3 eastSignal{ 352, 320, 32 };
+    constexpr Pos3 middle{ 320, 320, 32 };
+    constexpr Pos3 westSignal{ 288, 320, 32 };
+    addTrack(eastSignal, 0, 0, true, SignalMode::oneWayPath);
+    addTrack(middle, 0, 0);
+    addTrack(westSignal, 0, 0, true, SignalMode::oneWayPath);
+    setSignalSide(westSignal, true, SignalMode::oneWayPath);
+
+    SignalConflicts::refreshAudit();
+
+    EXPECT_TRUE(isConflictHighlighted(eastSignal));
+    EXPECT_TRUE(isConflictHighlighted(middle));
+    EXPECT_TRUE(isConflictHighlighted(westSignal));
+
+    SignalConflicts::invalidateAudit();
+    EXPECT_FALSE(isConflictHighlighted(middle));
+    SignalConflicts::refreshAuditIfDirty();
+    EXPECT_TRUE(isConflictHighlighted(middle));
+}
+
+TEST_F(PathSignalsTest, DoesNotHighlightOneWaySignalsFacingTheSameDirection)
+{
+    constexpr Pos3 eastSignal{ 352, 320, 32 };
+    constexpr Pos3 middle{ 320, 320, 32 };
+    constexpr Pos3 westSignal{ 288, 320, 32 };
+    addTrack(eastSignal, 0, 0, true, SignalMode::oneWayPath);
+    addTrack(middle, 0, 0);
+    addTrack(westSignal, 0, 0, true, SignalMode::oneWayPath);
+
+    SignalConflicts::refreshAudit();
+
+    EXPECT_FALSE(isConflictHighlighted(eastSignal));
+    EXPECT_FALSE(isConflictHighlighted(middle));
+    EXPECT_FALSE(isConflictHighlighted(westSignal));
+}
+
+TEST_F(PathSignalsTest, DoesNotHighlightWhenBothSignalsAllowBothDirections)
+{
+    constexpr Pos3 eastSignal{ 352, 320, 32 };
+    constexpr Pos3 middle{ 320, 320, 32 };
+    constexpr Pos3 westSignal{ 288, 320, 32 };
+    addTrack(eastSignal, 0, 0, true, SignalMode::oneWayPath);
+    addTrack(middle, 0, 0);
+    addTrack(westSignal, 0, 0, true, SignalMode::oneWayPath);
+    for (const auto pos : { eastSignal, westSignal })
+    {
+        auto tile = TileManager::get(pos);
+        const auto trackEntry = std::ranges::find_if(tile, [](const auto& entry) { return entry.template as<TrackElement>() != nullptr; });
+        ASSERT_NE(trackEntry, tile.end());
+        auto* track = trackEntry->as<TrackElement>();
+        auto* signal = trackEntry->next()->as<SignalElement>();
+        ASSERT_NE(signal, nullptr);
+        signal->getRight().setHasSignal(true);
+        track->setRightSignalMode(SignalMode::oneWayPath);
+    }
+
+    SignalConflicts::refreshAudit();
+
+    EXPECT_FALSE(isConflictHighlighted(eastSignal));
+    EXPECT_FALSE(isConflictHighlighted(middle));
+    EXPECT_FALSE(isConflictHighlighted(westSignal));
+}
+
+TEST_F(PathSignalsTest, OneWayConflictHighlightUsesExactTrackHeight)
+{
+    constexpr Pos3 eastSignal{ 352, 320, 32 };
+    constexpr Pos3 middle{ 320, 320, 32 };
+    constexpr Pos3 elevatedMiddle{ 320, 320, 64 };
+    constexpr Pos3 westSignal{ 288, 320, 32 };
+    addTrack(eastSignal, 0, 0, true, SignalMode::oneWayPath);
+    addTrack(middle, 0, 0);
+    addTrack(elevatedMiddle, 0, 0);
+    addTrack(westSignal, 0, 0, true, SignalMode::oneWayPath);
+    setSignalSide(westSignal, true, SignalMode::oneWayPath);
+
+    SignalConflicts::refreshAudit();
+
+    EXPECT_TRUE(isConflictHighlighted(middle));
+    EXPECT_FALSE(isConflictHighlighted(elevatedMiddle));
+}
+
+TEST_F(PathSignalsTest, HighlightsEveryTileOfCurvedTrack)
+{
+    constexpr Pos3 curvedSignal{ 352, 384, 32 };
+    constexpr uint8_t curvedTrackId = 4;
+    constexpr uint8_t curvedRotation = 0;
+    addTrack(curvedSignal, curvedTrackId, curvedRotation, true, SignalMode::oneWayPath);
+    const auto [middle, middleRotation] = Track::getTrackConnectionEnd(curvedSignal, curvedTrackId << 3);
+    addTrack(middle, 0, middleRotation);
+    const auto [opposingSignal, opposingRotation] = Track::getTrackConnectionEnd(middle, middleRotation);
+    addTrack(opposingSignal, 0, opposingRotation, true, SignalMode::oneWayPath);
+    setSignalSide(opposingSignal, true, SignalMode::oneWayPath);
+
+    SignalConflicts::refreshAudit();
+
+    for (const auto& piece : TrackData::getTrackPiece(curvedTrackId))
+    {
+        const auto offset = OpenLoco::Math::Vector::rotate(Pos2{ piece.x, piece.y }, curvedRotation);
+        const auto pos = curvedSignal + Pos3{ offset, piece.z };
+        const auto* track = getTrack(pos, curvedTrackId, curvedRotation);
+        ASSERT_NE(track, nullptr);
+        EXPECT_TRUE(SignalConflicts::isHighlighted(pos, *track, true));
+    }
+
+    const auto& previewPiece = TrackData::getTrackPiece(curvedTrackId)[2];
+    const auto previewOffset = OpenLoco::Math::Vector::rotate(Pos2{ previewPiece.x, previewPiece.y }, curvedRotation);
+    const auto previewPos = curvedSignal + Pos3{ previewOffset, previewPiece.z };
+    SignalConflicts::updatePreview({ previewPos, 0x8000, curvedTrackId, curvedRotation, previewPiece.index, 0 });
+    const auto* previewTrack = getTrack(previewPos, curvedTrackId, curvedRotation);
+    ASSERT_NE(previewTrack, nullptr);
+    EXPECT_TRUE(SignalConflicts::isHighlighted(previewPos, *previewTrack, false));
+}
+
+TEST_F(PathSignalsTest, InterveningSignalEndsOneWayConflictScan)
+{
+    constexpr Pos3 eastSignal{ 352, 320, 32 };
+    constexpr Pos3 middleSignal{ 320, 320, 32 };
+    constexpr Pos3 westSignal{ 288, 320, 32 };
+    addTrack(eastSignal, 0, 0, true, SignalMode::oneWayPath);
+    addTrack(middleSignal, 0, 0, true);
+    addTrack(westSignal, 0, 0, true, SignalMode::oneWayPath);
+    setSignalSide(westSignal, true, SignalMode::oneWayPath);
+
+    SignalConflicts::refreshAudit();
+
+    EXPECT_FALSE(isConflictHighlighted(eastSignal));
+    EXPECT_FALSE(isConflictHighlighted(middleSignal));
+    EXPECT_FALSE(isConflictHighlighted(westSignal));
+}
+
+TEST_F(PathSignalsTest, HighlightsOnlyTheConflictingJunctionBranch)
+{
+    constexpr Pos3 sourceSignal{ 352, 320, 32 };
+    constexpr Pos3 junction{ 288, 320, 32 };
+    constexpr Pos3 conflictingSignal{ 224, 320, 32 };
+    constexpr Pos3 safeBranch{ 288, 288, 32 };
+    addTrack(sourceSignal, 0, 0, true, SignalMode::oneWayPath);
+    addTwoRouteJunction();
+    setSignalSide(conflictingSignal, true, SignalMode::oneWayPath);
+
+    SignalConflicts::refreshAudit();
+
+    EXPECT_TRUE(isConflictHighlighted(sourceSignal));
+    EXPECT_TRUE(isConflictHighlighted(conflictingSignal));
+    const auto* conflictingBranch = getTrack(junction, 0, 0);
+    const auto* divergingBranch = getTrack(junction, 2, 0);
+    const auto* safeBranchTrack = getTrack(safeBranch, 0, 3);
+    ASSERT_NE(conflictingBranch, nullptr);
+    ASSERT_NE(divergingBranch, nullptr);
+    ASSERT_NE(safeBranchTrack, nullptr);
+    EXPECT_TRUE(SignalConflicts::isHighlighted(junction, *conflictingBranch, true));
+    EXPECT_FALSE(SignalConflicts::isHighlighted(junction, *divergingBranch, true));
+    EXPECT_FALSE(SignalConflicts::isHighlighted(safeBranch, *safeBranchTrack, true));
+}
+
+TEST_F(PathSignalsTest, DoesNotMatchOneWaySignalToItselfAroundLoop)
+{
+    constexpr Pos3 first{ 320, 320, 32 };
+    constexpr Pos3 second{ 320, 288, 32 };
+    constexpr Pos3 third{ 352, 288, 32 };
+    constexpr Pos3 fourth{ 352, 320, 32 };
+    addTrack(first, 2, 0, true, SignalMode::oneWayPath);
+    addTrack(second, 2, 3);
+    addTrack(third, 2, 2);
+    addTrack(fourth, 2, 1);
+
+    SignalConflicts::refreshAudit();
+
+    for (const auto& [pos, rotation] : std::array<std::pair<Pos3, uint8_t>, 4>{ { { first, 0 }, { second, 3 }, { third, 2 }, { fourth, 1 } } })
+    {
+        const auto* track = getTrack(pos, 2, rotation);
+        ASSERT_NE(track, nullptr);
+        EXPECT_FALSE(SignalConflicts::isHighlighted(pos, *track, true));
+    }
+}
+
+TEST_F(PathSignalsTest, PreviewsOpposingOneWaySignalBeforePlacement)
+{
+    constexpr Pos3 proposedSignal{ 352, 320, 32 };
+    constexpr Pos3 middle{ 320, 320, 32 };
+    constexpr Pos3 existingSignal{ 288, 320, 32 };
+    addTrack(proposedSignal, 0, 0);
+    addTrack(middle, 0, 0);
+    addTrack(existingSignal, 0, 0, true, SignalMode::oneWayPath);
+    setSignalSide(existingSignal, true, SignalMode::oneWayPath);
+
+    SignalConflicts::updatePreview({ proposedSignal, 0x8000, 0, 0, 0, 0 });
+
+    EXPECT_TRUE(isConflictHighlighted(proposedSignal));
+    EXPECT_TRUE(isConflictHighlighted(middle));
+    EXPECT_TRUE(isConflictHighlighted(existingSignal));
+
+    SignalConflicts::clearPreview();
+    EXPECT_FALSE(isConflictHighlighted(middle));
+}
+
+TEST_F(PathSignalsTest, PreviewsConflictThroughPathSignalPassableFromBehind)
+{
+    constexpr Pos3 proposedSignal{ 384, 320, 32 };
+    constexpr Pos3 pathSignal{ 352, 320, 32 };
+    constexpr Pos3 middle{ 320, 320, 32 };
+    constexpr Pos3 existingSignal{ 288, 320, 32 };
+    addTrack(proposedSignal, 0, 0);
+    addTrack(pathSignal, 0, 0, true, SignalMode::path);
+    addTrack(middle, 0, 0);
+    addTrack(existingSignal, 0, 0, true, SignalMode::oneWayPath);
+    setSignalSide(existingSignal, true, SignalMode::oneWayPath);
+
+    SignalConflicts::updatePreview({ proposedSignal, 0x8000, 0, 0, 0, 0 });
+
+    EXPECT_TRUE(isConflictHighlighted(proposedSignal));
+    EXPECT_TRUE(isConflictHighlighted(pathSignal));
+    EXPECT_TRUE(isConflictHighlighted(middle));
+    EXPECT_TRUE(isConflictHighlighted(existingSignal));
 }
 
 TEST_F(PathSignalsTest, ChoosesLongerRouteWhenShortRouteBeyondSignalIsOccupied)

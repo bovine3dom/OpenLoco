@@ -2,6 +2,7 @@
 #include "Entities/EntityManager.h"
 #include "Graphics/Gfx.h"
 #include "Map/Tile.h"
+#include "Map/Track/OneWaySignalConflicts.h"
 #include "Ui/Widget.h"
 #include "Ui/Widgets/ViewportWidget.h"
 #include "Ui/WindowManager.h"
@@ -57,6 +58,15 @@ namespace OpenLoco::Ui::Windows::Main
     static void draw(Ui::Window& window, Gfx::DrawingContext& drawingCtx)
     {
         window.draw(drawingCtx);
+    }
+
+    static void onUpdate(Ui::Window& window)
+    {
+        const auto* viewport = window.viewports[0];
+        if (viewport != nullptr && viewport->hasFlags(ViewportFlags::one_way_direction_arrows))
+        {
+            World::Track::OneWaySignalConflicts::refreshAuditIfDirty();
+        }
     }
 
     // 0x00468FD3
@@ -172,6 +182,7 @@ namespace OpenLoco::Ui::Windows::Main
     }
 
     static constexpr WindowEventList kEvents = {
+        .onUpdate = onUpdate,
         .draw = draw,
     };
 

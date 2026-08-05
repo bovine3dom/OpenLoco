@@ -22,6 +22,7 @@
 #include "Map/StationElement.h"
 #include "Map/SurfaceElement.h"
 #include "Map/TileManager.h"
+#include "Map/Track/OneWaySignalConflicts.h"
 #include "Map/TrackElement.h"
 #include "Map/TreeElement.h"
 #include "Map/WallElement.h"
@@ -41,8 +42,8 @@
 #include "Ui/ProgressBar.h"
 #include "Ui/WindowManager.h"
 #include "Vehicles/OrderManager.h"
-#include "Vehicles/RoutingManager.h"
 #include "Vehicles/RailTraffic.h"
+#include "Vehicles/RoutingManager.h"
 #include "Vehicles/SharedOrderManager.h"
 #include "Vehicles/VehicleAutoRenewal.h"
 #include "Vehicles/VehicleHead.h"
@@ -402,6 +403,7 @@ namespace OpenLoco::S5
 
         ts.entriesEnd = static_cast<std::ptrdiff_t>(count);
         World::TileManager::updateTilePointers();
+        World::Track::OneWaySignalConflicts::invalidateAudit();
     }
 
     /**

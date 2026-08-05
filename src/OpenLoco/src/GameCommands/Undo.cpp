@@ -7,6 +7,7 @@
 #include "GameState.h"
 #include "Graphics/Gfx.h"
 #include "Map/TileManager.h"
+#include "Map/Track/OneWaySignalConflicts.h"
 #include "Network/Network.h"
 #include "Objects/AirportObject.h"
 #include "Objects/IndustryObject.h"
@@ -603,6 +604,7 @@ namespace OpenLoco::GameCommands::Undo
             }
         }
 
+        Track::OneWaySignalConflicts::invalidateAudit();
         for (const auto& patch : patches)
         {
             while (TileManager::get(patch.pos).size() > 1)

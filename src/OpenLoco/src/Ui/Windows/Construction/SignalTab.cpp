@@ -10,6 +10,7 @@
 #include "Map/SignalElement.h"
 #include "Map/TileElementEntry.h"
 #include "Map/TileManager.h"
+#include "Map/Track/OneWaySignalConflicts.h"
 #include "Map/Track/TrackData.h"
 #include "Map/TrackElement.h"
 #include "Objects/ObjectManager.h"
@@ -152,6 +153,7 @@ namespace OpenLoco::Ui::Windows::Construction::Signal
             if (itemIndex != -1)
             {
                 Scenario::getConstruction().setLastSignalMode(static_cast<uint8_t>(itemIndex));
+                removeConstructionGhosts();
                 self.invalidate();
             }
             return;
@@ -237,6 +239,10 @@ namespace OpenLoco::Ui::Windows::Construction::Signal
             cState.signalGhostSides = args.sides;
             cState.signalGhostTrackObjId = args.trackObjType;
             _signalGhostMode = args.mode;
+            if (args.mode == World::SignalMode::oneWayPath)
+            {
+                World::Track::OneWaySignalConflicts::updatePreview({ args.pos, args.sides, args.trackId, args.rotation, args.index, args.trackObjType });
+            }
         }
         return res;
     }
@@ -244,6 +250,7 @@ namespace OpenLoco::Ui::Windows::Construction::Signal
     // 0x0049FEF6
     void removeSignalGhost()
     {
+        World::Track::OneWaySignalConflicts::clearPreview();
         if (Common::hasGhostVisibilityFlag(GhostVisibilityFlags::signal))
         {
             auto& cState = getConstructionState();

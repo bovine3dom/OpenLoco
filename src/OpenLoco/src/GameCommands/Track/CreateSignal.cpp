@@ -6,6 +6,7 @@
 #include "Map/AnimationManager.h"
 #include "Map/SignalElement.h"
 #include "Map/TileManager.h"
+#include "Map/Track/OneWaySignalConflicts.h"
 #include "Map/Track/Track.h"
 #include "Map/Track/TrackData.h"
 #include "Map/TrackElement.h"
@@ -349,6 +350,7 @@ namespace OpenLoco::GameCommands
                     tad2._data = tc.connections.front() & World::Track::AdditionalTaDFlags::basicTaDWithSignalMask;
                     Vehicles::sub_4A2AD7(nextTrackStart, tad2, getUpdatingCompanyId(), args.trackObjType);
                 }
+                World::Track::OneWaySignalConflicts::invalidateAudit();
             }
         }
         return totalCost;

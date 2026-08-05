@@ -2,6 +2,7 @@
 #include "Graphics/Colour.h"
 #include "Graphics/RenderTarget.h"
 #include "Logging.h"
+#include "Map/Track/OneWaySignalConflicts.h"
 #include "Map/TrackElement.h"
 #include "Objects/ObjectManager.h"
 #include "Objects/TrackExtraObject.h"
@@ -272,16 +273,27 @@ namespace OpenLoco::Paint
 
         // This is an ImageId but it has no image index set!
         auto baseTrackImageColour = ImageId(0, CompanyManager::getCompanyColour(elTrack.owner()));
+        auto bridgeColoursBaseImageId = baseTrackImageColour;
 
         if (elTrack.isGhost() || elTrack.isAiAllocated())
         {
             session.setItemType(Ui::ViewportInteraction::InteractionItem::noInteraction);
             baseTrackImageColour = Gfx::applyGhostToImage(0);
+            bridgeColoursBaseImageId = baseTrackImageColour;
 
             // TODO: apply company colour if playerCompanyID != elTrack.owner()?
         }
+        else
+        {
+            const auto showAudit = (session.getViewFlags() & Ui::ViewportFlags::one_way_direction_arrows) != Ui::ViewportFlags::none;
+            if (World::Track::OneWaySignalConflicts::isHighlighted(session.getUnkPosition(), elTrack, showAudit))
+            {
+                // This error palette remains distinct from a red company's normal track colour.
+                baseTrackImageColour = ImageId(0, ExtColour::unk2B);
+            }
+        }
 
-        TrackPaintCommon trackSession{ baseTrackImageColour.withIndex(trackObj->image), baseTrackImageColour, trackObj->tunnel };
+        TrackPaintCommon trackSession{ baseTrackImageColour.withIndex(trackObj->image), bridgeColoursBaseImageId, trackObj->tunnel };
 
         if (!session.skipTrackRoadSurfaces())
         {

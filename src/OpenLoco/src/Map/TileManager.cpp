@@ -18,6 +18,7 @@
 #include "Map/SurfaceElement.h"
 #include "Map/TileClearance.h"
 #include "Map/TileElementEntry.h"
+#include "Map/Track/OneWaySignalConflicts.h"
 #include "Map/TrackElement.h"
 #include "Map/TreeElement.h"
 #include "Map/WallElement.h"
@@ -248,6 +249,7 @@ namespace OpenLoco::World::TileManager
         tileState().entriesEnd = kInitialEntries;
 
         updateTilePointers();
+        Track::OneWaySignalConflicts::invalidateAudit();
         getGameState().flags |= GameStateFlags::tileManagerLoaded;
     }
 
@@ -970,13 +972,11 @@ namespace OpenLoco::World::TileManager
         {
             owner = elTrack->owner();
         }
-        else if (auto* elRoad = el.as<RoadElement>();
-                 elRoad != nullptr)
+        else if (auto* elRoad = el.as<RoadElement>(); elRoad != nullptr)
         {
             owner = elRoad->owner();
         }
-        else if (auto* elStation = el.as<StationElement>();
-                 elStation != nullptr)
+        else if (auto* elStation = el.as<StationElement>(); elStation != nullptr)
         {
             if (elStation->stationType() == StationType::trainStation)
             {
@@ -999,8 +999,7 @@ namespace OpenLoco::World::TileManager
                 owner = elStation->owner();
             }
         }
-        else if (auto* elSignal = el.as<SignalElement>();
-                 elSignal != nullptr)
+        else if (auto* elSignal = el.as<SignalElement>(); elSignal != nullptr)
         {
             if (auto* prevElTrack = el.prev()->as<TrackElement>();
                 prevElTrack != nullptr)

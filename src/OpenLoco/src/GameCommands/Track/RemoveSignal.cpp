@@ -3,6 +3,7 @@
 #include "Localisation/StringIds.h"
 #include "Map/SignalElement.h"
 #include "Map/TileManager.h"
+#include "Map/Track/OneWaySignalConflicts.h"
 #include "Map/Track/TrackData.h"
 #include "Map/TrackElement.h"
 #include "Objects/ObjectManager.h"
@@ -194,6 +195,7 @@ namespace OpenLoco::GameCommands
                 const Vehicles::TrackAndDirection::_TrackAndDirection tad(args.trackId, args.rotation);
 
                 Vehicles::sub_4A2AD7(trackStart, tad, getUpdatingCompanyId(), args.trackObjType);
+                World::Track::OneWaySignalConflicts::invalidateAudit();
             }
         }
         return cost;

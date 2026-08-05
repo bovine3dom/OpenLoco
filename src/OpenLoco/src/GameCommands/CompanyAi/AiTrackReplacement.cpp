@@ -8,6 +8,7 @@
 #include "Map/StationElement.h"
 #include "Map/SurfaceElement.h"
 #include "Map/TileManager.h"
+#include "Map/Track/OneWaySignalConflicts.h"
 #include "Map/Track/TrackData.h"
 #include "Map/Track/TrackEnum.h"
 #include "Map/TrackElement.h"
@@ -281,6 +282,10 @@ namespace OpenLoco::GameCommands
         uint8_t bridgeType = 0xFFU;
         bool overWater = false;
 
+        if (flags & Flags::apply)
+        {
+            World::Track::OneWaySignalConflicts::invalidateAudit();
+        }
         for (auto& piece : trackPieces)
         {
             const auto trackLoc = trackLoc0 + World::Pos3{ Math::Vector::rotate(World::Pos2{ piece.x, piece.y }, args.rotation), piece.z };
