@@ -125,16 +125,19 @@ namespace OpenLoco::Ui::Windows::MapToolTip
         {
             return;
         }
+        const auto outlineColour = firstArg == StringIds::cargo_flow_tooltip || firstArg == StringIds::cargo_flow_tooltip_no_capacity
+            ? std::optional<Colour>{ Colour::white }
+            : std::nullopt;
 
         if (_mapTooltipOwner == CompanyId::null || _mapTooltipOwner == CompanyManager::getControllingId())
         {
             Ui::Point origin(self.width / 2, self.height / 2 - 5);
-            tr.drawStringCentredWrapped(origin, self.width, Colour::black, StringIds::outlined_wcolour2_stringid, args);
+            tr.drawStringCentredWrapped(origin, self.width, Colour::black, StringIds::outlined_wcolour2_stringid, args, outlineColour);
         }
         else
         {
             Ui::Point origin(self.width / 2 + 13, self.height / 2 - 5);
-            auto basePoint = tr.drawStringCentredWrapped(origin, self.width - 28, Colour::black, StringIds::outlined_wcolour2_stringid, args);
+            auto basePoint = tr.drawStringCentredWrapped(origin, self.width - 28, Colour::black, StringIds::outlined_wcolour2_stringid, args, outlineColour);
 
             auto left = basePoint.x - 28;
             auto top = self.height / 2 - 13;

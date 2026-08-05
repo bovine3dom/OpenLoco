@@ -13,6 +13,7 @@ namespace OpenLoco::Gfx
         Font font;
         TextDrawFlags fontFlags;
         PaletteMap::Buffer<8> textColours{ 0 };
+        std::optional<PaletteIndex_t> outlineColour;
     };
 
     namespace Impl
@@ -69,8 +70,8 @@ namespace OpenLoco::Gfx
             drawState.textColours[PaletteIndex::textRemap2] = PaletteIndex::transparent;
             if ((drawState.fontFlags & TextDrawFlags::outline) != TextDrawFlags::none)
             {
-                drawState.textColours[PaletteIndex::textRemap1] = pal2;
-                drawState.textColours[PaletteIndex::textRemap2] = pal3;
+                drawState.textColours[PaletteIndex::textRemap1] = drawState.outlineColour.value_or(pal2);
+                drawState.textColours[PaletteIndex::textRemap2] = drawState.outlineColour.value_or(pal3);
             }
         }
 
@@ -2039,13 +2040,17 @@ namespace OpenLoco::Gfx
         return Impl::drawStringCentredRaw(drawState, _ctx, rt, origin, linebreakCount, colour, wrappedStr);
     }
 
-    Ui::Point TextRenderer::drawStringCentredWrapped(Ui::Point origin, uint16_t width, AdvancedColour colour, StringId stringId, FormatArgumentsView args /* = {}*/)
+    Ui::Point TextRenderer::drawStringCentredWrapped(Ui::Point origin, uint16_t width, AdvancedColour colour, StringId stringId, FormatArgumentsView args /* = {}*/, std::optional<Colour> outlineColour /* = std::nullopt */)
     {
         auto& rt = _ctx.currentRenderTarget();
 
         TextDrawingState drawState;
         drawState.font = _currentFontSpriteBase;
         drawState.fontFlags = _currentFontFlags;
+        if (outlineColour.has_value())
+        {
+            drawState.outlineColour = Colours::getShade(*outlineColour, 9);
+        }
 
         return Impl::drawStringCentredWrapped(drawState, _ctx, rt, origin, width, colour, stringId, args);
     }

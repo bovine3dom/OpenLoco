@@ -297,9 +297,10 @@ namespace OpenLoco::Ui::Windows::CargoFlowOverlay
 
             auto tr = Gfx::TextRenderer(drawingCtx);
             tr.setCurrentFont(Gfx::Font::small);
-            tr.drawStringLeft({ kLegendLeft, 53 }, Colour::black, StringIds::cargo_flow_unused);
-            tr.drawStringCentred({ kLegendLeft + kLegendCellWidth * 6, 53 }, Colour::black, StringIds::cargo_flow_saturated);
-            tr.drawStringRight({ kLegendLeft + kLegendCellWidth * 12 - 1, 53 }, Colour::black, StringIds::cargo_flow_overloaded);
+            const auto textColour = self.getColour(WindowColour::secondary).opaque();
+            tr.drawStringLeft({ kLegendLeft, 53 }, textColour, StringIds::cargo_flow_unused);
+            tr.drawStringCentred({ kLegendLeft + kLegendCellWidth * 6, 53 }, textColour, StringIds::cargo_flow_saturated);
+            tr.drawStringRight({ kLegendLeft + kLegendCellWidth * 12 - 1, 53 }, textColour, StringIds::cargo_flow_overloaded);
         }
 
         static void onClose(Window& self)

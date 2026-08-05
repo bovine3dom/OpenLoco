@@ -7,6 +7,7 @@
 #include "Types.hpp"
 #include <OpenLoco/Engine/Ui/Rect.hpp>
 #include <cstdint>
+#include <optional>
 
 namespace OpenLoco::Gfx
 {
@@ -109,7 +110,8 @@ namespace OpenLoco::Gfx
             uint16_t width,
             AdvancedColour colour,
             StringId stringId,
-            FormatArgumentsView args = {});
+            FormatArgumentsView args = {},
+            std::optional<Colour> outlineColour = std::nullopt);
 
         Ui::Point drawStringRight(
             Ui::Point origin,

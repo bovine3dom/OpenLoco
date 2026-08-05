@@ -1588,7 +1588,6 @@ namespace OpenLoco::Input
     void processMouseOver(int32_t x, int32_t y)
     {
         bool skipItem = false;
-        Ui::Viewport* cargoFlowViewport = nullptr;
         Ui::CursorId cursorId = Ui::CursorId::pointer;
 
         Windows::MapToolTip::reset();
@@ -1670,9 +1669,11 @@ namespace OpenLoco::Input
                         }
                         else
                         {
-                            if (window->type == Ui::WindowType::main && window->viewports[0] != nullptr)
+                            if (window->type == Ui::WindowType::main && window->viewports[0] != nullptr
+                                && Windows::CargoFlowOverlay::setTooltip(*window->viewports[0], { x, y }))
                             {
-                                cargoFlowViewport = window->viewports[0];
+                                skipItem = true;
+                                break;
                             }
                             switch (ViewportInteraction::getItemLeft(x, y).type)
                             {
@@ -1694,14 +1695,9 @@ namespace OpenLoco::Input
             }
         }
 
-        auto existingRightInteraction = skipItem;
         if (!skipItem)
         {
-            existingRightInteraction = ViewportInteraction::rightOver(x, y).type != InteractionItem::noInteraction;
-        }
-        if (cargoFlowViewport != nullptr && !existingRightInteraction && !Windows::MapToolTip::hasContent())
-        {
-            Windows::CargoFlowOverlay::setTooltip(*cargoFlowViewport, { x, y });
+            ViewportInteraction::rightOver(x, y);
         }
 
         if (Input::state() == Input::State::resizing)
