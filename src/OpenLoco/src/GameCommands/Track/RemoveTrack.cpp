@@ -7,7 +7,7 @@
 #include "Map/RoadElement.h"
 #include "Map/SignalElement.h"
 #include "Map/TileManager.h"
-#include "Map/Track/OneWaySignalConflicts.h"
+#include "Map/Track/TrackOverlayAudits.h"
 #include "Map/Track/TrackData.h"
 #include "Map/TrackElement.h"
 #include "Objects/BridgeObject.h"
@@ -262,7 +262,7 @@ namespace OpenLoco::GameCommands
         {
             if (!(flags & (Flags::aiAllocated | Flags::ghost)))
             {
-                World::Track::OneWaySignalConflicts::invalidateAudit();
+                World::Track::TrackOverlayAudits::invalidateAudit();
                 playTrackRemovalSound(args.pos);
             }
         }

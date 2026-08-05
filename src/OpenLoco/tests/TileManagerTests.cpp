@@ -11,9 +11,11 @@
 #include <OpenLoco/Map/Tile.h>
 #include <OpenLoco/Map/TileElement.h>
 #include <OpenLoco/Map/TileManager.h>
+#include <OpenLoco/Map/Track/DisconnectedTracks.h>
 #include <OpenLoco/Map/Track/OneWaySignalConflicts.h>
 #include <OpenLoco/Map/Track/Track.h>
 #include <OpenLoco/Map/Track/TrackData.h>
+#include <OpenLoco/Map/Track/TrackOverlayAudits.h>
 #include <OpenLoco/Map/TrackElement.h>
 #include <OpenLoco/Map/TreeElement.h>
 #include <OpenLoco/S5/S5GameState.h>
@@ -40,6 +42,8 @@
 
 using namespace OpenLoco::World;
 namespace SignalConflicts = OpenLoco::World::Track::OneWaySignalConflicts;
+namespace DisconnectedTracks = OpenLoco::World::Track::DisconnectedTracks;
+namespace TrackOverlayAudits = OpenLoco::World::Track::TrackOverlayAudits;
 
 namespace
 {
@@ -266,6 +270,13 @@ namespace
             return track != nullptr && SignalConflicts::isHighlighted(pos, *track, true);
         }
 
+        static bool isDisconnectedHighlighted(const Pos3& pos, const uint8_t trackId = 0, const uint8_t rotation = 0)
+        {
+            const auto* track = getTrack(pos, trackId, rotation);
+            EXPECT_NE(track, nullptr);
+            return track != nullptr && DisconnectedTracks::isHighlighted(pos, *track);
+        }
+
         static void addTwoRouteJunction(const Pos3& firstPos = kFirstPos)
         {
             addTrack(firstPos, 0, 0);
@@ -297,6 +308,10 @@ namespace
     };
 
     class RailPathfindingTest : public PathSignalsTest
+    {
+    };
+
+    class DisconnectedTracksTest : public PathSignalsTest
     {
     };
 
@@ -1493,6 +1508,104 @@ TEST_F(PathSignalsTest, OneWayPathFailureReportsOneWayWaitState)
     EXPECT_EQ(result.status, 3);
     EXPECT_NE(result.flags & OpenLoco::enumValue(OpenLoco::Vehicles::SignalStateFlags::blockedNoRoute), 0);
     EXPECT_EQ(result.flags & OpenLoco::enumValue(OpenLoco::Vehicles::SignalStateFlags::occupiedOneWay), 0);
+}
+
+TEST_F(DisconnectedTracksTest, RefreshesAfterConnectivityChanges)
+{
+    constexpr Pos3 east{ 352, 320, 32 };
+    constexpr Pos3 middle{ 320, 320, 32 };
+    constexpr Pos3 west{ 288, 320, 32 };
+    addTrack(east, 0, 0);
+    addTrack(middle, 0, 0);
+
+    DisconnectedTracks::refreshAudit();
+
+    EXPECT_TRUE(isDisconnectedHighlighted(middle));
+
+    addTrack(west, 0, 0);
+    TrackOverlayAudits::invalidateAudit();
+    EXPECT_FALSE(isDisconnectedHighlighted(middle));
+    TrackOverlayAudits::refreshAuditIfDirty();
+
+    EXPECT_TRUE(isDisconnectedHighlighted(east));
+    EXPECT_FALSE(isDisconnectedHighlighted(middle));
+    EXPECT_TRUE(isDisconnectedHighlighted(west));
+}
+
+TEST_F(DisconnectedTracksTest, RequiresExactEndpointHeight)
+{
+    constexpr Pos3 east{ 352, 320, 32 };
+    constexpr Pos3 middle{ 320, 320, 32 };
+    constexpr Pos3 raisedWest{ 288, 320, 36 };
+    addTrack(east, 0, 0);
+    addTrack(middle, 0, 0);
+    addTrack(raisedWest, 0, 0);
+
+    DisconnectedTracks::refreshAudit();
+
+    EXPECT_TRUE(isDisconnectedHighlighted(middle));
+}
+
+TEST_F(DisconnectedTracksTest, HighlightsEveryTileOfDisconnectedCurve)
+{
+    constexpr Pos3 start{ 352, 384, 32 };
+    constexpr uint8_t trackId = 4;
+    constexpr uint8_t rotation = 0;
+    addTrack(start, trackId, rotation);
+
+    DisconnectedTracks::refreshAudit();
+
+    for (const auto& piece : TrackData::getTrackPiece(trackId))
+    {
+        const auto offset = OpenLoco::Math::Vector::rotate(Pos2{ piece.x, piece.y }, rotation);
+        EXPECT_TRUE(isDisconnectedHighlighted(start + Pos3{ offset, piece.z }, trackId, rotation));
+    }
+}
+
+TEST_F(DisconnectedTracksTest, DoesNotHighlightClosedTrackLoop)
+{
+    const std::array<std::pair<Pos3, uint8_t>, 4> loop{
+        { { { 320, 320, 32 }, 0 }, { { 320, 288, 32 }, 3 }, { { 352, 288, 32 }, 2 }, { { 352, 320, 32 }, 1 } }
+    };
+    for (const auto& [pos, rotation] : loop)
+    {
+        addTrack(pos, 2, rotation);
+    }
+
+    DisconnectedTracks::refreshAudit();
+
+    for (const auto& [pos, rotation] : loop)
+    {
+        EXPECT_FALSE(isDisconnectedHighlighted(pos, 2, rotation));
+    }
+}
+
+TEST_F(DisconnectedTracksTest, IgnoresGhostTrackConnections)
+{
+    constexpr Pos3 east{ 352, 320, 32 };
+    constexpr Pos3 middle{ 320, 320, 32 };
+    constexpr Pos3 ghostWest{ 288, 320, 32 };
+    addTrack(east, 0, 0);
+    addTrack(middle, 0, 0);
+    addTrack(ghostWest, 0, 0);
+    auto* ghostTrack = getTrack(ghostWest);
+    ASSERT_NE(ghostTrack, nullptr);
+    ghostTrack->setGhost(true);
+
+    DisconnectedTracks::refreshAudit();
+
+    EXPECT_TRUE(isDisconnectedHighlighted(middle));
+    EXPECT_FALSE(isDisconnectedHighlighted(ghostWest));
+}
+
+TEST_F(DisconnectedTracksTest, HandlesMapBoundary)
+{
+    constexpr Pos3 boundary{ 0, 0, 32 };
+    addTrack(boundary, 0, 0);
+
+    DisconnectedTracks::refreshAudit();
+
+    EXPECT_TRUE(isDisconnectedHighlighted(boundary));
 }
 
 TEST_F(PathSignalsTest, HighlightsTrackBetweenOpposingOneWaySignals)

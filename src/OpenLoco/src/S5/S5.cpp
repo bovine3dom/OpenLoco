@@ -22,7 +22,7 @@
 #include "Map/StationElement.h"
 #include "Map/SurfaceElement.h"
 #include "Map/TileManager.h"
-#include "Map/Track/OneWaySignalConflicts.h"
+#include "Map/Track/TrackOverlayAudits.h"
 #include "Map/TrackElement.h"
 #include "Map/TreeElement.h"
 #include "Map/WallElement.h"
@@ -403,7 +403,7 @@ namespace OpenLoco::S5
 
         ts.entriesEnd = static_cast<std::ptrdiff_t>(count);
         World::TileManager::updateTilePointers();
-        World::Track::OneWaySignalConflicts::invalidateAudit();
+        World::Track::TrackOverlayAudits::invalidateAudit();
     }
 
     /**

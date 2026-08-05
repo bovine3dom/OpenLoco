@@ -18,7 +18,7 @@
 #include "Map/SurfaceElement.h"
 #include "Map/TileClearance.h"
 #include "Map/TileElementEntry.h"
-#include "Map/Track/OneWaySignalConflicts.h"
+#include "Map/Track/TrackOverlayAudits.h"
 #include "Map/TrackElement.h"
 #include "Map/TreeElement.h"
 #include "Map/WallElement.h"
@@ -249,7 +249,7 @@ namespace OpenLoco::World::TileManager
         tileState().entriesEnd = kInitialEntries;
 
         updateTilePointers();
-        Track::OneWaySignalConflicts::invalidateAudit();
+        Track::TrackOverlayAudits::invalidateAudit();
         getGameState().flags |= GameStateFlags::tileManagerLoaded;
     }
 

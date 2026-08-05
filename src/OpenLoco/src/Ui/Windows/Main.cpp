@@ -2,7 +2,7 @@
 #include "Entities/EntityManager.h"
 #include "Graphics/Gfx.h"
 #include "Map/Tile.h"
-#include "Map/Track/OneWaySignalConflicts.h"
+#include "Map/Track/TrackOverlayAudits.h"
 #include "Ui/Widget.h"
 #include "Ui/Widgets/ViewportWidget.h"
 #include "Ui/WindowManager.h"
@@ -65,7 +65,7 @@ namespace OpenLoco::Ui::Windows::Main
         const auto* viewport = window.viewports[0];
         if (viewport != nullptr && viewport->hasFlags(ViewportFlags::one_way_direction_arrows))
         {
-            World::Track::OneWaySignalConflicts::refreshAuditIfDirty();
+            World::Track::TrackOverlayAudits::refreshAuditIfDirty();
         }
     }
 

@@ -5,7 +5,7 @@
 #include "Logging.h"
 #include "Map/RoadElement.h"
 #include "Map/TileManager.h"
-#include "Map/Track/OneWaySignalConflicts.h"
+#include "Map/Track/TrackOverlayAudits.h"
 #include "Map/TrackElement.h"
 #include "MessageManager.h"
 #include "Scenario/Scenario.h"
@@ -53,7 +53,7 @@ namespace OpenLoco::GameCommands
                     trackElement.setOwner(ourCompanyId);
                 }
             }
-            Track::OneWaySignalConflicts::invalidateAudit();
+            Track::TrackOverlayAudits::invalidateAudit();
 
             // Second phase: change ownership of all stations that currently belong to the target company.
             for (auto& station : StationManager::stations())
