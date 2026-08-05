@@ -22,6 +22,7 @@ so far:
 - tweening now uses half-world pixels (need uncapped fps or vsync on)
 - conflicting signal placement paints track red in build mode
 - disconnected track ends are painted red in build mode
+- with order window open, click or ctrl+click another vehicle to copy or share its orders
 
 
 

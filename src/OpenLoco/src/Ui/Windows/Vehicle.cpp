@@ -3399,6 +3399,58 @@ namespace OpenLoco::Ui::Windows::Vehicle
             self.orderTableIndex++;
         }
 
+        static void copyOrdersFrom(Window& self, const Vehicles::VehicleHead& source)
+        {
+            Audio::playSound(Audio::SoundId::waypoint, Audio::ChannelId::ui, Input::getDragLastLocation().x);
+            std::vector<std::shared_ptr<Vehicles::Order>> clonedOrders;
+            for (auto& order : getOrderTable(&source))
+            {
+                clonedOrders.push_back(order.clone());
+            }
+            for (auto& order : clonedOrders)
+            {
+                addNewOrder(self, *order);
+            }
+            WindowManager::bringToFront(self);
+        }
+
+        static void joinSharedOrdersFrom(Window& self, const Vehicles::VehicleHead& source)
+        {
+            auto* head = Common::getVehicle(self);
+            if (head == nullptr
+                || head->owner != CompanyManager::getControllingId()
+                || Vehicles::SharedOrderManager::isShared(head->id)
+                || !canUseSharedOrdersFrom(*head, source))
+            {
+                return;
+            }
+            if (head->sizeOfOrderTable > sizeof(Vehicles::OrderEnd)
+                && !Vehicles::SharedOrderManager::areOrdersEqual(*head, source))
+            {
+                FormatArguments promptArgs{};
+                if (!Windows::PromptOkCancel::open(
+                        StringIds::cant_change_shared_orders,
+                        StringIds::replace_with_shared_orders_prompt,
+                        promptArgs,
+                        StringIds::share_orders))
+                {
+                    return;
+                }
+            }
+
+            GameCommands::setErrorTitle(StringIds::cant_change_shared_orders);
+            GameCommands::VehicleOrderShareArgs args{};
+            args.target = head->id;
+            args.source = source.id;
+            args.mode = GameCommands::VehicleOrderShareArgs::Mode::joinSource;
+            if (GameCommands::doCommand(args, GameCommands::Flags::apply) != GameCommands::kFailure)
+            {
+                self.orderTableIndex = -1;
+                self.rowHover = -1;
+                Vehicles::OrderManager::generateNumDisplayFrames(head);
+            }
+        }
+
         // 0x004B4BAC
         static void onDropdown(Window& self, const WidgetIndex_t i, const WidgetId id, const int16_t dropdownIndex)
         {
@@ -3462,38 +3514,11 @@ namespace OpenLoco::Ui::Windows::Vehicle
                         return;
                     }
 
-                    if (mode != SharedOrderDropdownMode::joinSource
-                        || head->owner != CompanyManager::getControllingId()
-                        || Vehicles::SharedOrderManager::isShared(head->id)
-                        || !canUseSharedOrdersFrom(*head, *selected))
+                    if (mode != SharedOrderDropdownMode::joinSource)
                     {
                         return;
                     }
-                    if (head->sizeOfOrderTable > sizeof(Vehicles::OrderEnd)
-                        && !Vehicles::SharedOrderManager::areOrdersEqual(*head, *selected))
-                    {
-                        FormatArguments promptArgs{};
-                        if (!Windows::PromptOkCancel::open(
-                                StringIds::cant_change_shared_orders,
-                                StringIds::replace_with_shared_orders_prompt,
-                                promptArgs,
-                                StringIds::share_orders))
-                        {
-                            return;
-                        }
-                    }
-
-                    GameCommands::setErrorTitle(StringIds::cant_change_shared_orders);
-                    GameCommands::VehicleOrderShareArgs args{};
-                    args.target = head->id;
-                    args.source = selected->id;
-                    args.mode = GameCommands::VehicleOrderShareArgs::Mode::joinSource;
-                    if (GameCommands::doCommand(args, GameCommands::Flags::apply) != GameCommands::kFailure)
-                    {
-                        self.orderTableIndex = -1;
-                        self.rowHover = -1;
-                        Vehicles::OrderManager::generateNumDisplayFrames(head);
-                    }
+                    joinSharedOrdersFrom(self, *selected);
                     break;
                 }
                 case Widx::kOrderForceUnload:
@@ -3826,8 +3851,34 @@ namespace OpenLoco::Ui::Windows::Vehicle
             Gfx::invalidateScreen();
         }
 
+        static Vehicles::VehicleHead* getVehicleFromCursor(const int16_t x, const int16_t y)
+        {
+            const auto interaction = ViewportInteraction::getItemLeft(x, y);
+            if (interaction.type != ViewportInteraction::InteractionItem::entity)
+            {
+                return nullptr;
+            }
+
+            auto* entity = reinterpret_cast<EntityBase*>(interaction.object);
+            auto* vehicle = entity->asBase<Vehicles::VehicleBase>();
+            return vehicle == nullptr ? nullptr : EntityManager::get<Vehicles::VehicleHead>(vehicle->getHead());
+        }
+
         static void onToolDown(Window& self, [[maybe_unused]] const WidgetIndex_t widgetIndex, [[maybe_unused]] const WidgetId id, const int16_t x, const int16_t y)
         {
+            if (auto* source = getVehicleFromCursor(x, y); source != nullptr && source->id != EntityId(self.number))
+            {
+                if (Input::hasKeyModifier(Input::KeyModifier::control))
+                {
+                    joinSharedOrdersFrom(self, *source);
+                }
+                else
+                {
+                    copyOrdersFrom(self, *source);
+                }
+                return;
+            }
+
             const auto args = getRouteInteractionFromCursor(self, x, y);
             switch (args.type)
             {
@@ -3912,6 +3963,20 @@ namespace OpenLoco::Ui::Windows::Vehicle
         // 0x004B50CE
         static Ui::CursorId toolCursor(Window& self, const int16_t x, const int16_t y, const Ui::CursorId fallback, bool& out)
         {
+            if (auto* source = getVehicleFromCursor(x, y); source != nullptr)
+            {
+                auto* head = Common::getVehicle(self);
+                if (head != nullptr && source->id != head->id)
+                {
+                    out = true;
+                    if (Input::hasKeyModifier(Input::KeyModifier::control))
+                    {
+                        out = !Vehicles::SharedOrderManager::isShared(head->id) && canUseSharedOrdersFrom(*head, *source);
+                    }
+                    return out ? CursorId::inwardArrows : fallback;
+                }
+            }
+
             const auto args = getRouteInteractionFromCursor(self, x, y);
             out = args.type != Ui::ViewportInteraction::InteractionItem::noInteraction;
             if (out)
@@ -3957,17 +4022,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
                 if (item == -1)
                 {
                     // Copy complete order list
-                    Audio::playSound(Audio::SoundId::waypoint, Audio::ChannelId::ui, Input::getDragLastLocation().x);
-                    std::vector<std::shared_ptr<Vehicles::Order>> clonedOrders;
-                    for (auto& existingOrders : getOrderTable(head))
-                    {
-                        clonedOrders.push_back(existingOrders.clone());
-                    }
-                    for (auto& order : clonedOrders)
-                    {
-                        addNewOrder(*toolWindow, *order);
-                    }
-                    WindowManager::bringToFront(*toolWindow);
+                    copyOrdersFrom(*toolWindow, *head);
                 }
                 else
                 {
