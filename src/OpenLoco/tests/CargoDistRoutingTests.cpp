@@ -34,7 +34,7 @@ namespace
 
     RoutingEdge serviceEdge(uint16_t from, uint16_t to, uint16_t service, uint16_t departure, uint16_t arrival, uint32_t travelTime, uint32_t waitTime, uint32_t capacity = 1000)
     {
-        return { station(from), station(to), capacity, travelTime, servicePoint(service, departure), servicePoint(service, arrival), waitTime };
+        return { station(from), station(to), capacity, travelTime, servicePoint(service, departure), servicePoint(service, arrival), waitTime, waitTime * 2 };
     }
 
     uint32_t amountAt(
@@ -74,6 +74,7 @@ namespace
             EXPECT_EQ(lhs[i].incoming, rhs[i].incoming);
             EXPECT_EQ(lhs[i].departure, rhs[i].departure);
             EXPECT_EQ(lhs[i].arrival, rhs[i].arrival);
+            EXPECT_EQ(lhs[i].destination, rhs[i].destination);
         }
     }
 
@@ -337,6 +338,137 @@ TEST(CargoDistRouting, WaitMakesFastInfrequentServiceLoseToSlowerFrequentService
     EXPECT_EQ(amountAt(flows, 1, 1, 2, {}, servicePoint(1, 0), servicePoint(1, 1)), 0U);
     EXPECT_EQ(amountAt(flows, 1, 1, 2, {}, servicePoint(2, 0), servicePoint(2, 1)), 1U);
     EXPECT_EQ(amountAt(flows, 2, 1, 2, servicePoint(2, 1)), 1U);
+}
+
+TEST(CargoDistRouting, FullDeparturesAddQueueHeadways)
+{
+    const RoutingGraph graph{
+        { node(1, 0, 0, 300), node(2, 10, 0, 0, true) },
+        {
+            serviceEdge(1, 2, 1, 0, 1, 5, 5, 100),
+            serviceEdge(1, 2, 2, 0, 1, 20, 2, 100),
+        },
+        true,
+        {},
+    };
+
+    const auto flows = calculateAsymmetricFlows(graph);
+    const auto fast = amountAt(flows, 1, 1, 2, {}, servicePoint(1, 0), servicePoint(1, 1));
+    const auto stopping = amountAt(flows, 1, 1, 2, {}, servicePoint(2, 0), servicePoint(2, 1));
+
+    EXPECT_GT(fast, 0U);
+    EXPECT_GT(stopping, 0U);
+    EXPECT_EQ(fast + stopping, 300U);
+}
+
+TEST(CargoDistRouting, QueueBoundaryMovesTheNextPassenger)
+{
+    const RoutingGraph graph{
+        { node(1, 0, 0, 101), node(2, 10, 0, 0, true) },
+        {
+            serviceEdge(1, 2, 1, 0, 1, 5, 5, 100),
+            serviceEdge(1, 2, 2, 0, 1, 12, 1, 100),
+        },
+        true,
+        {},
+    };
+    const auto flows = calculateAsymmetricFlows(graph);
+
+    EXPECT_EQ(amountAt(flows, 1, 1, 2, {}, servicePoint(1, 0), servicePoint(1, 1)), 100U);
+    EXPECT_EQ(amountAt(flows, 1, 1, 2, {}, servicePoint(2, 0), servicePoint(2, 1)), 1U);
+}
+
+TEST(CargoDistRouting, QueueSplittingKeepsIdenticalServicesWithinChunkSize)
+{
+    const RoutingGraph graph{
+        { node(1, 0, 0, 256), node(2, 10, 0, 0, true) },
+        {
+            serviceEdge(1, 2, 1, 0, 1, 1, 1, 1),
+            serviceEdge(1, 2, 2, 0, 1, 1, 1, 1),
+        },
+        true,
+        {},
+    };
+
+    const auto flows = calculateAsymmetricFlows(graph);
+
+    const auto first = amountAt(flows, 1, 1, 2, {}, servicePoint(1, 0), servicePoint(1, 1));
+    const auto second = amountAt(flows, 1, 1, 2, {}, servicePoint(2, 0), servicePoint(2, 1));
+    EXPECT_EQ(first + second, 256U);
+    const auto chunkSize = 256U / RoutingSettings{}.accuracy;
+    EXPECT_LE(std::max(first, second) - std::min(first, second), chunkSize);
+}
+
+TEST(CargoDistRouting, FixedDestinationIsNotReallocated)
+{
+    RoutingGraph graph{
+        {
+            node(1, 0, 0),
+            node(2, 10, 0, 0, true),
+            node(3, 20, 0, 0, true),
+        },
+        { edge(1, 2), edge(1, 3) },
+        false,
+        {},
+    };
+    graph.demands.push_back({ station(1), station(1), 10, {}, station(3) });
+
+    const auto flows = calculateAsymmetricFlows(graph);
+
+    ASSERT_FALSE(flows.empty());
+    EXPECT_TRUE(std::all_of(flows.begin(), flows.end(), [](const auto& flow) {
+        return flow.destination == station(3);
+    }));
+    EXPECT_EQ(amountAt(flows, 1, 1, 2), 0U);
+    EXPECT_EQ(amountAt(flows, 1, 1, 3), 10U);
+}
+
+TEST(CargoDistRouting, PresentServiceUsesCompleteJourneyCost)
+{
+    const RoutingGraph graph{
+        {
+            node(1, 0, 0),
+            node(2, 10, 0),
+            node(3, 10, 10),
+            node(4, 20, 0, 0, true),
+        },
+        {
+            serviceEdge(1, 2, 1, 0, 1, 1, 1),
+            serviceEdge(2, 4, 1, 1, 2, 100, 1),
+            serviceEdge(1, 3, 2, 0, 1, 10, 100),
+            serviceEdge(3, 4, 2, 1, 2, 10, 100),
+        },
+        true,
+        {},
+    };
+
+    EXPECT_EQ(calculateJourneyCost(graph, station(1), station(4)), 102U);
+    EXPECT_EQ(calculateJourneyCost(graph, station(1), station(4), servicePoint(2, 0)), 20U);
+}
+
+TEST(CargoDistRouting, ThroughPassengersReserveOnwardCapacityFirst)
+{
+    RoutingGraph graph{
+        {
+            node(1, 0, 0),
+            node(2, 10, 0, 10),
+            node(3, 20, 0, 0, true),
+        },
+        {
+            serviceEdge(1, 2, 1, 0, 1, 1, 10, 10),
+            serviceEdge(2, 3, 1, 1, 2, 1, 10, 10),
+            serviceEdge(2, 3, 2, 0, 1, 5, 1, 10),
+        },
+        true,
+        {},
+    };
+    graph.demands.push_back({ station(2), station(1), 10, servicePoint(1, 1), station(3) });
+
+    const auto flows = calculateAsymmetricFlows(graph);
+
+    EXPECT_EQ(amountAt(flows, 2, 1, 3, servicePoint(1, 1), servicePoint(1, 1), servicePoint(1, 2)), 10U);
+    EXPECT_EQ(amountAt(flows, 2, 2, 3, {}, servicePoint(1, 1), servicePoint(1, 2)), 0U);
+    EXPECT_EQ(amountAt(flows, 2, 2, 3, {}, servicePoint(2, 0), servicePoint(2, 1)), 10U);
 }
 
 TEST(CargoDistRouting, ContinuingOnSameServicePaysOnlyOneWait)

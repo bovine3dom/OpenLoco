@@ -85,6 +85,8 @@ TEST(CargoFlowOverlayTest, AggregatesDirectedPlannedDemandAndCapacity)
     EXPECT_EQ(unused->plannedDemand, 0);
     ASSERT_TRUE(unused->capacity.has_value());
     EXPECT_EQ(*unused->capacity, 30);
+    ASSERT_TRUE(unused->saturationCapacity.has_value());
+    EXPECT_EQ(*unused->saturationCapacity, 30);
 
     const auto* large = findEdge(edges, station(8), station(9));
     ASSERT_NE(large, nullptr);
@@ -103,6 +105,57 @@ TEST(CargoFlowOverlayTest, MapsDemandToJgrStyleSaturationBuckets)
     EXPECT_EQ(CargoFlowOverlay::getSaturationBucket(101, 100), 6);
     EXPECT_EQ(CargoFlowOverlay::getSaturationBucket(200, 100), 11);
     EXPECT_EQ(CargoFlowOverlay::getSaturationBucket(std::numeric_limits<uint64_t>::max(), 100), 11);
+}
+
+TEST(CargoFlowOverlayTest, SeparatesStoppingAndLimitedStopLinks)
+{
+    reset();
+    auto& state = getState();
+    state.serviceEdges[{ 0, station(1), station(2), servicePoint(1, 0), servicePoint(1, 1) }] = { 40, 10, 2, 4 };
+    state.serviceEdges[{ 0, station(2), station(3), servicePoint(1, 1), servicePoint(1, 2) }] = { 40, 10, 2, 4 };
+    state.serviceEdges[{ 0, station(1), station(3), servicePoint(2, 0), servicePoint(2, 1) }] = { 20, 12, 5, 10 };
+    state.flows[{ 0, station(1), station(1), {}, station(3) }] = {
+        { station(2), 120, 0, servicePoint(1, 0), servicePoint(1, 1) },
+        { station(3), 80, 0, servicePoint(2, 0), servicePoint(2, 1) },
+    };
+    state.flows[{ 0, station(2), station(1), servicePoint(1, 1), station(3) }] = {
+        { station(3), 120, 0, servicePoint(1, 1), servicePoint(1, 2) },
+    };
+
+    const auto edges = getPlannedServiceEdges(0);
+
+    const auto* firstStoppingLeg = findEdge(edges, station(1), station(2));
+    const auto* secondStoppingLeg = findEdge(edges, station(2), station(3));
+    const auto* limitedStopLeg = findEdge(edges, station(1), station(3));
+    ASSERT_NE(firstStoppingLeg, nullptr);
+    ASSERT_NE(secondStoppingLeg, nullptr);
+    ASSERT_NE(limitedStopLeg, nullptr);
+    EXPECT_EQ(firstStoppingLeg->plannedDemand, 120);
+    EXPECT_EQ(secondStoppingLeg->plannedDemand, 120);
+    EXPECT_EQ(limitedStopLeg->plannedDemand, 80);
+    EXPECT_EQ(*firstStoppingLeg->capacity, 40);
+    EXPECT_EQ(*limitedStopLeg->capacity, 20);
+}
+
+TEST(CargoFlowOverlayTest, AggregateLinkUsesBusiestServiceSaturation)
+{
+    reset();
+    auto& state = getState();
+    state.serviceEdges[{ 0, station(1), station(2), servicePoint(1, 0), servicePoint(1, 1) }] = { 10, 5, 2, 4 };
+    state.serviceEdges[{ 0, station(1), station(2), servicePoint(2, 0), servicePoint(2, 1) }] = { 100, 10, 2, 4 };
+    state.flows[{ 0, station(1), station(1), {}, station(2) }] = {
+        { station(2), 20, 0, servicePoint(1, 0), servicePoint(1, 1) },
+    };
+
+    const auto links = getPlannedServiceEdges(0);
+    const auto* link = findEdge(links, station(1), station(2));
+
+    ASSERT_NE(link, nullptr);
+    EXPECT_EQ(link->plannedDemand, 20);
+    EXPECT_EQ(*link->capacity, 110);
+    EXPECT_EQ(link->saturationDemand, 20);
+    EXPECT_EQ(*link->saturationCapacity, 10);
+    EXPECT_EQ(CargoFlowOverlay::getSaturationBucket(link->saturationDemand, link->saturationCapacity), 11);
 }
 
 TEST(CargoFlowOverlayTest, DrawsCompleteLinesInEitherDirection)

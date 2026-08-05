@@ -35,6 +35,7 @@ namespace OpenLoco::CargoDist
             ServicePoint departure;
             ServicePoint arrival;
             uint32_t waitTime;
+            uint32_t headway;
         };
 
         struct Occurrence
@@ -53,6 +54,8 @@ namespace OpenLoco::CargoDist
             ServicePoint departure;
             ServicePoint arrival;
             uint64_t flow = 0;
+            uint32_t headway{};
+            size_t pairedRide = kNoIndex;
         };
 
         struct PlannedGraph
@@ -220,11 +223,15 @@ namespace OpenLoco::CargoDist
                 {
                     continue;
                 }
-                rides.push_back({ from, to, edge.capacity, edge.travelTime, edge.departure, edge.arrival, edge.waitTime });
+                rides.push_back({ from, to, edge.capacity, edge.travelTime, edge.departure, edge.arrival, edge.waitTime, edge.headway });
             }
             std::sort(rides.begin(), rides.end(), [](const auto& lhs, const auto& rhs) {
-                return std::make_tuple(lhs.from, lhs.to, serviceValue(lhs.departure.service), lhs.departure.occurrence, serviceValue(lhs.arrival.service), lhs.arrival.occurrence, lhs.travelTime, lhs.capacity, lhs.waitTime)
-                    < std::make_tuple(rhs.from, rhs.to, serviceValue(rhs.departure.service), rhs.departure.occurrence, serviceValue(rhs.arrival.service), rhs.arrival.occurrence, rhs.travelTime, rhs.capacity, rhs.waitTime);
+                return std::make_tuple(lhs.from, lhs.to, serviceValue(lhs.departure.service), lhs.departure.occurrence, serviceValue(lhs.arrival.service), lhs.arrival.occurrence, lhs.travelTime, lhs.capacity, lhs.waitTime, lhs.headway)
+                    < std::make_tuple(rhs.from, rhs.to, serviceValue(rhs.departure.service), rhs.departure.occurrence, serviceValue(rhs.arrival.service), rhs.arrival.occurrence, rhs.travelTime, rhs.capacity, rhs.waitTime, rhs.headway);
+            });
+            std::map<std::pair<size_t, ServicePoint>, size_t> departures;
+            std::erase_if(rides, [&](const auto& ride) {
+                return !ride.departure.empty() && !departures.emplace(std::pair{ ride.from, ride.departure }, ride.to).second;
             });
             return rides;
         }
@@ -287,7 +294,7 @@ namespace OpenLoco::CargoDist
 
                 const auto departure = nodes.size() + findOccurrence(occurrences, { ride.from, ride.departure });
                 const auto arrival = nodes.size() + findOccurrence(occurrences, { ride.to, ride.arrival });
-                edges.push_back({ ride.from, departure, 0, ride.waitTime, PlannedEdgeKind::board, {}, {} });
+                edges.push_back({ ride.from, departure, ride.capacity, ride.waitTime, PlannedEdgeKind::board, {}, {}, 0, ride.headway });
                 edges.push_back({ departure, arrival, ride.capacity, ride.travelTime, PlannedEdgeKind::ride, ride.departure, ride.arrival });
                 edges.push_back({ arrival, ride.to, 0, 0, PlannedEdgeKind::alight, {}, {} });
             }
@@ -295,6 +302,23 @@ namespace OpenLoco::CargoDist
                 return std::make_tuple(lhs.from, lhs.to, lhs.kind, lhs.travelTime, lhs.capacity, serviceValue(lhs.departure.service), lhs.departure.occurrence, serviceValue(lhs.arrival.service), lhs.arrival.occurrence)
                     < std::make_tuple(rhs.from, rhs.to, rhs.kind, rhs.travelTime, rhs.capacity, serviceValue(rhs.departure.service), rhs.departure.occurrence, serviceValue(rhs.arrival.service), rhs.arrival.occurrence);
             });
+            std::map<size_t, size_t> ridesByDeparture;
+            for (size_t edgeIndex = 0; edgeIndex < edges.size(); ++edgeIndex)
+            {
+                const auto& edge = edges[edgeIndex];
+                if (edge.kind == PlannedEdgeKind::ride && !edge.departure.empty())
+                {
+                    ridesByDeparture.emplace(edge.from, edgeIndex);
+                }
+            }
+            for (auto& edge : edges)
+            {
+                if (edge.kind != PlannedEdgeKind::board)
+                {
+                    continue;
+                }
+                edge.pairedRide = ridesByDeparture.at(edge.to);
+            }
             return { std::move(nodeStations), std::move(edges), std::move(occurrences), std::move(arrivals) };
         }
 
@@ -329,15 +353,23 @@ namespace OpenLoco::CargoDist
         }
 
         uint64_t edgeCost(
-            const PlannedEdge& edge,
+            size_t edgeIndex,
+            const std::vector<PlannedEdge>& edges,
             const std::vector<RoutingNode>& nodes,
             const std::vector<size_t>& nodeStations,
             bool timeSensitive,
             uint8_t saturation)
         {
+            const auto& edge = edges[edgeIndex];
             if (edge.kind == PlannedEdgeKind::board)
             {
-                return timeSensitive ? edge.travelTime : 0;
+                if (!timeSensitive)
+                {
+                    return 0;
+                }
+                const auto& ride = edges[edge.pairedRide];
+                const auto queuedDepartures = ride.flow / std::max<uint32_t>(1, edge.capacity);
+                return saturatedAdd(edge.travelTime, saturatedMultiply(edge.headway, queuedDepartures));
             }
             if (edge.kind == PlannedEdgeKind::alight)
             {
@@ -346,6 +378,10 @@ namespace OpenLoco::CargoDist
             const uint64_t base = timeSensitive && edge.travelTime != 0
                 ? edge.travelTime
                 : geometricDistance(nodes[nodeStations[edge.from]], nodes[nodeStations[edge.to]]);
+            if (timeSensitive && !edge.departure.empty())
+            {
+                return base;
+            }
             const uint64_t saturationPercent = std::min<uint64_t>(saturation, 100);
             const uint64_t threshold = std::max<uint64_t>(1, static_cast<uint64_t>(edge.capacity) * saturationPercent / 100);
             const uint64_t scale = base + 1;
@@ -397,7 +433,7 @@ namespace OpenLoco::CargoDist
                     {
                         continue;
                     }
-                    const auto candidate = saturatedAdd(currentDistance, edgeCost(edge, nodes, nodeStations, timeSensitive, saturation));
+                    const auto candidate = saturatedAdd(currentDistance, edgeCost(edgeIndex, edges, nodes, nodeStations, timeSensitive, saturation));
                     const auto candidateBoardings = currentBoardings + (edge.kind == PlannedEdgeKind::board ? 1 : 0);
                     const bool preferredTie = candidate == distance[edge.to] && candidateBoardings == boardings[edge.to]
                         && (previous[edge.to] == kNoIndex
@@ -412,7 +448,7 @@ namespace OpenLoco::CargoDist
                 }
             }
 
-            if (previous[destination] == kNoIndex)
+            if (destination == kNoIndex || previous[destination] == kNoIndex)
             {
                 return path;
             }
@@ -501,9 +537,9 @@ namespace OpenLoco::CargoDist
         auto& edges = planned.edges;
         const auto adjacency = makeAdjacency(planned.nodeStations.size(), edges);
         ShortestPathScratch shortestPathScratch;
-        using ShareKey = std::tuple<StationId, StationId, StationId, ServicePoint, ServicePoint, ServicePoint>;
+        using ShareKey = std::tuple<StationId, StationId, StationId, ServicePoint, ServicePoint, ServicePoint, StationId>;
         std::map<ShareKey, uint64_t> shares;
-        std::map<std::tuple<size_t, StationId, ServicePoint>, uint64_t> demands;
+        std::map<std::tuple<bool, size_t, StationId, ServicePoint, StationId>, uint64_t> demands;
 
         const auto addShare = [&shares](ShareKey key, uint32_t amount) {
             auto& total = shares[std::move(key)];
@@ -514,7 +550,7 @@ namespace OpenLoco::CargoDist
         {
             if (nodes[source].supply != 0)
             {
-                auto& amount = demands[{ source, nodes[source].station, {} }];
+                auto& amount = demands[{ true, source, nodes[source].station, {}, StationId::null }];
                 amount = saturatedAdd(amount, nodes[source].supply);
             }
         }
@@ -523,14 +559,15 @@ namespace OpenLoco::CargoDist
             const auto source = findNode(nodes, demand.source);
             if (source != kNoIndex && demand.origin != StationId::null && demand.amount != 0)
             {
-                auto& amount = demands[{ source, demand.origin, demand.incoming }];
+                auto& amount = demands[{ demand.incoming.empty(), source, demand.origin, demand.incoming, demand.destination }];
                 amount = saturatedAdd(amount, demand.amount);
             }
         }
 
         for (const auto& [demandKey, demandAmount] : demands)
         {
-            const auto& [sourceIndex, origin, initialIncoming] = demandKey;
+            const auto& [platformDemand, sourceIndex, origin, initialIncoming, fixedDestination] = demandKey;
+            (void)platformDemand;
             const auto supply = static_cast<uint32_t>(std::min<uint64_t>(demandAmount, std::numeric_limits<uint32_t>::max()));
             auto sourceNode = sourceIndex;
             if (!initialIncoming.empty())
@@ -543,21 +580,36 @@ namespace OpenLoco::CargoDist
             }
 
             const auto reachable = reachableNodes(sourceNode, edges, adjacency);
-            std::vector<size_t> sinks;
-            for (size_t sink = 0; sink < nodes.size(); ++sink)
+            std::vector<SinkAllocation> allocations;
+            if (fixedDestination != StationId::null)
             {
-                const auto isLocalConsumption = sink == sourceIndex && nodes[sourceIndex].station != origin;
-                if ((sink != sourceIndex || isLocalConsumption) && reachable[sink] && nodes[sink].accepts)
+                const auto sink = findNode(nodes, fixedDestination);
+                if (sink != kNoIndex && reachable[sink] && nodes[sink].accepts)
                 {
-                    sinks.push_back(sink);
+                    allocations.push_back({ sink, supply, 0 });
                 }
             }
-            if (sinks.empty())
+            else
+            {
+                std::vector<size_t> sinks;
+                for (size_t sink = 0; sink < nodes.size(); ++sink)
+                {
+                    const auto isLocalConsumption = sink == sourceIndex && nodes[sourceIndex].station != origin;
+                    if ((sink != sourceIndex || isLocalConsumption) && reachable[sink] && nodes[sink].accepts)
+                    {
+                        sinks.push_back(sink);
+                    }
+                }
+                if (!sinks.empty())
+                {
+                    allocations = allocateSupply(nodes[sourceIndex], supply, sinks, nodes, settings.distanceEffect);
+                }
+            }
+            if (allocations.empty())
             {
                 continue;
             }
 
-            const auto allocations = allocateSupply(nodes[sourceIndex], supply, sinks, nodes, settings.distanceEffect);
             const uint32_t accuracy = std::max<uint32_t>(1, settings.accuracy);
             const uint32_t chunkSize = supply / accuracy + (supply % accuracy != 0);
             for (const auto& allocation : allocations)
@@ -569,16 +621,30 @@ namespace OpenLoco::CargoDist
                 if (allocation.node == sourceNode)
                 {
                     const auto destination = nodes[allocation.node].station;
-                    addShare(ShareKey{ destination, origin, destination, initialIncoming, {}, {} }, allocation.amount);
+                    addShare(ShareKey{ destination, origin, destination, initialIncoming, {}, {}, destination }, allocation.amount);
                     continue;
                 }
-                for (uint32_t remaining = allocation.amount; remaining != 0;)
+                const auto boundaryIterations = std::max<uint32_t>(1, static_cast<uint32_t>(static_cast<uint64_t>(accuracy) * allocation.amount / supply));
+                uint32_t iterations = 0;
+                for (uint32_t remaining = allocation.amount; remaining != 0; ++iterations)
                 {
-                    const auto chunk = std::min(remaining, chunkSize);
                     const auto& path = shortestPath(sourceNode, allocation.node, nodes, planned.nodeStations, edges, adjacency, graph.timeSensitive, settings.saturation, shortestPathScratch);
                     if (path.empty())
                     {
                         break;
+                    }
+                    auto chunk = std::min(remaining, chunkSize);
+                    if (iterations < boundaryIterations)
+                    {
+                        for (const auto edgeIndex : path)
+                        {
+                            const auto& edge = edges[edgeIndex];
+                            if (edge.kind == PlannedEdgeKind::ride && !edge.departure.empty())
+                            {
+                                const auto capacity = std::max<uint32_t>(1, edge.capacity);
+                                chunk = static_cast<uint32_t>(std::min<uint64_t>(chunk, capacity - edge.flow % capacity));
+                            }
+                        }
                     }
                     auto incoming = initialIncoming;
                     for (const auto edgeIndex : path)
@@ -591,11 +657,11 @@ namespace OpenLoco::CargoDist
                         edge.flow = saturatedAdd(edge.flow, chunk);
                         const auto station = nodes[planned.nodeStations[edge.from]].station;
                         const auto via = nodes[planned.nodeStations[edge.to]].station;
-                        addShare(ShareKey{ station, origin, via, incoming, edge.departure, edge.arrival }, chunk);
+                        addShare(ShareKey{ station, origin, via, incoming, edge.departure, edge.arrival, nodes[allocation.node].station }, chunk);
                         incoming = edge.arrival;
                     }
                     const auto destination = nodes[allocation.node].station;
-                    addShare(ShareKey{ destination, origin, destination, incoming, {}, {} }, chunk);
+                    addShare(ShareKey{ destination, origin, destination, incoming, {}, {}, destination }, chunk);
                     remaining -= chunk;
                 }
             }
@@ -635,8 +701,54 @@ namespace OpenLoco::CargoDist
                 amount -= static_cast<uint32_t>(reduction);
                 total -= reduction;
             }
-            result.push_back({ std::get<0>(key), std::get<1>(key), std::get<2>(key), amount, std::get<3>(key), std::get<4>(key), std::get<5>(key) });
+            result.push_back({ std::get<0>(key), std::get<1>(key), std::get<2>(key), amount, std::get<3>(key), std::get<4>(key), std::get<5>(key), std::get<6>(key) });
         }
         return result;
+    }
+
+    std::vector<StationJourneyCost> calculateJourneyCosts(const RoutingGraph& graph, StationId source, ServicePoint departure)
+    {
+        const auto nodes = canonicalNodes(graph);
+        const auto sourceStation = findNode(nodes, source);
+        if (sourceStation == kNoIndex)
+        {
+            return {};
+        }
+
+        auto planned = makePlannedGraph(graph, nodes);
+        auto sourceNode = sourceStation;
+        if (!departure.empty())
+        {
+            const auto occurrence = findOccurrence(planned.occurrences, { sourceStation, departure });
+            if (occurrence == kNoIndex)
+            {
+                return {};
+            }
+            sourceNode = nodes.size() + occurrence;
+        }
+
+        const auto adjacency = makeAdjacency(planned.nodeStations.size(), planned.edges);
+        ShortestPathScratch scratch;
+        shortestPath(sourceNode, kNoIndex, nodes, planned.nodeStations, planned.edges, adjacency, graph.timeSensitive, 100, scratch);
+        std::vector<StationJourneyCost> result;
+        result.reserve(nodes.size());
+        for (size_t node = 0; node < nodes.size(); ++node)
+        {
+            result.push_back({ nodes[node].station, scratch.distance[node] });
+        }
+        return result;
+    }
+
+    uint64_t calculateJourneyCost(const RoutingGraph& graph, StationId source, StationId destination, ServicePoint departure)
+    {
+        const auto costs = calculateJourneyCosts(graph, source, departure);
+        const auto found = std::lower_bound(costs.begin(), costs.end(), destination, [](const auto& item, StationId value) {
+            return stationValue(item.destination) < stationValue(value);
+        });
+        if (found == costs.end() || found->destination != destination)
+        {
+            return kUnreachableJourneyCost;
+        }
+        return found->cost;
     }
 }

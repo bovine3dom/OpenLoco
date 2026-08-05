@@ -23,7 +23,7 @@ namespace OpenLoco::CargoDist
             std::byte{ 'T' },
             std::byte{ 0 },
         };
-        constexpr uint16_t kVersion = 3;
+        constexpr uint16_t kVersion = 4;
         constexpr uint16_t kHeaderSize = 16;
         constexpr uint32_t kMaxStationLists = S5::Limits::kMaxStations * S5::Limits::kMaxCargoObjects;
         constexpr uint32_t kMaxVehicleLists = S5::Limits::kMaxEntities * 2;
@@ -184,6 +184,7 @@ namespace OpenLoco::CargoDist
                 require(packet.quantity != 0, "CargoDist packet has zero quantity");
                 require(isValidStation(packet.origin), "CargoDist packet has invalid origin");
                 require(isValidStation(packet.nextHop, true), "CargoDist packet has invalid next hop");
+                require(isValidStation(packet.destination, true), "CargoDist packet has invalid destination");
                 validateServiceLeg(packet.departure, packet.arrival, packet.nextHop == StationId::null, "Invalid CargoDist packet service points");
                 encoder.write(packet.quantity);
                 encoder.write(stationValue(packet.origin));
@@ -192,6 +193,7 @@ namespace OpenLoco::CargoDist
                 encoder.write<uint8_t>(0);
                 encodeServicePoint(encoder, packet.departure);
                 encodeServicePoint(encoder, packet.arrival);
+                encoder.write(stationValue(packet.destination));
             }
         }
 
@@ -216,9 +218,14 @@ namespace OpenLoco::CargoDist
                     packet.arrival = decodeServicePoint(decoder);
                     validateServiceLeg(packet.departure, packet.arrival, packet.nextHop == StationId::null, "Invalid CargoDist packet service points");
                 }
+                if (version >= 4)
+                {
+                    packet.destination = StationId(decoder.read<uint16_t>());
+                }
                 require(packet.quantity != 0, "CargoDist packet has zero quantity");
                 require(isValidStation(packet.origin), "CargoDist packet has invalid origin");
                 require(isValidStation(packet.nextHop, true), "CargoDist packet has invalid next hop");
+                require(isValidStation(packet.destination, true), "CargoDist packet has invalid destination");
                 require(packet.quantity <= maxQuantity - quantity, "CargoDist packet quantity exceeds native capacity");
                 quantity += packet.quantity;
                 packets.push_back(packet);
@@ -240,8 +247,8 @@ namespace OpenLoco::CargoDist
             }
             require(totalWeight <= std::numeric_limits<uint32_t>::max(), "CargoDist flow weight exceeds supported range");
 
+            const auto limit = static_cast<int64_t>(totalWeight * kFlowCursorScale);
             int64_t currentTotal = 0;
-            const auto limit = static_cast<int64_t>(totalWeight);
             for (size_t i = 0; i < options.size(); ++i)
             {
                 const auto& option = options[i];
@@ -254,9 +261,35 @@ namespace OpenLoco::CargoDist
                         : stationValue(previous.via) < stationValue(option.via);
                     require(sorted, "Unsorted CargoDist flow options");
                 }
+                require((option.current <= 0 || currentTotal <= std::numeric_limits<int64_t>::max() - option.current) && (option.current >= 0 || currentTotal >= std::numeric_limits<int64_t>::min() - option.current), "CargoDist flow cursor total overflow");
                 currentTotal += option.current;
             }
             require(currentTotal == 0, "Unbalanced CargoDist flow cursors");
+        }
+
+        void validateDestinationOptions(const std::vector<DestinationOption>& options)
+        {
+            uint64_t totalWeight = 0;
+            for (size_t i = 0; i < options.size(); ++i)
+            {
+                const auto& option = options[i];
+                require(isValidStation(option.destination) && option.weight != 0, "Invalid CargoDist destination option");
+                if (i != 0)
+                {
+                    require(stationValue(options[i - 1].destination) < stationValue(option.destination), "Unsorted CargoDist destination options");
+                }
+                totalWeight += option.weight;
+            }
+            require(totalWeight <= std::numeric_limits<uint32_t>::max(), "CargoDist destination weight exceeds supported range");
+            const auto limit = static_cast<int64_t>(totalWeight * kFlowCursorScale);
+            int64_t currentTotal = 0;
+            for (const auto& option : options)
+            {
+                require(option.current >= -limit && option.current <= limit, "Invalid CargoDist destination cursor");
+                require((option.current <= 0 || currentTotal <= std::numeric_limits<int64_t>::max() - option.current) && (option.current >= 0 || currentTotal >= std::numeric_limits<int64_t>::min() - option.current), "CargoDist destination cursor total overflow");
+                currentTotal += option.current;
+            }
+            require(currentTotal == 0, "Unbalanced CargoDist destination cursors");
         }
 
         template<typename TMap, typename TPredicate>
@@ -335,7 +368,7 @@ namespace OpenLoco::CargoDist
             {
                 continue;
             }
-            require(key.cargo < state.settings.modes.size() && isValidStation(key.station) && isValidStation(key.origin) && isValidServicePoint(key.incoming), "Invalid CargoDist flow key");
+            require(key.cargo < state.settings.modes.size() && isValidStation(key.station) && isValidStation(key.origin) && isValidStation(key.destination) && isValidServicePoint(key.incoming), "Invalid CargoDist flow key");
             require(options.size() <= std::numeric_limits<uint16_t>::max(), "Too many CargoDist flow options");
             validateFlowOptions(key, options, true);
             payload.write(key.cargo);
@@ -343,6 +376,7 @@ namespace OpenLoco::CargoDist
             payload.write(stationValue(key.station));
             payload.write(stationValue(key.origin));
             encodeServicePoint(payload, key.incoming);
+            payload.write(stationValue(key.destination));
             payload.write(static_cast<uint16_t>(options.size()));
             for (const auto& option : options)
             {
@@ -367,6 +401,31 @@ namespace OpenLoco::CargoDist
             payload.write(key.cargo);
             payload.write<uint8_t>(0);
             payload.write(attraction);
+        }
+
+        payload.write(countMatching(state.destinationFlows, [](const auto& item) { return !item.second.empty(); }));
+        for (const auto& [key, options] : state.destinationFlows)
+        {
+            if (options.empty())
+            {
+                continue;
+            }
+            require(key.cargo < state.settings.modes.size() && isValidStation(key.station) && isValidStation(key.origin) && isValidServicePoint(key.incoming), "Invalid CargoDist destination flow key");
+            require(options.size() <= std::numeric_limits<uint16_t>::max(), "Too many CargoDist destination options");
+            validateDestinationOptions(options);
+            payload.write(key.cargo);
+            payload.write<uint8_t>(0);
+            payload.write(stationValue(key.station));
+            payload.write(stationValue(key.origin));
+            encodeServicePoint(payload, key.incoming);
+            payload.write(static_cast<uint16_t>(options.size()));
+            for (const auto& option : options)
+            {
+                payload.write(stationValue(option.destination));
+                payload.write<uint16_t>(0);
+                payload.write(option.weight);
+                payload.write(option.current);
+            }
         }
 
         require(payload.data().size() <= kMaxSaveDataSize - kHeaderSize, "CargoDist save data is too large");
@@ -458,8 +517,12 @@ namespace OpenLoco::CargoDist
             {
                 key.incoming = decodeServicePoint(decoder);
             }
+            if (version >= 4)
+            {
+                key.destination = StationId(decoder.read<uint16_t>());
+            }
             const auto optionCount = decoder.read<uint16_t>();
-            require(key.cargo < state.settings.modes.size() && isValidStation(key.station) && isValidStation(key.origin) && isValidServicePoint(key.incoming), "Invalid CargoDist flow key");
+            require(key.cargo < state.settings.modes.size() && isValidStation(key.station) && isValidStation(key.origin) && isValidStation(key.destination, version < 4) && isValidServicePoint(key.incoming), "Invalid CargoDist flow key");
             require(optionCount != 0, "Invalid CargoDist flow option count");
             std::vector<FlowOption> options;
             options.reserve(optionCount);
@@ -497,10 +560,42 @@ namespace OpenLoco::CargoDist
             }
         }
 
+        if (version >= 4)
+        {
+            const auto destinationFlowCount = decoder.read<uint32_t>();
+            require(destinationFlowCount <= kMaxFlowLists, "Too many CargoDist destination flow entries");
+            for (uint32_t i = 0; i < destinationFlowCount; ++i)
+            {
+                DestinationFlowKey key;
+                key.cargo = decoder.read<uint8_t>();
+                decoder.read<uint8_t>();
+                key.station = StationId(decoder.read<uint16_t>());
+                key.origin = StationId(decoder.read<uint16_t>());
+                key.incoming = decodeServicePoint(decoder);
+                const auto optionCount = decoder.read<uint16_t>();
+                require(key.cargo < state.settings.modes.size() && isValidStation(key.station) && isValidStation(key.origin) && isValidServicePoint(key.incoming), "Invalid CargoDist destination flow key");
+                require(optionCount != 0, "Invalid CargoDist destination option count");
+                std::vector<DestinationOption> options;
+                options.reserve(optionCount);
+                for (uint16_t j = 0; j < optionCount; ++j)
+                {
+                    DestinationOption option;
+                    option.destination = StationId(decoder.read<uint16_t>());
+                    decoder.read<uint16_t>();
+                    option.weight = decoder.read<uint32_t>();
+                    option.current = decoder.readInt64();
+                    options.push_back(option);
+                }
+                validateDestinationOptions(options);
+                require(state.destinationFlows.emplace(key, std::move(options)).second, "Duplicate CargoDist destination flow key");
+            }
+        }
+
         require(decoder.empty(), "Trailing CargoDist save data");
-        if (version < 3)
+        if (version < 4)
         {
             state.flows.clear();
+            state.destinationFlows.clear();
             state.graphDirty = true;
         }
         return state;

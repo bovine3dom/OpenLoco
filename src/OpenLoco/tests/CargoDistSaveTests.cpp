@@ -77,6 +77,13 @@ namespace
         appendValue<uint16_t>(data, 3);
         appendValue<uint8_t>(data, 4);
         appendValue<uint8_t>(data, 0);
+        if (version >= 3)
+        {
+            appendValue<uint16_t>(data, 7);
+            appendValue<uint16_t>(data, 1);
+            appendValue<uint16_t>(data, 7);
+            appendValue<uint16_t>(data, 2);
+        }
 
         appendValue<uint32_t>(data, 0);
         appendValue<uint32_t>(data, 0);
@@ -85,11 +92,23 @@ namespace
         appendValue<uint8_t>(data, 0);
         appendValue<uint16_t>(data, 2);
         appendValue<uint16_t>(data, 1);
+        if (version >= 3)
+        {
+            appendValue<uint16_t>(data, static_cast<uint16_t>(ServiceId::null));
+            appendValue<uint16_t>(data, kNoServiceOccurrence);
+        }
         appendValue<uint16_t>(data, 1);
         appendValue<uint16_t>(data, 3);
         appendValue<uint16_t>(data, 0);
         appendValue<uint32_t>(data, 10);
         appendValue<uint64_t>(data, 0);
+        if (version >= 3)
+        {
+            appendValue<uint16_t>(data, 8);
+            appendValue<uint16_t>(data, 1);
+            appendValue<uint16_t>(data, 8);
+            appendValue<uint16_t>(data, 2);
+        }
 
         if (version >= 2)
         {
@@ -152,6 +171,7 @@ namespace
                 EXPECT_EQ(options[i].arrival, other[i].arrival);
             }
         }
+        EXPECT_EQ(lhs.destinationFlows, rhs.destinationFlows);
     }
 
     State populatedState()
@@ -163,14 +183,15 @@ namespace
         state.settings.recalculationInterval = 5;
         state.nextRecalculationDay = 1234;
         state.graphDirty = true;
-        state.stationCargo[{ station(2), 0 }].append({ 30, station(1), station(3), 4, servicePoint(7, 1), servicePoint(7, 2) });
-        state.stationCargo[{ station(2), 0 }].append({ 10, station(4), StationId::null, 2 });
-        state.vehicleCargo[{ entity(20), VehicleCargoSlot::primary }].append({ 25, station(1), station(2), 6, servicePoint(8, 3), servicePoint(8, 4) });
+        state.stationCargo[{ station(2), 0 }].append({ 30, station(1), station(3), 4, servicePoint(7, 1), servicePoint(7, 2), station(3) });
+        state.stationCargo[{ station(2), 0 }].append({ 10, station(4), StationId::null, 2, {}, {}, station(3) });
+        state.vehicleCargo[{ entity(20), VehicleCargoSlot::primary }].append({ 25, station(1), station(2), 6, servicePoint(8, 3), servicePoint(8, 4), station(3) });
         state.supply[{ 0, station(1) }] = 120;
-        state.flows[{ 0, station(2), station(1), servicePoint(6, 4) }] = {
+        state.flows[{ 0, station(2), station(1), servicePoint(6, 4), station(3) }] = {
             { station(3), 75, -25, servicePoint(9, 1), servicePoint(9, 2) },
             { station(3), 25, 25, servicePoint(10, 1), servicePoint(10, 2) },
         };
+        state.destinationFlows[{ 0, station(2), station(1), servicePoint(6, 4) }] = { { station(3), 100, 0 } };
         state.stationAttraction[{ station(2), 0 }] = 120;
         state.serviceEdges[{ 0, station(1), station(2), servicePoint(8, 3), servicePoint(8, 4) }] = { 40, 10, 2 };
         state.vehicleServiceLegs[entity(7)] = { { 3, station(1), station(2), servicePoint(8, 3), servicePoint(8, 4) } };
@@ -237,7 +258,7 @@ TEST(CargoDistSave, RoundTripsCanonicalState)
     expectStatesEqual(original, decoded);
     EXPECT_TRUE(decoded.serviceEdges.empty());
     EXPECT_TRUE(decoded.vehicleServiceLegs.empty());
-    EXPECT_EQ(std::to_integer<uint8_t>(encoded[8]), 3);
+    EXPECT_EQ(std::to_integer<uint8_t>(encoded[8]), 4);
 }
 
 TEST(CargoDistSave, MigratesVersionOneWithoutStationAttraction)
@@ -265,14 +286,27 @@ TEST(CargoDistSave, MigratesVersionTwoAndRetainsStationAttraction)
     EXPECT_TRUE(packet.arrival.empty());
 }
 
+TEST(CargoDistSave, MigratesVersionThreeAndReassignsDestinations)
+{
+    const auto decoded = decodeState(legacyEncodedState(3));
+
+    EXPECT_TRUE(decoded.flows.empty());
+    EXPECT_TRUE(decoded.destinationFlows.empty());
+    EXPECT_TRUE(decoded.graphDirty);
+    const auto& packet = decoded.stationCargo.at({ station(2), 0 }).packets().front();
+    EXPECT_EQ(packet.destination, StationId::null);
+    EXPECT_EQ(packet.departure, servicePoint(7, 1));
+    EXPECT_EQ(packet.arrival, servicePoint(7, 2));
+}
+
 TEST(CargoDistSave, EncodingIsDeterministic)
 {
     const auto state = populatedState();
     auto reordered = populatedState();
     auto& packets = reordered.stationCargo.at({ station(2), 0 });
     packets = {};
-    packets.append({ 10, station(4), StationId::null, 2 });
-    packets.append({ 30, station(1), station(3), 4, servicePoint(7, 1), servicePoint(7, 2) });
+    packets.append({ 10, station(4), StationId::null, 2, {}, {}, station(3) });
+    packets.append({ 30, station(1), station(3), 4, servicePoint(7, 1), servicePoint(7, 2), station(3) });
 
     EXPECT_EQ(encodeState(state), encodeState(reordered));
 }
@@ -315,7 +349,7 @@ TEST(CargoDistSave, RejectsTruncatedData)
 TEST(CargoDistSave, RejectsUnknownVersion)
 {
     auto encoded = encodeState(populatedState());
-    encoded[8] = std::byte{ 4 };
+    encoded[8] = std::byte{ 5 };
 
     EXPECT_THROW(decodeState(encoded), std::runtime_error);
 }
@@ -331,7 +365,7 @@ TEST(CargoDistSave, RejectsInvalidMode)
 TEST(CargoDistSave, RejectsInvalidFlowCursor)
 {
     State state;
-    state.flows[{ 0, station(2), station(1), servicePoint(6, 4) }] = {
+    state.flows[{ 0, station(2), station(1), servicePoint(6, 4), station(3) }] = {
         { station(3), 1, 0, servicePoint(9, 1), servicePoint(9, 2) },
     };
     auto encoded = encodeState(state);
@@ -340,10 +374,31 @@ TEST(CargoDistSave, RejectsInvalidFlowCursor)
     EXPECT_THROW(decodeState(encoded), std::runtime_error);
 }
 
+TEST(CargoDistSave, FilteredAllocationKeepsCursorsSerializable)
+{
+    State state;
+    state.settings.modes[0] = DistributionMode::asymmetric;
+    auto& options = state.flows[{ 0, station(1), station(1), {}, station(6) }];
+    options = {
+        { station(2), 1, -4, servicePoint(2, 0), servicePoint(2, 1) },
+        { station(3), 1, 4, servicePoint(3, 0), servicePoint(3, 1) },
+        { station(4), 1, 4, servicePoint(4, 0), servicePoint(4, 1) },
+        { station(5), 1, -4, servicePoint(5, 0), servicePoint(5, 1) },
+    };
+    state.destinationFlows[{ 0, station(1), station(1) }] = { { station(6), 4, 0 } };
+    getState() = state;
+
+    allocateVia(0, station(1), station(1), station(6), 1, ServicePoint{}, station(5));
+
+    EXPECT_NO_THROW(encodeState(getStateConst()));
+    EXPECT_TRUE(std::any_of(options.begin(), options.end(), [](const auto& option) { return option.current != 0; }));
+    reset();
+}
+
 TEST(CargoDistSave, RejectsInvalidServicePointEncoding)
 {
     State state;
-    state.stationCargo[{ station(2), 0 }].append({ 10, station(1), station(3), 4, servicePoint(7, 1), servicePoint(7, 2) });
+    state.stationCargo[{ station(2), 0 }].append({ 10, station(1), station(3), 4, servicePoint(7, 1), servicePoint(7, 2), station(3) });
     auto encoded = encodeState(state);
     encoded[86] = std::byte{ 0xFF };
     encoded[87] = std::byte{ 0xFF };
@@ -354,7 +409,7 @@ TEST(CargoDistSave, RejectsInvalidServicePointEncoding)
 TEST(CargoDistSave, RejectsMismatchedFlowServices)
 {
     State state;
-    state.flows[{ 0, station(2), station(1) }] = {
+    state.flows[{ 0, station(2), station(1), {}, station(3) }] = {
         { station(3), 1, 0, servicePoint(7, 1), servicePoint(8, 2) },
     };
 
@@ -365,7 +420,7 @@ TEST(CargoDistSave, RoundTripsMoreServiceOptionsThanStations)
 {
     State state;
     state.settings.modes[0] = DistributionMode::asymmetric;
-    auto& options = state.flows[{ 0, station(2), station(1) }];
+    auto& options = state.flows[{ 0, station(2), station(1), {}, station(3) }];
     for (uint16_t service = 0; service < 1025; ++service)
     {
         options.push_back({ station(3), 1, 0, servicePoint(service, 0), servicePoint(service, 1) });
@@ -381,7 +436,7 @@ TEST(CargoDistSave, RejectsOutOfRangeServiceReference)
 {
     State state;
     state.settings.modes[0] = DistributionMode::asymmetric;
-    state.stationCargo[{ station(2), 0 }].append({ 10, station(1), station(3), 4, servicePoint(20000, 0), servicePoint(20000, 1) });
+    state.stationCargo[{ station(2), 0 }].append({ 10, station(1), station(3), 4, servicePoint(20000, 0), servicePoint(20000, 1), station(3) });
 
     EXPECT_THROW(encodeState(state), std::runtime_error);
 }

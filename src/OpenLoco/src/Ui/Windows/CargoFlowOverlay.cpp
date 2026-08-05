@@ -134,6 +134,13 @@ namespace OpenLoco::Ui::Windows::CargoFlowOverlay
                 return changed;
             }
 
+            if (CargoDist::getStateConst().servicesDirty)
+            {
+                const auto changed = _snapshot.has_value();
+                _snapshot.reset();
+                return changed;
+            }
+
             const auto revision = CargoDist::getStateConst().routingRevision;
             if (_snapshot.has_value() && _snapshot->cargo == _selectedCargo && _snapshot->routingRevision == revision)
             {
@@ -495,7 +502,7 @@ namespace OpenLoco::Ui::Windows::CargoFlowOverlay
             projectedLinks.push_back({
                 fromPoint,
                 toPoint,
-                kSaturationColours[getSaturationBucket(link.plannedDemand, link.capacity)],
+                kSaturationColours[getSaturationBucket(link.saturationDemand, link.saturationCapacity)],
             });
         }
         return projectedLinks;
@@ -575,8 +582,8 @@ namespace OpenLoco::Ui::Windows::CargoFlowOverlay
             return false;
         }
 
-        const auto plannedDemand = toDisplayValue(hit->plannedDemand);
-        if (hit->capacity.has_value() && *hit->capacity != 0)
+        const auto plannedDemand = toDisplayValue(hit->saturationDemand);
+        if (hit->saturationCapacity.has_value() && *hit->saturationCapacity != 0)
         {
             auto args = FormatArguments::mapToolTip(StringIds::cargo_flow_tooltip);
             args.push(cargo->name);
@@ -585,8 +592,8 @@ namespace OpenLoco::Ui::Windows::CargoFlowOverlay
             args.push(hitTo->name);
             args.push(hitTo->town);
             args.push(plannedDemand);
-            args.push(toDisplayValue(*hit->capacity));
-            args.push(calculatePercentage(hit->plannedDemand, *hit->capacity));
+            args.push(toDisplayValue(*hit->saturationCapacity));
+            args.push(calculatePercentage(hit->saturationDemand, *hit->saturationCapacity));
         }
         else
         {

@@ -15,6 +15,188 @@ namespace OpenLoco::CargoDist
         {
             return static_cast<uint16_t>(id);
         }
+
+        template<typename TOption>
+        struct AllocationCandidate
+        {
+            TOption* option;
+            uint32_t amount{};
+            int64_t current{};
+            uint64_t allocationWeight{};
+            uint64_t remainder{};
+        };
+
+        template<typename TRange, typename TGetCurrent>
+        void normaliseCursors(TRange& options, int64_t limit, TGetCurrent&& getCurrent)
+        {
+            int64_t total = 0;
+            for (auto& option : options)
+            {
+                auto& current = getCurrent(option);
+                current = std::clamp(current, -limit, limit);
+                total += current;
+            }
+            for (auto& option : options)
+            {
+                if (total == 0)
+                {
+                    break;
+                }
+                auto& current = getCurrent(option);
+                if (total > 0 && current > 0)
+                {
+                    const auto adjustment = std::min(total, current);
+                    current -= adjustment;
+                    total -= adjustment;
+                }
+                else if (total < 0 && current < 0)
+                {
+                    const auto adjustment = std::min(-total, -current);
+                    current += adjustment;
+                    total += adjustment;
+                }
+            }
+        }
+
+        template<typename TOption>
+        uint64_t normaliseCursors(std::vector<TOption>& options)
+        {
+            uint64_t totalWeight = 0;
+            for (const auto& option : options)
+            {
+                totalWeight += option.weight;
+            }
+            if (totalWeight > static_cast<uint64_t>(std::numeric_limits<int64_t>::max() / kFlowCursorScale))
+            {
+                for (auto& option : options)
+                {
+                    option.current = 0;
+                }
+                return totalWeight;
+            }
+            normaliseCursors(options, static_cast<int64_t>(totalWeight * kFlowCursorScale), [](auto& option) -> int64_t& { return option.current; });
+            return totalWeight;
+        }
+
+        template<typename TOption, typename TPredicate, typename TKey>
+        std::vector<AllocationCandidate<TOption>> allocateWeighted(std::vector<TOption>& options, uint32_t quantity, TPredicate&& include, TKey&& key)
+        {
+            const auto fullWeight = normaliseCursors(options);
+            std::vector<AllocationCandidate<TOption>> candidates;
+            uint64_t totalWeight = 0;
+            for (auto& option : options)
+            {
+                if (!include(option))
+                {
+                    continue;
+                }
+                candidates.push_back({ &option, 0, option.current, static_cast<uint64_t>(option.weight) * kFlowCursorScale });
+                totalWeight += option.weight;
+            }
+            if (candidates.empty() || totalWeight == 0 || quantity == 0 || fullWeight > std::numeric_limits<uint32_t>::max())
+            {
+                return {};
+            }
+
+            const auto filtered = totalWeight != fullWeight;
+            const auto cursorRange = fullWeight * kFlowCursorScale;
+            if (filtered)
+            {
+                uint64_t assignedWeight = 0;
+                std::vector<AllocationCandidate<TOption>*> remainders;
+                remainders.reserve(candidates.size());
+                for (auto& candidate : candidates)
+                {
+                    const auto quotient = cursorRange / totalWeight;
+                    const auto remainder = cursorRange % totalWeight;
+                    candidate.allocationWeight = quotient * candidate.option->weight + remainder * candidate.option->weight / totalWeight;
+                    candidate.remainder = remainder * candidate.option->weight % totalWeight;
+                    assignedWeight += candidate.allocationWeight;
+                    remainders.push_back(&candidate);
+                }
+                std::sort(remainders.begin(), remainders.end(), [&](const auto* lhs, const auto* rhs) {
+                    if (lhs->remainder != rhs->remainder)
+                    {
+                        return lhs->remainder > rhs->remainder;
+                    }
+                    if (lhs->current != rhs->current)
+                    {
+                        return lhs->current > rhs->current;
+                    }
+                    return key(*lhs->option) < key(*rhs->option);
+                });
+                for (uint64_t remainder = cursorRange - assignedWeight; remainder != 0; --remainder)
+                {
+                    ++remainders[remainder - 1]->allocationWeight;
+                }
+            }
+
+            uint64_t allocated = 0;
+            const auto total = static_cast<int64_t>(cursorRange);
+            for (auto& candidate : candidates)
+            {
+                auto target = static_cast<uint64_t>(quantity) * candidate.allocationWeight;
+                if (candidate.current >= 0)
+                {
+                    target += static_cast<uint64_t>(candidate.current);
+                }
+                else
+                {
+                    const auto negativeCurrent = static_cast<uint64_t>(-(candidate.current + 1)) + 1;
+                    if (target < negativeCurrent)
+                    {
+                        candidate.current = -static_cast<int64_t>(negativeCurrent - target);
+                        continue;
+                    }
+                    target -= negativeCurrent;
+                }
+                if (target > 0)
+                {
+                    candidate.amount = static_cast<uint32_t>(target / total);
+                    allocated += candidate.amount;
+                }
+                candidate.current = static_cast<int64_t>(target % cursorRange);
+            }
+
+            while (allocated < quantity)
+            {
+                const auto chosen = std::max_element(candidates.begin(), candidates.end(), [&](const auto& lhs, const auto& rhs) {
+                    if (lhs.current != rhs.current)
+                    {
+                        return lhs.current < rhs.current;
+                    }
+                    return key(*lhs.option) > key(*rhs.option);
+                });
+                ++chosen->amount;
+                chosen->current -= total;
+                ++allocated;
+            }
+            while (allocated > quantity)
+            {
+                auto chosen = candidates.end();
+                for (auto it = candidates.begin(); it != candidates.end(); ++it)
+                {
+                    if (it->amount != 0
+                        && (chosen == candidates.end() || it->current < chosen->current
+                            || (it->current == chosen->current && key(*it->option) < key(*chosen->option))))
+                    {
+                        chosen = it;
+                    }
+                }
+                --chosen->amount;
+                chosen->current += total;
+                --allocated;
+            }
+            for (auto& candidate : candidates)
+            {
+                candidate.option->current = candidate.current;
+            }
+            if (filtered)
+            {
+                normaliseCursors(options);
+            }
+            return candidates;
+        }
     }
 
     uint32_t PacketList::quantity() const
@@ -97,8 +279,8 @@ namespace OpenLoco::CargoDist
     void PacketList::canonicalise()
     {
         std::sort(_packets.begin(), _packets.end(), [](const auto& lhs, const auto& rhs) {
-            return std::tie(lhs.nextHop, lhs.origin, lhs.age, lhs.departure, lhs.arrival)
-                < std::tie(rhs.nextHop, rhs.origin, rhs.age, rhs.departure, rhs.arrival);
+            return std::tie(lhs.destination, lhs.nextHop, lhs.origin, lhs.age, lhs.departure, lhs.arrival)
+                < std::tie(rhs.destination, rhs.nextHop, rhs.origin, rhs.age, rhs.departure, rhs.arrival);
         });
         Container canonical;
         canonical.reserve(_packets.size());
@@ -111,7 +293,7 @@ namespace OpenLoco::CargoDist
             if (!canonical.empty())
             {
                 auto& previous = canonical.back();
-                if (previous.origin == packet.origin && previous.nextHop == packet.nextHop && previous.age == packet.age
+                if (previous.origin == packet.origin && previous.destination == packet.destination && previous.nextHop == packet.nextHop && previous.age == packet.age
                     && previous.departure == packet.departure && previous.arrival == packet.arrival)
                 {
                     const auto room = static_cast<uint32_t>(std::numeric_limits<uint16_t>::max() - previous.quantity);
@@ -144,12 +326,14 @@ namespace OpenLoco::CargoDist
         canonicalise();
     }
 
-    PacketList PacketList::takeImpl(uint32_t requested, std::optional<StationId> nextHop, std::optional<ServicePoint> departure)
+    PacketList PacketList::takeImpl(uint32_t requested, std::optional<StationId> nextHop, std::optional<ServicePoint> departure, std::optional<StationId> destination)
     {
         PacketList result;
         for (auto it = _packets.begin(); it != _packets.end() && requested != 0;)
         {
-            if ((nextHop.has_value() && it->nextHop != *nextHop) || (departure.has_value() && it->departure != *departure))
+            if ((nextHop.has_value() && it->nextHop != *nextHop)
+                || (departure.has_value() && it->departure != *departure)
+                || (destination.has_value() && it->destination != *destination))
             {
                 ++it;
                 continue;
@@ -189,6 +373,11 @@ namespace OpenLoco::CargoDist
         return takeImpl(quantity, nextHop, departure);
     }
 
+    PacketList PacketList::takeForJourney(StationId destination, StationId nextHop, ServicePoint departure, uint32_t quantity)
+    {
+        return takeImpl(quantity, nextHop, departure, destination);
+    }
+
     uint32_t PacketList::remove(uint32_t requested)
     {
         const auto before = quantity();
@@ -203,8 +392,12 @@ namespace OpenLoco::CargoDist
         });
         for (auto& packet : _packets)
         {
-            if (packet.nextHop == station)
+            if (packet.nextHop == station || packet.destination == station)
             {
+                if (packet.destination == station)
+                {
+                    packet.destination = StationId::null;
+                }
                 packet.nextHop = StationId::null;
                 packet.departure = {};
                 packet.arrival = {};
@@ -213,7 +406,7 @@ namespace OpenLoco::CargoDist
         canonicalise();
     }
 
-    void PacketList::removeServiceReferences(ServiceId service)
+    void PacketList::removeServiceReferences(ServiceId service, bool preserveNextHop)
     {
         if (service == ServiceId::null)
         {
@@ -223,7 +416,10 @@ namespace OpenLoco::CargoDist
         {
             if (packet.departure.service == service || packet.arrival.service == service)
             {
-                packet.nextHop = StationId::null;
+                if (!preserveNextHop)
+                {
+                    packet.nextHop = StationId::null;
+                }
                 packet.departure = {};
                 packet.arrival = {};
             }
@@ -330,7 +526,7 @@ namespace OpenLoco::CargoDist
             {
                 continue;
             }
-            auto& options = _state.flows[{ cargo, share.station, share.origin, share.incoming }];
+            auto& options = _state.flows[{ cargo, share.station, share.origin, share.incoming, share.destination }];
             options.push_back({ share.via, share.amount, 0, share.departure, share.arrival });
         }
         for (auto& [key, options] : _state.flows)
@@ -343,90 +539,115 @@ namespace OpenLoco::CargoDist
                 return std::tie(lhs.via, lhs.departure, lhs.arrival) < std::tie(rhs.via, rhs.departure, rhs.arrival);
             });
         }
+        rebuildDestinationFlows(cargo);
+        ++_state.routingRevision;
     }
 
-    std::vector<ViaShare> allocateVia(uint8_t cargo, StationId station, StationId origin, uint32_t quantity, ServicePoint incoming, StationId excluded, StationId excluded2)
+    void rebuildDestinationFlows(uint8_t cargo)
     {
-        const auto flow = _state.flows.find({ cargo, station, origin, incoming });
-        if (flow == _state.flows.end() || quantity == 0)
+        std::erase_if(_state.destinationFlows, [cargo](const auto& item) { return item.first.cargo == cargo; });
+        std::map<DestinationFlowKey, std::map<StationId, uint64_t>> destinationWeights;
+        for (const auto& [key, routes] : _state.flows)
         {
-            return {};
-        }
-
-        struct Candidate
-        {
-            FlowOption* option;
-            uint32_t amount{};
-        };
-        std::vector<Candidate> candidates;
-        uint64_t totalWeight = 0;
-        for (auto& option : flow->second)
-        {
-            if (option.via == excluded || option.via == excluded2)
+            if (key.cargo != cargo)
             {
                 continue;
             }
-            candidates.push_back({ &option });
-            totalWeight += option.weight;
+            auto& weight = destinationWeights[{ cargo, key.station, key.origin, key.incoming }][key.destination];
+            for (const auto& route : routes)
+            {
+                weight += std::min<uint64_t>(route.weight, std::numeric_limits<uint64_t>::max() - weight);
+            }
         }
-        if (candidates.empty() || totalWeight == 0)
+        for (const auto& [key, weights] : destinationWeights)
+        {
+            uint64_t total = 0;
+            for (const auto& [destination, weight] : weights)
+            {
+                total += weight;
+            }
+            const auto maximum = std::numeric_limits<uint32_t>::max();
+            const auto divisor = total > maximum ? total / maximum + (total % maximum != 0) : 1;
+            auto& options = _state.destinationFlows[key];
+            uint64_t representableTotal = 0;
+            for (const auto& [destination, weight] : weights)
+            {
+                const auto representableWeight = static_cast<uint32_t>(std::max<uint64_t>(1, weight / divisor));
+                options.push_back({ destination, representableWeight, 0 });
+                representableTotal += representableWeight;
+            }
+            for (auto& option : options)
+            {
+                if (representableTotal <= maximum)
+                {
+                    break;
+                }
+                const auto reduction = std::min<uint64_t>(option.weight - 1, representableTotal - maximum);
+                option.weight -= static_cast<uint32_t>(reduction);
+                representableTotal -= reduction;
+            }
+        }
+    }
+
+    std::vector<ViaShare> allocateVia(uint8_t cargo, StationId station, StationId origin, StationId destination, uint32_t quantity, ServicePoint incoming, StationId excluded, StationId excluded2)
+    {
+        if (quantity == 0)
         {
             return {};
         }
 
-        uint64_t allocated = 0;
-        const auto total = static_cast<int64_t>(totalWeight);
-        for (auto& candidate : candidates)
+        std::vector<std::pair<StationId, uint32_t>> destinations;
+        if (destination == StationId::null)
         {
-            auto& option = *candidate.option;
-            const auto target = option.current + static_cast<int64_t>(quantity) * option.weight;
-            if (target > 0)
+            const auto choices = _state.destinationFlows.find({ cargo, station, origin, incoming });
+            if (choices == _state.destinationFlows.end())
             {
-                candidate.amount = static_cast<uint32_t>(target / total);
-                allocated += candidate.amount;
-            }
-            option.current = target - static_cast<int64_t>(candidate.amount) * total;
-        }
-
-        while (allocated < quantity)
-        {
-            const auto chosen = std::max_element(candidates.begin(), candidates.end(), [](const auto& lhs, const auto& rhs) {
-                if (lhs.option->current != rhs.option->current)
+                if (_state.flows.contains({ cargo, station, origin, incoming, StationId::null }))
                 {
-                    return lhs.option->current < rhs.option->current;
+                    destinations.emplace_back(StationId::null, quantity);
                 }
-                return std::tie(lhs.option->via, lhs.option->departure, lhs.option->arrival)
-                    > std::tie(rhs.option->via, rhs.option->departure, rhs.option->arrival);
-            });
-            ++chosen->amount;
-            chosen->option->current -= total;
-            ++allocated;
-        }
-        while (allocated > quantity)
-        {
-            auto chosen = candidates.end();
-            for (auto it = candidates.begin(); it != candidates.end(); ++it)
-            {
-                if (it->amount != 0
-                    && (chosen == candidates.end() || it->option->current < chosen->option->current
-                        || (it->option->current == chosen->option->current
-                            && std::tie(it->option->via, it->option->departure, it->option->arrival)
-                                < std::tie(chosen->option->via, chosen->option->departure, chosen->option->arrival))))
+                else
                 {
-                    chosen = it;
+                    return {};
                 }
             }
-            --chosen->amount;
-            chosen->option->current += total;
-            --allocated;
+            else
+            {
+                const auto allocated = allocateWeighted(choices->second, quantity, [&](const auto& option) {
+                    const auto flow = _state.flows.find({ cargo, station, origin, incoming, option.destination });
+                    return option.destination != excluded && option.destination != excluded2
+                        && flow != _state.flows.end() && std::any_of(flow->second.begin(), flow->second.end(), [&](const auto& route) {
+                        return route.via != excluded && route.via != excluded2;
+                    }); }, [](const auto& option) { return option.destination; });
+                for (const auto& choice : allocated)
+                {
+                    if (choice.amount != 0)
+                    {
+                        destinations.emplace_back(choice.option->destination, choice.amount);
+                    }
+                }
+            }
+        }
+        else
+        {
+            destinations.emplace_back(destination, quantity);
         }
 
         std::vector<ViaShare> result;
-        for (const auto& candidate : candidates)
+        for (const auto& [selectedDestination, amount] : destinations)
         {
-            if (candidate.amount != 0)
+            const auto flow = _state.flows.find({ cargo, station, origin, incoming, selectedDestination });
+            if (flow == _state.flows.end())
             {
-                result.push_back({ candidate.option->via, candidate.amount, candidate.option->departure, candidate.option->arrival });
+                continue;
+            }
+            const auto allocated = allocateWeighted(flow->second, amount, [&](const auto& option) { return option.via != excluded && option.via != excluded2; }, [](const auto& option) { return std::tie(option.via, option.departure, option.arrival); });
+            for (const auto& candidate : allocated)
+            {
+                if (candidate.amount != 0)
+                {
+                    result.push_back({ candidate.option->via, candidate.amount, candidate.option->departure, candidate.option->arrival, selectedDestination });
+                }
             }
         }
         return result;
@@ -453,6 +674,7 @@ namespace OpenLoco::CargoDist
         };
 
         std::map<std::pair<StationId, StationId>, EdgeStats> edges;
+        std::map<ServiceEdgeKey, EdgeStats> serviceEdges;
         for (const auto& [key, stats] : _state.serviceEdges)
         {
             if (key.cargo == cargo && key.from != StationId::null && key.to != StationId::null && key.from != key.to)
@@ -460,6 +682,9 @@ namespace OpenLoco::CargoDist
                 auto& edge = edges[{ key.from, key.to }];
                 edge.capacity += stats.capacity;
                 edge.hasCapacity = true;
+                auto& service = serviceEdges[key];
+                service.capacity += stats.capacity;
+                service.hasCapacity = true;
             }
         }
 
@@ -478,6 +703,31 @@ namespace OpenLoco::CargoDist
 
                 auto& plannedDemand = edges[{ key.station, option.via }].plannedDemand;
                 plannedDemand += std::min<uint64_t>(option.weight, std::numeric_limits<uint64_t>::max() - plannedDemand);
+                auto& serviceDemand = serviceEdges[{ cargo, key.station, option.via, option.departure, option.arrival }].plannedDemand;
+                serviceDemand += std::min<uint64_t>(option.weight, std::numeric_limits<uint64_t>::max() - serviceDemand);
+            }
+        }
+
+        const auto saturationScore = [](const EdgeStats& stats) {
+            if (stats.plannedDemand == 0)
+            {
+                return uint64_t{ 0 };
+            }
+            if (!stats.hasCapacity || stats.capacity == 0 || stats.plannedDemand >= stats.capacity * 2)
+            {
+                return uint64_t{ 12 * 20'001 };
+            }
+            const auto doubledCapacity = stats.capacity * 2;
+            const auto bucket = (stats.plannedDemand * 12 - 1) / doubledCapacity;
+            return bucket * 20'001 + stats.plannedDemand * 10'000 / stats.capacity;
+        };
+        std::map<std::pair<StationId, StationId>, EdgeStats> busiestServices;
+        for (const auto& [key, stats] : serviceEdges)
+        {
+            const auto [it, inserted] = busiestServices.try_emplace({ key.from, key.to });
+            if (inserted || saturationScore(stats) > saturationScore(it->second))
+            {
+                it->second = stats;
             }
         }
 
@@ -488,7 +738,11 @@ namespace OpenLoco::CargoDist
             const auto capacity = stats.hasCapacity
                 ? std::optional<uint32_t>{ static_cast<uint32_t>(std::min<uint64_t>(stats.capacity, std::numeric_limits<uint32_t>::max())) }
                 : std::nullopt;
-            result.push_back({ key.first, key.second, stats.plannedDemand, capacity });
+            const auto& busiest = busiestServices.at(key);
+            const auto busiestCapacity = busiest.hasCapacity
+                ? std::optional<uint32_t>{ static_cast<uint32_t>(std::min<uint64_t>(busiest.capacity, std::numeric_limits<uint32_t>::max())) }
+                : std::nullopt;
+            result.push_back({ key.first, key.second, stats.plannedDemand, capacity, busiest.plannedDemand, busiestCapacity });
         }
         return result;
     }

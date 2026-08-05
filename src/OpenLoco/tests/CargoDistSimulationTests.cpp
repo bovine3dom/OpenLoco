@@ -63,6 +63,8 @@ namespace
         {
             _station1 = getGameState().stations[1];
             _station2 = getGameState().stations[2];
+            _station3 = getGameState().stations[3];
+            _station4 = getGameState().stations[4];
             EntityManager::reset();
             Vehicles::OrderManager::reset();
             reset();
@@ -78,6 +80,16 @@ namespace
             destination.x = 6;
             destination.y = 0;
             destination.cargoStats[0].isAccepted(true);
+            auto& intermediate = getGameState().stations[3];
+            intermediate = {};
+            intermediate.name = StringId(1);
+            intermediate.x = 12;
+            intermediate.y = 0;
+            auto& fartherDestination = getGameState().stations[4];
+            fartherDestination = {};
+            fartherDestination.name = StringId(1);
+            fartherDestination.x = 18;
+            fartherDestination.y = 0;
             getState().settings.modes[0] = DistributionMode::asymmetric;
         }
 
@@ -88,6 +100,8 @@ namespace
             EntityManager::reset();
             getGameState().stations[1] = _station1;
             getGameState().stations[2] = _station2;
+            getGameState().stations[3] = _station3;
+            getGameState().stations[4] = _station4;
         }
 
         template<typename T>
@@ -100,7 +114,7 @@ namespace
             return static_cast<T*>(component);
         }
 
-        static Vehicles::VehicleHead* createVehicle(bool reverseOrder = false, uint32_t acceptedTypes = 1, uint8_t cargoType = 0, std::optional<uint8_t> waitForCargo = std::nullopt)
+        static Vehicles::VehicleHead* createVehicle(bool reverseOrder = false, uint32_t acceptedTypes = 1, uint8_t cargoType = 0, std::optional<uint8_t> waitForCargo = std::nullopt, uint8_t capacity = 10)
         {
             auto* head = createComponent<Vehicles::VehicleHead>();
             auto* veh1 = createComponent<Vehicles::Vehicle1>();
@@ -126,7 +140,7 @@ namespace
             head->vehicleFlags = Vehicles::VehicleFlags::none;
             veh1->var_48 = Vehicles::Flags48::none;
             veh2->maxSpeed = Speed16(21);
-            body->primaryCargo = { acceptedTypes, cargoType, 10, StationId::null, 0, 0 };
+            body->primaryCargo = { acceptedTypes, cargoType, capacity, StationId::null, 0, 0 };
             EntityManager::moveEntityToList(head, EntityManager::EntityListType::vehicleHead);
 
             Vehicles::OrderManager::allocateOrders(*head);
@@ -144,6 +158,8 @@ namespace
 
         Station _station1{};
         Station _station2{};
+        Station _station3{};
+        Station _station4{};
     };
 }
 
@@ -161,7 +177,19 @@ TEST_F(CargoDistServiceSimulationTest, AdditionalVehicleReducesExpectedWait)
     const auto& firstEdge = getStateConst().serviceEdges.begin()->second;
     EXPECT_EQ(firstWait, 6);
     EXPECT_EQ(firstEdge.waitTime, 3);
-    EXPECT_EQ(firstEdge.capacity, 20);
+    EXPECT_EQ(firstEdge.capacity, 10);
+    EXPECT_EQ(firstEdge.headway, 6);
+}
+
+TEST_F(CargoDistServiceSimulationTest, MixedVehicleCapacityUsesAverageDeparture)
+{
+    createVehicle(false, 1, 0, std::nullopt, 10);
+    createVehicle(false, 1, 0, std::nullopt, 20);
+
+    recalculateNow();
+
+    ASSERT_EQ(getStateConst().serviceEdges.size(), 2);
+    EXPECT_EQ(getStateConst().serviceEdges.begin()->second.capacity, 15);
 }
 
 TEST_F(CargoDistServiceSimulationTest, FullLoadOrdersRestrictOnlyFlexibleCompartments)
@@ -226,6 +254,190 @@ TEST_F(CargoDistServiceSimulationTest, DirtyServicesRebuildBeforeResolvingLeg)
     EXPECT_EQ(getStateConst().nextRecalculationDay, 1234);
 }
 
+TEST_F(CargoDistServiceSimulationTest, RecalculationReleasesRejectedDestination)
+{
+    getGameState().stations[2].cargoStats[0].isAccepted(false);
+    getGameState().stations[4].cargoStats[0].isAccepted(true);
+    getState().stationCargo[{ station(1), 0 }].append({ 10, station(1), station(2), 0, {}, {}, station(2) });
+
+    recalculateNow();
+
+    const auto* packets = getStationCargoConst(station(1), 0);
+    ASSERT_NE(packets, nullptr);
+    ASSERT_EQ(packets->packets().size(), 1);
+    EXPECT_EQ(packets->packets().front().destination, StationId::null);
+    EXPECT_EQ(packets->packets().front().nextHop, StationId::null);
+}
+
+TEST_F(CargoDistServiceSimulationTest, PresentServiceTakesCargoWhenCompleteJourneyIsBetter)
+{
+    constexpr auto planned = serviceLeg(1, 2, 7, 0, 1);
+    constexpr auto present = serviceLeg(1, 2, 8, 0, 1);
+    auto& state = getState();
+    state.serviceEdges[{ 0, station(1), station(2), planned.departure, planned.arrival }] = { 10, 10, 1, 2 };
+    state.serviceEdges[{ 0, station(1), station(2), present.departure, present.arrival }] = { 10, 1, 100, 200 };
+    state.flows[{ 0, station(1), station(1), {}, station(2) }] = {
+        { station(2), 20, 0, planned.departure, planned.arrival },
+    };
+    auto& waiting = state.stationCargo[{ station(1), 0 }];
+    waiting.append({ 20, station(1), station(2), 0, planned.departure, planned.arrival, station(2) });
+    StationCargoStats stationCargo{};
+    synchroniseStationCargo(station(1), 0, stationCargo);
+    Vehicles::VehicleCargo vehicleCargo{ 1, 0, 10, StationId::null, 0, 0 };
+    const VehicleCargoKey key{ entity(10), VehicleCargoSlot::primary };
+
+    EXPECT_EQ(getLoadableQuantity(station(1), 0, present), 20);
+    EXPECT_EQ(loadVehicleCargo(key, vehicleCargo, station(1), stationCargo, present), 10);
+
+    EXPECT_EQ(stationCargo.quantity, 10);
+    const auto* loaded = getVehicleCargoConst(key);
+    ASSERT_NE(loaded, nullptr);
+    ASSERT_EQ(loaded->packets().size(), 1);
+    EXPECT_EQ(loaded->packets().front().destination, station(2));
+    EXPECT_EQ(loaded->packets().front().departure, present.departure);
+    EXPECT_EQ(loaded->packets().front().arrival, present.arrival);
+}
+
+TEST_F(CargoDistServiceSimulationTest, ExactCapacityDoesNotAddAnotherRuntimeHeadway)
+{
+    constexpr auto planned = serviceLeg(1, 2, 7, 0, 1);
+    constexpr auto present = serviceLeg(1, 2, 8, 0, 1);
+    auto& state = getState();
+    state.serviceEdges[{ 0, station(1), station(2), planned.departure, planned.arrival }] = { 10, 1, 1, 10 };
+    state.serviceEdges[{ 0, station(1), station(2), present.departure, present.arrival }] = { 10, 5, 100, 200 };
+    state.flows[{ 0, station(1), station(1), {}, station(2) }] = {
+        { station(2), 10, 0, planned.departure, planned.arrival },
+    };
+    state.stationCargo[{ station(1), 0 }].append({ 10, station(1), station(2), 0, planned.departure, planned.arrival, station(2) });
+
+    EXPECT_EQ(getLoadableQuantity(station(1), 0, present), 0);
+}
+
+TEST_F(CargoDistServiceSimulationTest, RuntimeQueueDivertsOnlyOverflowCohort)
+{
+    constexpr auto planned = serviceLeg(1, 2, 7, 0, 1);
+    constexpr auto present = serviceLeg(1, 2, 8, 0, 1);
+    auto& state = getState();
+    state.serviceEdges[{ 0, station(1), station(2), planned.departure, planned.arrival }] = { 10, 1, 1, 10 };
+    state.serviceEdges[{ 0, station(1), station(2), present.departure, present.arrival }] = { 20, 5, 100, 200 };
+    state.flows[{ 0, station(1), station(1), {}, station(2) }] = {
+        { station(2), 20, 0, planned.departure, planned.arrival },
+    };
+    state.stationCargo[{ station(1), 0 }].append({ 20, station(1), station(2), 0, planned.departure, planned.arrival, station(2) });
+    StationCargoStats stationCargo{};
+    synchroniseStationCargo(station(1), 0, stationCargo);
+    Vehicles::VehicleCargo vehicleCargo{ 1, 0, 20, StationId::null, 0, 0 };
+    const VehicleCargoKey key{ entity(10), VehicleCargoSlot::primary };
+
+    EXPECT_EQ(getLoadableQuantity(station(1), 0, present), 10);
+    EXPECT_EQ(loadVehicleCargo(key, vehicleCargo, station(1), stationCargo, present), 10);
+    EXPECT_EQ(stationCargo.quantity, 10);
+    EXPECT_EQ(getLoadableQuantity(station(1), 0, present), 0);
+}
+
+TEST_F(CargoDistServiceSimulationTest, RuntimeQueueIncludesCargoProducedAfterPlanning)
+{
+    constexpr auto planned = serviceLeg(1, 2, 7, 0, 1);
+    constexpr auto present = serviceLeg(1, 2, 8, 0, 1);
+    auto& state = getState();
+    state.serviceEdges[{ 0, station(1), station(2), planned.departure, planned.arrival }] = { 10, 1, 1, 10 };
+    state.serviceEdges[{ 0, station(1), station(2), present.departure, present.arrival }] = { 20, 5, 100, 200 };
+    const std::array flows = {
+        FlowShare{ station(1), station(1), station(2), 10, {}, planned.departure, planned.arrival, station(2) },
+    };
+    setFlows(0, flows);
+    StationCargoStats stationCargo{};
+
+    addProducedCargo(station(1), 0, stationCargo, 20);
+
+    EXPECT_EQ(getLoadableQuantity(station(1), 0, present), 10);
+}
+
+TEST_F(CargoDistServiceSimulationTest, RuntimeQueueRetiresLostCargo)
+{
+    constexpr auto planned = serviceLeg(1, 2, 7, 0, 1);
+    constexpr auto present = serviceLeg(1, 2, 8, 0, 1);
+    auto& state = getState();
+    state.serviceEdges[{ 0, station(1), station(2), planned.departure, planned.arrival }] = { 10, 1, 1, 10 };
+    state.serviceEdges[{ 0, station(1), station(2), present.departure, present.arrival }] = { 20, 5, 100, 200 };
+    state.flows[{ 0, station(1), station(1), {}, station(2) }] = {
+        { station(2), 20, 0, planned.departure, planned.arrival },
+    };
+    state.stationCargo[{ station(1), 0 }].append({ 20, station(1), station(2), 0, planned.departure, planned.arrival, station(2) });
+    StationCargoStats stationCargo{};
+    synchroniseStationCargo(station(1), 0, stationCargo);
+    stationCargo.quantity = 10;
+
+    updateStationCargoDaily(station(1), 0, stationCargo, 20);
+
+    EXPECT_EQ(getLoadableQuantity(station(1), 0, present), 0);
+}
+
+TEST_F(CargoDistServiceSimulationTest, ThroughCargoConsumesOnwardQueueCohort)
+{
+    getGameState().stations[2].cargoStats[0].isAccepted(false);
+    getGameState().stations[4].cargoStats[0].isAccepted(true);
+    constexpr auto planned = serviceLeg(2, 4, 7, 1, 2);
+    constexpr auto present = serviceLeg(2, 4, 8, 0, 1);
+    auto& state = getState();
+    state.serviceEdges[{ 0, station(2), station(4), planned.departure, planned.arrival }] = { 10, 1, 1, 10 };
+    state.serviceEdges[{ 0, station(2), station(4), present.departure, present.arrival }] = { 20, 5, 100, 200 };
+    const std::array flows = {
+        FlowShare{ station(2), station(1), station(4), 10, planned.departure, planned.departure, planned.arrival, station(4) },
+        FlowShare{ station(2), station(2), station(4), 10, {}, planned.departure, planned.arrival, station(4) },
+    };
+    setFlows(0, flows);
+    state.stationCargo[{ station(2), 0 }].append({ 10, station(2), station(4), 0, planned.departure, planned.arrival, station(4) });
+    const VehicleCargoKey key{ entity(10), VehicleCargoSlot::primary };
+    state.vehicleCargo[key].append({ 10, station(1), station(2), 0, servicePoint(7, 0), planned.departure, station(4) });
+    Vehicles::VehicleCargo vehicleCargo{ 1, 0, 10, station(1), 0, 10 };
+    StationCargoStats stationCargo{};
+
+    const auto result = unloadVehicleCargo(key, vehicleCargo, station(2), stationCargo, {}, false, planned);
+
+    EXPECT_EQ(result.quantity(), 0);
+    EXPECT_EQ(getLoadableQuantity(station(2), 0, present), 0);
+}
+
+TEST_F(CargoDistServiceSimulationTest, DynamicJourneyContinuesAcrossDifferentNextStop)
+{
+    getGameState().stations[2].cargoStats[0].isAccepted(false);
+    getGameState().stations[4].cargoStats[0].isAccepted(true);
+    constexpr auto plannedFirst = serviceLeg(1, 2, 7, 0, 1);
+    constexpr auto plannedSecond = serviceLeg(2, 4, 7, 1, 2);
+    constexpr auto presentFirst = serviceLeg(1, 3, 8, 0, 1);
+    constexpr auto presentSecond = serviceLeg(3, 4, 8, 1, 2);
+    auto& state = getState();
+    state.serviceEdges[{ 0, station(1), station(2), plannedFirst.departure, plannedFirst.arrival }] = { 10, 10, 1, 2 };
+    state.serviceEdges[{ 0, station(2), station(4), plannedSecond.departure, plannedSecond.arrival }] = { 10, 100, 1, 2 };
+    state.serviceEdges[{ 0, station(1), station(3), presentFirst.departure, presentFirst.arrival }] = { 10, 1, 100, 200 };
+    state.serviceEdges[{ 0, station(3), station(4), presentSecond.departure, presentSecond.arrival }] = { 10, 1, 100, 200 };
+    state.flows[{ 0, station(1), station(1), {}, station(4) }] = {
+        { station(2), 10, 0, plannedFirst.departure, plannedFirst.arrival },
+    };
+    state.flows[{ 0, station(2), station(1), plannedFirst.arrival, station(4) }] = {
+        { station(4), 10, 0, plannedSecond.departure, plannedSecond.arrival },
+    };
+    auto& waiting = state.stationCargo[{ station(1), 0 }];
+    waiting.append({ 10, station(1), station(2), 0, plannedFirst.departure, plannedFirst.arrival, station(4) });
+    StationCargoStats sourceCargo{};
+    synchroniseStationCargo(station(1), 0, sourceCargo);
+    Vehicles::VehicleCargo vehicleCargo{ 1, 0, 10, StationId::null, 0, 0 };
+    const VehicleCargoKey key{ entity(10), VehicleCargoSlot::primary };
+    ASSERT_EQ(loadVehicleCargo(key, vehicleCargo, station(1), sourceCargo, presentFirst), 10);
+    StationCargoStats intermediateCargo{};
+
+    const auto result = unloadVehicleCargo(key, vehicleCargo, station(3), intermediateCargo, {}, false, presentSecond);
+
+    EXPECT_EQ(result.quantity(), 0);
+    EXPECT_EQ(vehicleCargo.qty, 10);
+    const auto* loaded = getVehicleCargoConst(key);
+    ASSERT_NE(loaded, nullptr);
+    EXPECT_EQ(loaded->packets().front().nextHop, station(4));
+    EXPECT_EQ(loaded->packets().front().departure, presentSecond.departure);
+    EXPECT_EQ(loaded->packets().front().arrival, presentSecond.arrival);
+}
+
 TEST(CargoDistSimulation, SynchronisesNativeCargoMirrors)
 {
     reset();
@@ -244,7 +456,7 @@ TEST(CargoDistSimulation, SynchronisesNativeCargoMirrors)
 TEST(CargoDistSimulation, AddsProducedCargoUsingCurrentFlow)
 {
     reset();
-    const std::array flows = { FlowShare{ station(1), station(1), station(2), 20 } };
+    const std::array flows = { FlowShare{ station(1), station(1), station(2), 20, {}, {}, {}, station(2) } };
     setFlows(0, flows);
     StationCargoStats cargo{};
 
@@ -254,6 +466,7 @@ TEST(CargoDistSimulation, AddsProducedCargoUsingCurrentFlow)
     EXPECT_EQ(getStationCargoConst(station(1), 0)->quantityFor(station(2)), 20);
     EXPECT_EQ(cargo.quantity, 20);
     EXPECT_EQ(cargo.origin, station(1));
+    EXPECT_EQ(getStationCargoConst(station(1), 0)->packets().front().destination, station(2));
     EXPECT_EQ(getStateConst().supply.at({ 0, station(1) }), 20);
 }
 
@@ -261,8 +474,8 @@ TEST(CargoDistSimulation, SplitsProducedCargoByFlowQuantity)
 {
     reset();
     const std::array flows = {
-        FlowShare{ station(1), station(1), station(2), 3 },
-        FlowShare{ station(1), station(1), station(3), 1 },
+        FlowShare{ station(1), station(1), station(2), 3, {}, {}, {}, station(2) },
+        FlowShare{ station(1), station(1), station(3), 1, {}, {}, {}, station(3) },
     };
     setFlows(0, flows);
     StationCargoStats cargo{};
@@ -349,10 +562,10 @@ TEST(CargoDistSimulation, LoadsOnlyCargoForExactService)
 TEST(CargoDistSimulation, DeliversCargoAtItsFlowSink)
 {
     reset();
-    const std::array flows = { FlowShare{ station(2), station(1), station(2), 20 } };
+    const std::array flows = { FlowShare{ station(2), station(1), station(2), 20, {}, {}, {}, station(2) } };
     setFlows(0, flows);
     const VehicleCargoKey key{ entity(10), VehicleCargoSlot::primary };
-    getOrCreateVehicleCargo(key).append({ 20, station(1), station(2), 3 });
+    getOrCreateVehicleCargo(key).append({ 20, station(1), station(2), 3, {}, {}, station(2) });
     Vehicles::VehicleCargo vehicleCargo{ 1, 0, 30, station(1), 3, 20 };
     StationCargoStats stationCargo{};
     stationCargo.isAccepted(true);
@@ -365,13 +578,36 @@ TEST(CargoDistSimulation, DeliversCargoAtItsFlowSink)
     EXPECT_EQ(stationCargo.quantity, 0);
 }
 
+TEST(CargoDistSimulation, ReassignsCargoWhenItsDestinationStopsAccepting)
+{
+    reset();
+    const std::array flows = {
+        FlowShare{ station(2), station(1), station(2), 20, {}, {}, {}, station(2) },
+        FlowShare{ station(2), station(1), station(3), 20, {}, {}, {}, station(3) },
+    };
+    setFlows(0, flows);
+    const VehicleCargoKey key{ entity(10), VehicleCargoSlot::primary };
+    getOrCreateVehicleCargo(key).append({ 20, station(1), station(2), 3, {}, {}, station(2) });
+    Vehicles::VehicleCargo vehicleCargo{ 1, 0, 30, station(1), 3, 20 };
+    StationCargoStats stationCargo{};
+
+    const auto result = unloadVehicleCargo(key, vehicleCargo, station(2), stationCargo, {}, false, std::nullopt);
+
+    EXPECT_EQ(result.transferred, 20);
+    const auto* packets = getStationCargoConst(station(2), 0);
+    ASSERT_NE(packets, nullptr);
+    EXPECT_EQ(packets->packets().front().destination, station(3));
+    EXPECT_EQ(packets->packets().front().nextHop, station(3));
+    EXPECT_TRUE(getStateConst().graphDirty);
+}
+
 TEST(CargoDistSimulation, TransfersCargoAlongItsNextFlowLeg)
 {
     reset();
-    const std::array flows = { FlowShare{ station(2), station(1), station(3), 20 } };
+    const std::array flows = { FlowShare{ station(2), station(1), station(3), 20, {}, {}, {}, station(3) } };
     setFlows(0, flows);
     const VehicleCargoKey key{ entity(10), VehicleCargoSlot::primary };
-    getOrCreateVehicleCargo(key).append({ 20, station(1), station(2), 3 });
+    getOrCreateVehicleCargo(key).append({ 20, station(1), station(2), 3, {}, {}, station(3) });
     Vehicles::VehicleCargo vehicleCargo{ 1, 0, 30, station(1), 3, 20 };
     StationCargoStats stationCargo{};
     stationCargo.isAccepted(true);
@@ -385,13 +621,31 @@ TEST(CargoDistSimulation, TransfersCargoAlongItsNextFlowLeg)
     EXPECT_EQ(getStationCargoConst(station(2), 0)->quantityFor(station(3)), 20);
 }
 
+TEST(CargoDistSimulation, UnresolvedVehicleCargoCommitsSelectedDestination)
+{
+    reset();
+    const std::array flows = { FlowShare{ station(2), station(1), station(3), 20, {}, {}, {}, station(3) } };
+    setFlows(0, flows);
+    const VehicleCargoKey key{ entity(10), VehicleCargoSlot::primary };
+    getOrCreateVehicleCargo(key).append({ 20, station(1), station(2), 3 });
+    Vehicles::VehicleCargo vehicleCargo{ 1, 0, 30, station(1), 3, 20 };
+    StationCargoStats stationCargo{};
+
+    const auto result = unloadVehicleCargo(key, vehicleCargo, station(2), stationCargo, {}, false, std::nullopt);
+
+    EXPECT_EQ(result.transferred, 20);
+    const auto* packets = getStationCargoConst(station(2), 0);
+    ASSERT_NE(packets, nullptr);
+    EXPECT_EQ(packets->packets().front().destination, station(3));
+}
+
 TEST(CargoDistSimulation, ReroutesCargoWhoseNextHopIsNoLongerServed)
 {
     reset();
-    const std::array flows = { FlowShare{ station(2), station(1), station(3), 20 } };
+    const std::array flows = { FlowShare{ station(2), station(1), station(3), 20, {}, {}, {}, station(3) } };
     setFlows(0, flows);
     const VehicleCargoKey key{ entity(10), VehicleCargoSlot::primary };
-    getOrCreateVehicleCargo(key).append({ 20, station(1), station(9), 3 });
+    getOrCreateVehicleCargo(key).append({ 20, station(1), station(9), 3, {}, {}, station(3) });
     Vehicles::VehicleCargo vehicleCargo{ 1, 0, 30, station(1), 3, 20 };
     StationCargoStats stationCargo{};
     const std::array remainingStops = { station(4) };
@@ -406,10 +660,10 @@ TEST(CargoDistSimulation, ReroutesCargoWhoseNextHopIsNoLongerServed)
 TEST(CargoDistSimulation, ForcedUnloadDeliversAllAtAcceptingStation)
 {
     reset();
-    const std::array flows = { FlowShare{ station(2), station(1), station(3), 20 } };
+    const std::array flows = { FlowShare{ station(2), station(1), station(3), 20, {}, {}, {}, station(3) } };
     setFlows(0, flows);
     const VehicleCargoKey key{ entity(10), VehicleCargoSlot::primary };
-    getOrCreateVehicleCargo(key).append({ 20, station(1), station(4), 3 });
+    getOrCreateVehicleCargo(key).append({ 20, station(1), station(4), 3, {}, {}, station(3) });
     Vehicles::VehicleCargo vehicleCargo{ 1, 0, 30, station(1), 3, 20 };
     StationCargoStats stationCargo{};
     stationCargo.isAccepted(true);
@@ -425,12 +679,12 @@ TEST(CargoDistSimulation, ForcedUnloadDeliversAllAtAcceptingStation)
 TEST(CargoDistSimulation, CapsTransferredCargoAtNativeStationLimit)
 {
     reset();
-    const std::array flows = { FlowShare{ station(2), station(1), station(3), 20 } };
+    const std::array flows = { FlowShare{ station(2), station(1), station(3), 20, {}, {}, {}, station(3) } };
     setFlows(0, flows);
     auto& waiting = getOrCreateStationCargo(station(2), 0);
     waiting.append({ 65530, station(4), station(3), 0 });
     const VehicleCargoKey key{ entity(10), VehicleCargoSlot::primary };
-    getOrCreateVehicleCargo(key).append({ 20, station(1), station(2), 3 });
+    getOrCreateVehicleCargo(key).append({ 20, station(1), station(2), 3, {}, {}, station(3) });
     Vehicles::VehicleCargo vehicleCargo{ 1, 0, 30, station(1), 3, 20 };
     StationCargoStats stationCargo{};
     synchroniseStationCargo(station(2), 0, stationCargo);
@@ -447,11 +701,11 @@ TEST(CargoDistSimulation, ContinuesOnSameServiceWithoutTransfer)
     reset();
     constexpr auto onward = serviceLeg(2, 3, 7, 1, 2);
     const std::array flows = {
-        FlowShare{ station(2), station(1), station(3), 20, onward.departure, onward.departure, onward.arrival },
+        FlowShare{ station(2), station(1), station(3), 20, onward.departure, onward.departure, onward.arrival, station(3) },
     };
     setFlows(0, flows);
     const VehicleCargoKey key{ entity(10), VehicleCargoSlot::primary };
-    getOrCreateVehicleCargo(key).append({ 20, station(1), station(2), 3, servicePoint(7, 0), onward.departure });
+    getOrCreateVehicleCargo(key).append({ 20, station(1), station(2), 3, servicePoint(7, 0), onward.departure, station(3) });
     Vehicles::VehicleCargo vehicleCargo{ 1, 0, 30, station(1), 3, 20 };
     StationCargoStats stationCargo{};
 
@@ -475,11 +729,11 @@ TEST(CargoDistSimulation, TransfersWhenSelectedServiceDiffers)
     constexpr auto onward = serviceLeg(2, 3, 7, 1, 2);
     constexpr auto transfer = serviceLeg(2, 3, 8, 0, 1);
     const std::array flows = {
-        FlowShare{ station(2), station(1), station(3), 20, onward.departure, transfer.departure, transfer.arrival },
+        FlowShare{ station(2), station(1), station(3), 20, onward.departure, transfer.departure, transfer.arrival, station(3) },
     };
     setFlows(0, flows);
     const VehicleCargoKey key{ entity(10), VehicleCargoSlot::primary };
-    getOrCreateVehicleCargo(key).append({ 20, station(1), station(2), 3, servicePoint(7, 0), onward.departure });
+    getOrCreateVehicleCargo(key).append({ 20, station(1), station(2), 3, servicePoint(7, 0), onward.departure, station(3) });
     Vehicles::VehicleCargo vehicleCargo{ 1, 0, 30, station(1), 3, 20 };
     StationCargoStats stationCargo{};
 
@@ -499,11 +753,11 @@ TEST(CargoDistSimulation, RetriesPlatformFlowForStaleIncomingService)
     reset();
     constexpr auto transfer = serviceLeg(2, 3, 8, 0, 1);
     const std::array flows = {
-        FlowShare{ station(2), station(1), station(3), 20, {}, transfer.departure, transfer.arrival },
+        FlowShare{ station(2), station(1), station(3), 20, {}, transfer.departure, transfer.arrival, station(3) },
     };
     setFlows(0, flows);
     const VehicleCargoKey key{ entity(10), VehicleCargoSlot::primary };
-    getOrCreateVehicleCargo(key).append({ 20, station(1), station(2), 3, servicePoint(99, 0), servicePoint(99, 1) });
+    getOrCreateVehicleCargo(key).append({ 20, station(1), station(2), 3, servicePoint(99, 0), servicePoint(99, 1), station(3) });
     Vehicles::VehicleCargo vehicleCargo{ 1, 0, 30, station(1), 3, 20 };
     StationCargoStats stationCargo{};
 
@@ -520,11 +774,11 @@ TEST(CargoDistSimulation, ForcedUnloadDoesNotContinueOnSameService)
     reset();
     constexpr auto onward = serviceLeg(2, 3, 7, 1, 2);
     const std::array flows = {
-        FlowShare{ station(2), station(1), station(3), 20, onward.departure, onward.departure, onward.arrival },
+        FlowShare{ station(2), station(1), station(3), 20, onward.departure, onward.departure, onward.arrival, station(3) },
     };
     setFlows(0, flows);
     const VehicleCargoKey key{ entity(10), VehicleCargoSlot::primary };
-    getOrCreateVehicleCargo(key).append({ 20, station(1), station(2), 3, servicePoint(7, 0), onward.departure });
+    getOrCreateVehicleCargo(key).append({ 20, station(1), station(2), 3, servicePoint(7, 0), onward.departure, station(3) });
     Vehicles::VehicleCargo vehicleCargo{ 1, 0, 30, station(1), 3, 20 };
     StationCargoStats stationCargo{};
 
@@ -539,16 +793,19 @@ TEST(CargoDistSimulation, RemovingStationKeepsFlowCursorsSerializable)
 {
     reset();
     EntityManager::reset();
-    getState().flows[{ 0, station(1), station(2) }] = {
+    getState().flows[{ 0, station(1), station(2), {}, station(4) }] = {
         { station(3), 75, -25 },
         { station(4), 25, 25 },
     };
 
     removeStation(station(3));
 
-    const auto& options = getStateConst().flows.at({ 0, station(1), station(2) });
+    const auto& options = getStateConst().flows.at({ 0, station(1), station(2), {}, station(4) });
     ASSERT_EQ(options.size(), 1);
     EXPECT_EQ(options.front().current, 0);
+    const auto& destinations = getStateConst().destinationFlows.at({ 0, station(1), station(2) });
+    ASSERT_EQ(destinations.size(), 1);
+    EXPECT_EQ(destinations.front().weight, 25);
     EXPECT_NO_THROW(encodeState(getStateConst()));
 }
 
@@ -582,9 +839,9 @@ TEST(CargoDistSimulation, RemovingServiceLeaderClearsStalePlans)
     constexpr auto retained = serviceLeg(1, 3, 8, 0, 1);
     auto& state = getState();
     state.vehicleServiceLegs[entity(7)] = { removed };
-    state.stationCargo[{ station(1), 0 }].append({ 10, station(1), station(2), 0, removed.departure, removed.arrival });
+    state.stationCargo[{ station(1), 0 }].append({ 10, station(1), station(2), 0, removed.departure, removed.arrival, station(3) });
     state.serviceEdges[{ 0, station(1), station(2), removed.departure, removed.arrival }] = { 10, 5, 3 };
-    state.flows[{ 0, station(1), station(1) }] = {
+    state.flows[{ 0, station(1), station(1), {}, station(3) }] = {
         { station(2), 10, 0, removed.departure, removed.arrival },
         { station(3), 10, 0, retained.departure, retained.arrival },
     };
@@ -595,10 +852,13 @@ TEST(CargoDistSimulation, RemovingServiceLeaderClearsStalePlans)
     EXPECT_EQ(packet.nextHop, StationId::null);
     EXPECT_TRUE(packet.departure.empty());
     EXPECT_TRUE(state.serviceEdges.empty());
-    const auto& options = state.flows.at({ 0, station(1), station(1) });
+    const auto& options = state.flows.at({ 0, station(1), station(1), {}, station(3) });
     ASSERT_EQ(options.size(), 1);
     EXPECT_EQ(options.front().departure, retained.departure);
     EXPECT_EQ(options.front().current, 0);
+    const auto& destinations = state.destinationFlows.at({ 0, station(1), station(1) });
+    ASSERT_EQ(destinations.size(), 1);
+    EXPECT_EQ(destinations.front().weight, 10);
     EXPECT_TRUE(state.graphDirty);
 }
 

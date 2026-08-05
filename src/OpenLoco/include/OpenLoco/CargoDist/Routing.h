@@ -48,6 +48,7 @@ namespace OpenLoco::CargoDist
         ServicePoint departure{};
         ServicePoint arrival{};
         uint32_t waitTime{};
+        uint32_t headway{};
     };
 
     struct RoutingDemand
@@ -56,6 +57,7 @@ namespace OpenLoco::CargoDist
         StationId origin;
         uint32_t amount;
         ServicePoint incoming{};
+        StationId destination = StationId::null;
     };
 
     struct RoutingGraph
@@ -82,7 +84,18 @@ namespace OpenLoco::CargoDist
         ServicePoint incoming{};
         ServicePoint departure{};
         ServicePoint arrival{};
+        StationId destination = StationId::null;
+    };
+
+    inline constexpr uint64_t kUnreachableJourneyCost = std::numeric_limits<uint64_t>::max();
+
+    struct StationJourneyCost
+    {
+        StationId destination = StationId::null;
+        uint64_t cost = kUnreachableJourneyCost;
     };
 
     std::vector<FlowShare> calculateAsymmetricFlows(const RoutingGraph& graph, const RoutingSettings& settings = {});
+    std::vector<StationJourneyCost> calculateJourneyCosts(const RoutingGraph& graph, StationId source, ServicePoint departure = {});
+    uint64_t calculateJourneyCost(const RoutingGraph& graph, StationId source, StationId destination, ServicePoint departure = {});
 }

@@ -43,9 +43,16 @@ namespace OpenLoco::CargoDist
 
         struct EdgeAccumulator
         {
-            uint64_t capacity{};
+            uint64_t capacityFrequency{};
             uint64_t weightedTravelTime{};
             uint64_t departureFrequency{};
+        };
+
+        struct MemberEdgeAccumulator
+        {
+            uint64_t departures{};
+            uint64_t capacity{};
+            uint64_t travelTime{};
         };
 
         struct VehicleRoute
@@ -74,11 +81,58 @@ namespace OpenLoco::CargoDist
             auto operator<=>(const ServiceGroupKey&) const = default;
         };
 
+        struct JourneyCache
+        {
+            uint64_t revision = std::numeric_limits<uint64_t>::max();
+            std::map<uint8_t, RoutingGraph> graphs;
+            std::map<std::tuple<uint8_t, StationId, ServicePoint>, std::vector<StationJourneyCost>> costs;
+            std::map<ServiceEdgeKey, uint64_t> plannedDemand;
+            std::map<ServiceEdgeKey, uint64_t> boardedDemand;
+        };
+
+        struct AlternativeBoarding
+        {
+            StationId destination = StationId::null;
+            StationId nextHop = StationId::null;
+            ServicePoint departure{};
+            ServicePoint arrival{};
+            ServiceEdgeKey edge{};
+            uint32_t quantity{};
+            uint64_t firstEligible{};
+            uint64_t saving{};
+        };
+
+        JourneyCache _journeyCache;
+
+        void synchroniseJourneyCacheRevision()
+        {
+            const auto revision = getStateConst().routingRevision;
+            if (_journeyCache.revision != revision)
+            {
+                _journeyCache = {};
+                _journeyCache.revision = revision;
+            }
+        }
+
         uint32_t saturatedAdd(uint32_t lhs, uint32_t rhs)
         {
             return rhs > std::numeric_limits<uint32_t>::max() - lhs
                 ? std::numeric_limits<uint32_t>::max()
                 : lhs + rhs;
+        }
+
+        uint64_t saturatedAdd(uint64_t lhs, uint64_t rhs)
+        {
+            return rhs > std::numeric_limits<uint64_t>::max() - lhs
+                ? std::numeric_limits<uint64_t>::max()
+                : lhs + rhs;
+        }
+
+        uint64_t saturatedMultiply(uint64_t lhs, uint64_t rhs)
+        {
+            return lhs != 0 && rhs > std::numeric_limits<uint64_t>::max() / lhs
+                ? std::numeric_limits<uint64_t>::max()
+                : lhs * rhs;
         }
 
         void seedStationCargo(StationId station, uint8_t cargo, const StationCargoStats& nativeCargo)
@@ -530,8 +584,8 @@ namespace OpenLoco::CargoDist
             state.vehicleServiceLegs.clear();
             state.servicesDirty = false;
             std::map<ServiceEdgeKey, EdgeAccumulator> accumulators;
-            // Q16.48 keeps reciprocal rounding accurate while summing every active departure.
-            constexpr uint64_t kFrequencyOne = uint64_t{ 1 } << 48;
+            // Q32.32 leaves enough headroom to accumulate capacity-weighted frequencies.
+            constexpr uint64_t kFrequencyOne = uint64_t{ 1 } << 32;
             for (auto& group : groups)
             {
                 auto& members = group.second;
@@ -555,14 +609,13 @@ namespace OpenLoco::CargoDist
                         continue;
                     }
 
-                    const auto frequency = std::max<uint64_t>(1, kFrequencyOne / member.cycleTime + (kFrequencyOne % member.cycleTime != 0));
                     for (uint8_t cargo = 0; cargo < member.legCapacities.front().size(); ++cargo)
                     {
                         if (!isEnabled(cargo))
                         {
                             continue;
                         }
-                        std::set<ServiceEdgeKey> memberEdges;
+                        std::map<ServiceEdgeKey, MemberEdgeAccumulator> memberEdges;
                         for (size_t i = 0; i < member.legs.size(); ++i)
                         {
                             if ((member.unloadMasks[i] & (1U << cargo)) != 0)
@@ -576,13 +629,23 @@ namespace OpenLoco::CargoDist
                             }
                             const auto& leg = member.legs[i];
                             const ServiceEdgeKey key{ cargo, leg.from, leg.to, leg.departure, leg.arrival };
+                            auto& edge = memberEdges[key];
+                            ++edge.departures;
+                            edge.capacity += capacity;
+                            edge.travelTime += member.legTimes[i];
+                        }
+                        for (const auto& [key, memberEdge] : memberEdges)
+                        {
+                            const auto frequencyNumerator = kFrequencyOne * memberEdge.departures;
+                            const auto frequency = std::max<uint64_t>(1, frequencyNumerator / member.cycleTime + (frequencyNumerator % member.cycleTime != 0));
+                            const auto capacity = memberEdge.capacity / memberEdge.departures
+                                + (memberEdge.capacity % memberEdge.departures * 2 >= memberEdge.departures);
+                            const auto travelTime = memberEdge.travelTime / memberEdge.departures
+                                + (memberEdge.travelTime % memberEdge.departures * 2 >= memberEdge.departures);
                             auto& edge = accumulators[key];
-                            edge.departureFrequency += frequency;
-                            if (memberEdges.insert(key).second)
-                            {
-                                edge.capacity += capacity;
-                                edge.weightedTravelTime += static_cast<uint64_t>(capacity) * member.legTimes[i];
-                            }
+                            edge.departureFrequency = saturatedAdd(edge.departureFrequency, frequency);
+                            edge.capacityFrequency = saturatedAdd(edge.capacityFrequency, saturatedMultiply(capacity, frequency));
+                            edge.weightedTravelTime = saturatedAdd(edge.weightedTravelTime, saturatedMultiply(travelTime, frequency));
                         }
                     }
                 }
@@ -590,12 +653,16 @@ namespace OpenLoco::CargoDist
 
             for (const auto& [key, edge] : accumulators)
             {
-                const auto capacity = std::min<uint64_t>(edge.capacity, std::numeric_limits<uint32_t>::max());
-                const auto waitTime = std::max<uint64_t>(1, (kFrequencyOne / 2) / edge.departureFrequency + ((kFrequencyOne / 2) % edge.departureFrequency != 0));
+                const auto averageCapacity = edge.capacityFrequency / edge.departureFrequency
+                    + (edge.capacityFrequency % edge.departureFrequency >= edge.departureFrequency / 2 + edge.departureFrequency % 2);
+                const auto capacity = std::clamp<uint64_t>(averageCapacity, 1, std::numeric_limits<uint32_t>::max());
+                const auto headway = std::max<uint64_t>(1, kFrequencyOne / edge.departureFrequency + (kFrequencyOne % edge.departureFrequency != 0));
+                const auto waitTime = headway / 2 + (headway % 2 != 0);
                 state.serviceEdges[key] = {
                     static_cast<uint32_t>(capacity),
-                    static_cast<uint32_t>(std::min<uint64_t>(edge.weightedTravelTime / edge.capacity, std::numeric_limits<uint32_t>::max())),
+                    static_cast<uint32_t>(std::min<uint64_t>(edge.weightedTravelTime / edge.departureFrequency + (edge.weightedTravelTime % edge.departureFrequency >= edge.departureFrequency / 2 + edge.departureFrequency % 2), std::numeric_limits<uint32_t>::max())),
                     static_cast<uint32_t>(std::min<uint64_t>(waitTime, std::numeric_limits<uint32_t>::max())),
+                    static_cast<uint32_t>(std::min<uint64_t>(headway, std::numeric_limits<uint32_t>::max())),
                 };
             }
             retagVehiclePackets();
@@ -635,22 +702,65 @@ namespace OpenLoco::CargoDist
                     }
                 }
             }
+            for (const auto& [key, options] : state.destinationFlows)
+            {
+                std::vector<std::pair<const DestinationOption*, uint64_t>> expectedWeights;
+                uint64_t expectedTotal = 0;
+                for (const auto& option : options)
+                {
+                    const auto flow = state.flows.find({ key.cargo, key.station, key.origin, key.incoming, option.destination });
+                    if (flow == state.flows.end())
+                    {
+                        return false;
+                    }
+                    uint64_t expectedWeight = 0;
+                    for (const auto& route : flow->second)
+                    {
+                        expectedWeight += route.weight;
+                    }
+                    expectedWeights.emplace_back(&option, expectedWeight);
+                    expectedTotal += expectedWeight;
+                }
+                const auto maximum = std::numeric_limits<uint32_t>::max();
+                const auto divisor = expectedTotal > maximum ? expectedTotal / maximum + (expectedTotal % maximum != 0) : 1;
+                uint64_t representableTotal = 0;
+                for (auto& expected : expectedWeights)
+                {
+                    auto& expectedWeight = expected.second;
+                    expectedWeight = std::max<uint64_t>(1, expectedWeight / divisor);
+                    representableTotal += expectedWeight;
+                }
+                for (auto& [option, expectedWeight] : expectedWeights)
+                {
+                    if (representableTotal > maximum)
+                    {
+                        const auto reduction = std::min<uint64_t>(expectedWeight - 1, representableTotal - maximum);
+                        expectedWeight -= reduction;
+                        representableTotal -= reduction;
+                    }
+                    if (option->weight != expectedWeight)
+                    {
+                        return false;
+                    }
+                }
+            }
+            for (const auto& [key, options] : state.flows)
+            {
+                const auto destinations = state.destinationFlows.find({ key.cargo, key.station, key.origin, key.incoming });
+                if (destinations == state.destinationFlows.end()
+                    || std::none_of(destinations->second.begin(), destinations->second.end(), [&](const auto& option) { return option.destination == key.destination; }))
+                {
+                    return false;
+                }
+            }
             return true;
         }
 
-        std::map<std::tuple<StationId, StationId, ServicePoint>, uint32_t> getRoutingDemands(uint8_t cargo)
+        std::map<std::tuple<StationId, StationId, ServicePoint, StationId>, uint32_t> getRoutingDemands(uint8_t cargo)
         {
             const auto& state = getStateConst();
-            using DemandKey = std::tuple<StationId, StationId, ServicePoint>;
+            using DemandKey = std::tuple<StationId, StationId, ServicePoint, StationId>;
             std::map<DemandKey, uint32_t> demands;
-            for (const auto& [key, amount] : state.supply)
-            {
-                if (key.first == cargo)
-                {
-                    demands[{ key.second, key.second, {} }] = amount;
-                }
-            }
-
             std::map<DemandKey, uint32_t> outstanding;
             const auto addPackets = [&outstanding](StationId source, const PacketList* packets) {
                 if (packets == nullptr)
@@ -661,7 +771,7 @@ namespace OpenLoco::CargoDist
                 {
                     if (packet.origin != StationId::null)
                     {
-                        auto& amount = outstanding[{ source, packet.origin, {} }];
+                        auto& amount = outstanding[{ source, packet.origin, {}, packet.destination }];
                         amount = saturatedAdd(amount, packet.quantity);
                     }
                 }
@@ -675,7 +785,7 @@ namespace OpenLoco::CargoDist
                 {
                     if (packet.origin != StationId::null && packet.nextHop != StationId::null)
                     {
-                        auto& amount = outstanding[{ packet.nextHop, packet.origin, packet.arrival }];
+                        auto& amount = outstanding[{ packet.nextHop, packet.origin, packet.arrival, packet.destination }];
                         amount = saturatedAdd(amount, packet.quantity);
                     }
                 }
@@ -695,7 +805,28 @@ namespace OpenLoco::CargoDist
             });
             for (const auto& [key, amount] : outstanding)
             {
-                demands[key] = std::max(demands[key], amount);
+                demands[key] = amount;
+            }
+            for (const auto& [key, amount] : state.supply)
+            {
+                if (key.first != cargo)
+                {
+                    continue;
+                }
+                uint64_t represented = 0;
+                for (const auto& [outstandingKey, outstandingAmount] : outstanding)
+                {
+                    const auto& [source, origin, incoming, destination] = outstandingKey;
+                    if (source == key.second && origin == key.second && incoming.empty())
+                    {
+                        represented += outstandingAmount;
+                    }
+                }
+                if (represented < amount)
+                {
+                    auto& unassigned = demands[{ key.second, key.second, {}, StationId::null }];
+                    unassigned = saturatedAdd(unassigned, amount - static_cast<uint32_t>(represented));
+                }
             }
             return demands;
         }
@@ -740,17 +871,220 @@ namespace OpenLoco::CargoDist
             }
             for (const auto& [key, amount] : demands)
             {
-                const auto& [source, origin, incoming] = key;
-                graph.demands.push_back({ source, origin, amount, incoming });
+                const auto& [source, origin, incoming, destination] = key;
+                graph.demands.push_back({ source, origin, amount, incoming, destination });
             }
             for (const auto& [key, edge] : state.serviceEdges)
             {
                 if (key.cargo == cargo)
                 {
-                    graph.edges.push_back({ key.from, key.to, edge.capacity, edge.travelTime, key.departure, key.arrival, edge.waitTime });
+                    graph.edges.push_back({ key.from, key.to, edge.capacity, edge.travelTime, key.departure, key.arrival, edge.waitTime, edge.headway });
                 }
             }
             return graph;
+        }
+
+        const RoutingGraph& getJourneyGraph(uint8_t cargo)
+        {
+            const auto& state = getStateConst();
+            synchroniseJourneyCacheRevision();
+            const auto cached = _journeyCache.graphs.find(cargo);
+            if (cached != _journeyCache.graphs.end())
+            {
+                return cached->second;
+            }
+
+            std::erase_if(_journeyCache.plannedDemand, [cargo](const auto& item) { return item.first.cargo == cargo; });
+            for (const auto& [key, options] : state.flows)
+            {
+                if (key.cargo != cargo)
+                {
+                    continue;
+                }
+                for (const auto& option : options)
+                {
+                    if (option.via == key.station || option.via == StationId::null)
+                    {
+                        continue;
+                    }
+                    auto& demand = _journeyCache.plannedDemand[{ cargo, key.station, option.via, option.departure, option.arrival }];
+                    demand = std::min<uint64_t>(std::numeric_limits<uint64_t>::max() - option.weight, demand) + option.weight;
+                }
+            }
+            for (auto& [key, demand] : _journeyCache.plannedDemand)
+            {
+                if (key.cargo == cargo)
+                {
+                    const auto boarded = _journeyCache.boardedDemand[key];
+                    demand -= std::min(demand, boarded);
+                }
+            }
+            std::map<ServiceEdgeKey, uint64_t> waitingDemand;
+            for (const auto& [key, packets] : state.stationCargo)
+            {
+                if (key.cargo != cargo)
+                {
+                    continue;
+                }
+                for (const auto& packet : packets.packets())
+                {
+                    if (packet.nextHop == StationId::null || packet.nextHop == key.station || packet.departure.empty())
+                    {
+                        continue;
+                    }
+                    const ServiceEdgeKey edge{ cargo, key.station, packet.nextHop, packet.departure, packet.arrival };
+                    auto& demand = waitingDemand[edge];
+                    demand = saturatedAdd(demand, static_cast<uint64_t>(packet.quantity));
+                }
+            }
+            for (const auto& [key, demand] : waitingDemand)
+            {
+                auto& planned = _journeyCache.plannedDemand[key];
+                planned = std::max(planned, demand);
+            }
+
+            auto graph = buildGraph(cargo);
+            graph.demands.clear();
+            for (auto& edge : graph.edges)
+            {
+                const auto demand = _journeyCache.plannedDemand[{ cargo, edge.from, edge.to, edge.departure, edge.arrival }];
+                const auto queuedDepartures = demand == 0 ? 0 : (demand - 1) / std::max<uint32_t>(1, edge.capacity);
+                const auto waitRoom = static_cast<uint64_t>(std::numeric_limits<uint32_t>::max() - edge.waitTime);
+                const auto extraWait = edge.headway != 0 && queuedDepartures > waitRoom / edge.headway
+                    ? waitRoom
+                    : static_cast<uint64_t>(edge.headway) * queuedDepartures;
+                edge.waitTime += static_cast<uint32_t>(extraWait);
+                edge.headway = 0;
+            }
+            return _journeyCache.graphs.emplace(cargo, std::move(graph)).first->second;
+        }
+
+        void invalidateJourneyGraph(uint8_t cargo)
+        {
+            _journeyCache.graphs.erase(cargo);
+            std::erase_if(_journeyCache.costs, [cargo](const auto& item) { return std::get<0>(item.first) == cargo; });
+            std::erase_if(_journeyCache.plannedDemand, [cargo](const auto& item) { return item.first.cargo == cargo; });
+        }
+
+        void consumePlannedDemand(StationId station, uint8_t cargo, const PacketList& packets)
+        {
+            if (packets.empty())
+            {
+                return;
+            }
+            synchroniseJourneyCacheRevision();
+            for (const auto& packet : packets.packets())
+            {
+                if (packet.nextHop == StationId::null || packet.nextHop == station || packet.departure.empty())
+                {
+                    continue;
+                }
+                auto& boarded = _journeyCache.boardedDemand[{ cargo, station, packet.nextHop, packet.departure, packet.arrival }];
+                boarded = saturatedAdd(boarded, static_cast<uint64_t>(packet.quantity));
+            }
+            invalidateJourneyGraph(cargo);
+        }
+
+        uint64_t getJourneyCost(uint8_t cargo, StationId station, StationId destination, ServicePoint departure = {})
+        {
+            const auto& graph = getJourneyGraph(cargo);
+            const auto key = std::tuple{ cargo, station, departure };
+            auto cached = _journeyCache.costs.find(key);
+            if (cached == _journeyCache.costs.end())
+            {
+                cached = _journeyCache.costs.emplace(key, calculateJourneyCosts(graph, station, departure)).first;
+            }
+            const auto found = std::lower_bound(cached->second.begin(), cached->second.end(), destination, [](const auto& item, StationId value) {
+                return item.destination < value;
+            });
+            return found != cached->second.end() && found->destination == destination
+                ? found->cost
+                : kUnreachableJourneyCost;
+        }
+
+        std::vector<AlternativeBoarding> getAlternativeBoarding(StationId station, uint8_t cargo, const VehicleServiceLeg& serviceLeg, const PacketList& packets)
+        {
+            const auto& state = getStateConst();
+            if (!state.serviceEdges.contains({ cargo, station, serviceLeg.to, serviceLeg.departure, serviceLeg.arrival }))
+            {
+                return {};
+            }
+
+            getJourneyGraph(cargo);
+            using PacketKey = std::tuple<StationId, StationId, ServicePoint, ServicePoint>;
+            std::map<PacketKey, uint32_t> quantities;
+            for (const auto& packet : packets.packets())
+            {
+                const auto exact = packet.nextHop == serviceLeg.to && packet.departure == serviceLeg.departure;
+                if (exact || packet.destination == StationId::null || packet.nextHop == StationId::null || packet.departure.empty())
+                {
+                    continue;
+                }
+                auto& quantity = quantities[{ packet.destination, packet.nextHop, packet.departure, packet.arrival }];
+                quantity = saturatedAdd(quantity, packet.quantity);
+            }
+
+            std::vector<AlternativeBoarding> candidates;
+            candidates.reserve(quantities.size());
+            for (const auto& [packetKey, quantity] : quantities)
+            {
+                const auto& [destination, nextHop, departure, arrival] = packetKey;
+                const ServiceEdgeKey edgeKey{ cargo, station, nextHop, departure, arrival };
+                const auto edge = state.serviceEdges.find(edgeKey);
+                const auto demand = _journeyCache.plannedDemand.find(edgeKey);
+                if (edge == state.serviceEdges.end() || demand == _journeyCache.plannedDemand.end() || demand->second == 0)
+                {
+                    continue;
+                }
+
+                const auto continuationCost = getJourneyCost(cargo, station, destination, departure);
+                const auto presentCost = getJourneyCost(cargo, station, destination, serviceLeg.departure);
+                if (continuationCost == kUnreachableJourneyCost || presentCost == kUnreachableJourneyCost)
+                {
+                    continue;
+                }
+                const auto baseCost = saturatedAdd(continuationCost, static_cast<uint64_t>(edge->second.waitTime));
+                auto firstEligible = std::numeric_limits<uint64_t>::max();
+                if (presentCost < baseCost)
+                {
+                    firstEligible = 0;
+                }
+                else if (edge->second.headway != 0)
+                {
+                    const auto queuedDepartures = (presentCost - baseCost) / edge->second.headway + 1;
+                    firstEligible = saturatedMultiply(queuedDepartures, std::max<uint32_t>(1, edge->second.capacity));
+                }
+                const auto lastQueuedDeparture = (demand->second - 1) / std::max<uint32_t>(1, edge->second.capacity);
+                const auto marginalCost = saturatedAdd(baseCost, saturatedMultiply(lastQueuedDeparture, edge->second.headway));
+                candidates.push_back({ destination, nextHop, departure, arrival, edgeKey, quantity, firstEligible, marginalCost > presentCost ? marginalCost - presentCost : 0 });
+            }
+
+            std::sort(candidates.begin(), candidates.end(), [](const auto& lhs, const auto& rhs) {
+                if (lhs.saving != rhs.saving)
+                {
+                    return lhs.saving > rhs.saving;
+                }
+                return std::tie(lhs.destination, lhs.nextHop, lhs.departure, lhs.arrival)
+                    < std::tie(rhs.destination, rhs.nextHop, rhs.departure, rhs.arrival);
+            });
+            std::map<ServiceEdgeKey, uint64_t> remainingDemand;
+            for (auto& candidate : candidates)
+            {
+                auto [remaining, inserted] = remainingDemand.try_emplace(candidate.edge);
+                if (inserted)
+                {
+                    remaining->second = _journeyCache.plannedDemand.at(candidate.edge);
+                }
+                const auto assigned = std::min<uint64_t>(candidate.quantity, remaining->second);
+                const auto first = remaining->second - assigned;
+                const auto eligible = remaining->second > std::max(first, candidate.firstEligible)
+                    ? remaining->second - std::max(first, candidate.firstEligible)
+                    : 0;
+                candidate.quantity = static_cast<uint32_t>(std::min<uint64_t>(eligible, candidate.quantity));
+                remaining->second = first;
+            }
+            std::erase_if(candidates, [](const auto& candidate) { return candidate.quantity == 0; });
+            return candidates;
         }
 
         void rerouteWaitingCargo(uint8_t cargo)
@@ -765,7 +1099,8 @@ namespace OpenLoco::CargoDist
                 PacketList rerouted;
                 for (auto packet : packets.packets())
                 {
-                    const auto shares = allocateVia(cargo, key.station, packet.origin, packet.quantity, ServicePoint{}, key.station);
+                    const auto requested = packet.quantity;
+                    const auto shares = allocateVia(cargo, key.station, packet.origin, packet.destination, packet.quantity, ServicePoint{}, key.station);
                     if (shares.empty())
                     {
                         packet.nextHop = StationId::null;
@@ -774,12 +1109,23 @@ namespace OpenLoco::CargoDist
                         rerouted.append(packet);
                         continue;
                     }
+                    uint32_t allocated = 0;
                     for (const auto& share : shares)
                     {
+                        allocated += share.amount;
                         packet.quantity = static_cast<uint16_t>(share.amount);
                         packet.nextHop = share.via;
                         packet.departure = share.departure;
                         packet.arrival = share.arrival;
+                        packet.destination = share.destination;
+                        rerouted.append(packet);
+                    }
+                    if (allocated < requested)
+                    {
+                        packet.quantity = static_cast<uint16_t>(requested - allocated);
+                        packet.nextHop = StationId::null;
+                        packet.departure = {};
+                        packet.arrival = {};
                         rerouted.append(packet);
                     }
                 }
@@ -791,12 +1137,55 @@ namespace OpenLoco::CargoDist
             }
         }
 
+        void releaseRejectedDestinations(uint8_t cargo)
+        {
+            const auto release = [cargo](PacketList& packets, bool clearRoute) {
+                auto pending = packets.take(std::numeric_limits<uint32_t>::max());
+                for (auto packet : pending.packets())
+                {
+                    if (packet.destination != StationId::null)
+                    {
+                        const auto* destination = StationManager::get(packet.destination);
+                        if (destination == nullptr || destination->empty() || !destination->cargoStats[cargo].isAccepted())
+                        {
+                            packet.destination = StationId::null;
+                            if (clearRoute)
+                            {
+                                packet.nextHop = StationId::null;
+                                packet.departure = {};
+                                packet.arrival = {};
+                            }
+                        }
+                    }
+                    packets.append(packet);
+                }
+            };
+
+            for (auto& [key, packets] : getState().stationCargo)
+            {
+                if (key.cargo == cargo)
+                {
+                    release(packets, true);
+                }
+            }
+            forEachVehicleCargo([&](const auto&, VehicleCargoKey key, const auto& nativeCargo) {
+                if (nativeCargo.type == cargo)
+                {
+                    if (auto* packets = getVehicleCargo(key); packets != nullptr)
+                    {
+                        release(*packets, false);
+                    }
+                }
+            });
+        }
+
         void clearRoutingState(uint8_t cargo)
         {
             auto& state = getState();
             std::erase_if(state.supply, [cargo](const auto& item) { return item.first.first == cargo; });
             std::erase_if(state.serviceEdges, [cargo](const auto& item) { return item.first.cargo == cargo; });
             std::erase_if(state.flows, [cargo](const auto& item) { return item.first.cargo == cargo; });
+            std::erase_if(state.destinationFlows, [cargo](const auto& item) { return item.first.cargo == cargo; });
         }
 
         void recalculateFlows()
@@ -809,6 +1198,7 @@ namespace OpenLoco::CargoDist
                 {
                     continue;
                 }
+                releaseRejectedDestinations(cargo);
                 setFlows(cargo, calculateAsymmetricFlows(buildGraph(cargo), state.settings.routing));
                 rerouteWaitingCargo(cargo);
             }
@@ -876,7 +1266,7 @@ namespace OpenLoco::CargoDist
         const auto added = static_cast<uint16_t>(std::min<uint32_t>(quantity, room));
         if (added != 0)
         {
-            const auto shares = allocateVia(cargo, station, station, added);
+            const auto shares = allocateVia(cargo, station, station, StationId::null, added);
             if (shares.empty())
             {
                 packets.append({ added, station, StationId::null, 0 });
@@ -885,12 +1275,13 @@ namespace OpenLoco::CargoDist
             {
                 for (const auto& share : shares)
                 {
-                    packets.append({ static_cast<uint16_t>(share.amount), station, share.via, 0, share.departure, share.arrival });
+                    packets.append({ static_cast<uint16_t>(share.amount), station, share.via, 0, share.departure, share.arrival, share.destination });
                 }
             }
         }
         auto& supply = getState().supply[{ cargo, station }];
         supply = saturatedAdd(supply, quantity);
+        invalidateJourneyGraph(cargo);
         synchroniseStationCargo(station, cargo, nativeCargo);
     }
 
@@ -905,7 +1296,8 @@ namespace OpenLoco::CargoDist
         packets->ageAtStation(station);
         if (nativeCargo.quantity < quantityBeforeUpdate)
         {
-            packets->remove(quantityBeforeUpdate - nativeCargo.quantity);
+            const auto removed = packets->take(quantityBeforeUpdate - nativeCargo.quantity);
+            consumePlannedDemand(station, cargo, removed);
         }
         synchroniseStationCargo(station, cargo, nativeCargo);
     }
@@ -929,7 +1321,17 @@ namespace OpenLoco::CargoDist
             return 0;
         }
         const auto* packets = getStationCargoConst(station, cargo);
-        return packets == nullptr ? 0 : packets->quantityFor(serviceLeg.to, serviceLeg.departure);
+        if (packets == nullptr)
+        {
+            return 0;
+        }
+        uint32_t quantity = packets->quantityFor(serviceLeg.to, serviceLeg.departure);
+        const auto alternatives = getAlternativeBoarding(station, cargo, serviceLeg, *packets);
+        for (const auto& alternative : alternatives)
+        {
+            quantity = saturatedAdd(quantity, alternative.quantity);
+        }
+        return quantity;
     }
 
     uint16_t loadVehicleCargo(VehicleCargoKey key, Vehicles::VehicleCargo& nativeCargo, StationId station, StationCargoStats& nativeStationCargo, const VehicleServiceLeg& serviceLeg)
@@ -951,6 +1353,31 @@ namespace OpenLoco::CargoDist
         auto& vehiclePackets = getOrCreateVehicleCargo(key);
         const auto freeCapacity = nativeCargo.maxQty - std::min<uint32_t>(vehiclePackets.quantity(), nativeCargo.maxQty);
         auto loaded = stationPackets.takeFor(serviceLeg.to, serviceLeg.departure, freeCapacity);
+        PacketList consumed = loaded;
+        auto remainingCapacity = freeCapacity - loaded.quantity();
+        if (remainingCapacity != 0)
+        {
+            const auto alternatives = getAlternativeBoarding(station, nativeCargo.type, serviceLeg, stationPackets);
+            for (const auto& alternative : alternatives)
+            {
+                auto diverted = stationPackets.takeForJourney(alternative.destination, alternative.nextHop, alternative.departure, std::min(remainingCapacity, alternative.quantity));
+                const auto moved = diverted.quantity();
+                for (auto packet : diverted.packets())
+                {
+                    consumed.append(packet);
+                    packet.nextHop = serviceLeg.to;
+                    packet.departure = serviceLeg.departure;
+                    packet.arrival = serviceLeg.arrival;
+                    loaded.append(packet);
+                }
+                remainingCapacity -= moved;
+                if (remainingCapacity == 0)
+                {
+                    break;
+                }
+            }
+        }
+        consumePlannedDemand(station, nativeCargo.type, consumed);
         const auto quantity = static_cast<uint16_t>(loaded.quantity());
         vehiclePackets.append(std::move(loaded));
         synchroniseStationCargo(station, nativeCargo.type, nativeStationCargo);
@@ -987,6 +1414,7 @@ namespace OpenLoco::CargoDist
 
         UnloadResult result;
         PacketList transferred;
+        PacketList consumedOnward;
         bool needsRecalculation = false;
         for (auto packet : arriving.packets())
         {
@@ -995,19 +1423,67 @@ namespace OpenLoco::CargoDist
                 result.delivered.append(packet);
                 continue;
             }
-            auto shares = allocateVia(nativeCargo.type, station, packet.origin, packet.quantity, packet.arrival);
+            if (packet.destination == station && nativeStationCargo.isAccepted())
+            {
+                result.delivered.append(packet);
+                continue;
+            }
+            const auto rejectedDestination = packet.destination == station;
+            if (rejectedDestination)
+            {
+                packet.destination = StationId::null;
+                needsRecalculation = true;
+            }
+            const auto excluded = rejectedDestination ? station : StationId::null;
+            auto shares = allocateVia(nativeCargo.type, station, packet.origin, packet.destination, packet.quantity, packet.arrival, excluded);
             if (shares.empty() && !packet.arrival.empty())
             {
-                shares = allocateVia(nativeCargo.type, station, packet.origin, packet.quantity);
+                shares = allocateVia(nativeCargo.type, station, packet.origin, packet.destination, packet.quantity, ServicePoint{}, excluded);
             }
             if (shares.empty())
             {
-                shares.push_back({ StationId::null, packet.quantity });
+                shares.push_back({ StationId::null, packet.quantity, {}, {}, packet.destination });
             }
+            const auto hasPlannedContinuation = onwardLeg.has_value() && std::any_of(shares.begin(), shares.end(), [&](const auto& share) {
+                                                    return onwardLeg->from == station
+                                                        && packet.arrival == onwardLeg->departure
+                                                        && share.via == onwardLeg->to
+                                                        && share.departure == onwardLeg->departure
+                                                        && share.arrival == onwardLeg->arrival;
+                                                });
+            if (!forceUnload && onwardLeg.has_value() && !hasPlannedContinuation
+                && onwardLeg->from == station
+                && packet.destination != StationId::null
+                && packet.arrival == onwardLeg->departure
+                && getStateConst().serviceEdges.contains({ nativeCargo.type, station, onwardLeg->to, onwardLeg->departure, onwardLeg->arrival })
+                && getJourneyCost(nativeCargo.type, station, packet.destination, onwardLeg->departure)
+                    < getJourneyCost(nativeCargo.type, station, packet.destination))
+            {
+                for (const auto& share : shares)
+                {
+                    auto plannedPacket = packet;
+                    plannedPacket.quantity = static_cast<uint16_t>(share.amount);
+                    plannedPacket.nextHop = share.via == station ? StationId::null : share.via;
+                    plannedPacket.departure = share.departure;
+                    plannedPacket.arrival = share.arrival;
+                    consumedOnward.append(plannedPacket);
+                }
+                packet.nextHop = onwardLeg->to;
+                packet.departure = onwardLeg->departure;
+                packet.arrival = onwardLeg->arrival;
+                vehiclePackets->append(packet);
+                continue;
+            }
+            uint32_t allocated = 0;
             for (const auto& share : shares)
             {
+                allocated += share.amount;
                 auto routedPacket = packet;
                 routedPacket.quantity = static_cast<uint16_t>(share.amount);
+                if (share.destination != StationId::null)
+                {
+                    routedPacket.destination = share.destination;
+                }
                 const auto via = share.via;
                 if (!forceUnload && onwardLeg.has_value()
                     && onwardLeg->from == station
@@ -1019,10 +1495,11 @@ namespace OpenLoco::CargoDist
                     routedPacket.nextHop = via;
                     routedPacket.departure = share.departure;
                     routedPacket.arrival = share.arrival;
+                    consumedOnward.append(routedPacket);
                     vehiclePackets->append(routedPacket);
                     continue;
                 }
-                if ((via == station || via == StationId::null) && nativeStationCargo.isAccepted())
+                if (via == station && routedPacket.destination == station && nativeStationCargo.isAccepted())
                 {
                     result.delivered.append(routedPacket);
                     continue;
@@ -1032,6 +1509,15 @@ namespace OpenLoco::CargoDist
                 routedPacket.arrival = share.arrival;
                 needsRecalculation |= routedPacket.nextHop == StationId::null;
                 transferred.append(routedPacket);
+            }
+            if (allocated < packet.quantity)
+            {
+                packet.quantity = static_cast<uint16_t>(packet.quantity - allocated);
+                packet.nextHop = StationId::null;
+                packet.departure = {};
+                packet.arrival = {};
+                transferred.append(packet);
+                needsRecalculation = true;
             }
         }
 
@@ -1046,6 +1532,8 @@ namespace OpenLoco::CargoDist
         {
             markGraphDirty();
         }
+        consumePlannedDemand(station, nativeCargo.type, consumedOnward);
+        invalidateJourneyGraph(nativeCargo.type);
         synchroniseStationCargo(station, nativeCargo.type, nativeStationCargo);
         synchroniseVehicleCargo(key, nativeCargo);
         return result;
@@ -1153,7 +1641,9 @@ namespace OpenLoco::CargoDist
 
         const auto validatePackets = [&](const PacketList& packets) {
             return std::all_of(packets.packets().begin(), packets.packets().end(), [&](const auto& packet) {
-                return isActiveStation(packet.origin) && (packet.nextHop == StationId::null || isActiveStation(packet.nextHop));
+                return isActiveStation(packet.origin)
+                    && (packet.destination == StationId::null || isActiveStation(packet.destination))
+                    && (packet.nextHop == StationId::null || isActiveStation(packet.nextHop));
             });
         };
         for (const auto& [key, attraction] : state.stationAttraction)
@@ -1179,10 +1669,18 @@ namespace OpenLoco::CargoDist
         }
         for (const auto& [key, options] : state.flows)
         {
-            if (!isEnabled(key.cargo) || !isActiveStation(key.station) || !isActiveStation(key.origin)
+            if (!isEnabled(key.cargo) || !isActiveStation(key.station) || !isActiveStation(key.origin) || !isActiveStation(key.destination)
                 || std::any_of(options.begin(), options.end(), [&](const auto& option) { return !isActiveStation(option.via); }))
             {
                 throw std::runtime_error("Invalid CargoDist flow state");
+            }
+        }
+        for (const auto& [key, options] : state.destinationFlows)
+        {
+            if (!isEnabled(key.cargo) || !isActiveStation(key.station) || !isActiveStation(key.origin)
+                || std::any_of(options.begin(), options.end(), [&](const auto& option) { return !isActiveStation(option.destination); }))
+            {
+                throw std::runtime_error("Invalid CargoDist destination flow state");
             }
         }
 
@@ -1303,6 +1801,7 @@ namespace OpenLoco::CargoDist
     void removeStation(StationId station)
     {
         auto& state = getState();
+        std::set<uint8_t> affectedCargo;
         std::erase_if(state.stationCargo, [station](const auto& item) { return item.first.station == station; });
         for (auto& [key, packets] : state.stationCargo)
         {
@@ -1319,13 +1818,15 @@ namespace OpenLoco::CargoDist
         std::erase_if(state.serviceEdges, [station](const auto& item) { return item.first.from == station || item.first.to == station; });
         for (auto it = state.flows.begin(); it != state.flows.end();)
         {
-            if (it->first.station == station || it->first.origin == station)
+            if (it->first.station == station || it->first.origin == station || it->first.destination == station)
             {
+                affectedCargo.insert(it->first.cargo);
                 it = state.flows.erase(it);
                 continue;
             }
             if (std::erase_if(it->second, [station](const auto& option) { return option.via == station; }) != 0)
             {
+                affectedCargo.insert(it->first.cargo);
                 for (auto& option : it->second)
                 {
                     option.current = 0;
@@ -1339,6 +1840,10 @@ namespace OpenLoco::CargoDist
             {
                 ++it;
             }
+        }
+        for (const auto cargo : affectedCargo)
+        {
+            rebuildDestinationFlows(cargo);
         }
         synchroniseAllCargo();
         state.graphDirty = true;
@@ -1377,15 +1882,17 @@ namespace OpenLoco::CargoDist
         }
         for (auto& [key, packets] : state.vehicleCargo)
         {
-            packets.removeServiceReferences(service);
+            packets.removeServiceReferences(service, true);
         }
         std::erase_if(state.serviceEdges, [service](const auto& item) {
             return item.first.departure.service == service || item.first.arrival.service == service;
         });
+        std::set<uint8_t> affectedCargo;
         for (auto it = state.flows.begin(); it != state.flows.end();)
         {
             if (it->first.incoming.service == service)
             {
+                affectedCargo.insert(it->first.cargo);
                 it = state.flows.erase(it);
                 continue;
             }
@@ -1394,6 +1901,7 @@ namespace OpenLoco::CargoDist
             });
             if (removed != 0)
             {
+                affectedCargo.insert(it->first.cargo);
                 for (auto& option : it->second)
                 {
                     option.current = 0;
@@ -1407,6 +1915,10 @@ namespace OpenLoco::CargoDist
             {
                 ++it;
             }
+        }
+        for (const auto cargo : affectedCargo)
+        {
+            rebuildDestinationFlows(cargo);
         }
         state.graphDirty = true;
         state.servicesDirty = true;
