@@ -19,6 +19,9 @@ so far:
 - rail pathfinding looks ahead one stop/waypoint to improve platform selection
 - vehicle auto-renewal (in company menu. only for exact matches at the moment)
 - ctrl-click on a vehicle to start/stop it. fake £1 emitted/consumed for visual feedback
+- tweening now uses half-world pixels (need uncapped fps or vsync on)
+- conflicting signal placement paints track red in build mode
+- disconnected track ends are painted red in build mode
 
 
 
