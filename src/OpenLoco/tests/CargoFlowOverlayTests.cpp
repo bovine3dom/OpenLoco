@@ -20,6 +20,11 @@ namespace
         return static_cast<StationId>(value);
     }
 
+    constexpr ServicePoint servicePoint(uint16_t service, uint16_t occurrence)
+    {
+        return { static_cast<ServiceId>(service), occurrence };
+    }
+
     const PlannedServiceEdge* findEdge(const std::vector<PlannedServiceEdge>& edges, StationId from, StationId to)
     {
         const auto edge = std::find_if(edges.begin(), edges.end(), [=](const auto& item) {
@@ -33,14 +38,18 @@ TEST(CargoFlowOverlayTest, AggregatesDirectedPlannedDemandAndCapacity)
 {
     reset();
     auto& state = getState();
-    state.serviceEdges[{ 0, station(1), station(2) }] = { 50, 10 };
+    state.serviceEdges[{ 0, station(1), station(2), servicePoint(1, 0), servicePoint(1, 1) }] = { 20, 10, 2 };
+    state.serviceEdges[{ 0, station(1), station(2), servicePoint(2, 0), servicePoint(2, 1) }] = { 30, 12, 3 };
     state.serviceEdges[{ 0, station(2), station(1) }] = { 75, 10 };
     state.serviceEdges[{ 0, station(4), station(5) }] = { 30, 10 };
     state.serviceEdges[{ 1, station(1), station(2) }] = { 200, 10 };
     state.flows[{ 0, station(1), station(6) }] = {
         { station(1), 30, 0 },
-        { station(2), 20, 0 },
+        { station(2), 12, 0, servicePoint(1, 0), servicePoint(1, 1) },
         { station(3), 10, 0 },
+    };
+    state.flows[{ 0, station(1), station(6), servicePoint(3, 1) }] = {
+        { station(2), 8, 0, servicePoint(2, 0), servicePoint(2, 1) },
     };
     state.flows[{ 0, station(1), station(7) }] = {
         { station(2), 40, 0 },

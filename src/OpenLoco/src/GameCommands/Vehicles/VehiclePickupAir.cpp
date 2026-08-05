@@ -10,6 +10,7 @@
 #include "Vehicles/VehicleHead.h"
 #include "Vehicles/VehicleTail.h"
 #include "World/StationManager.h"
+#include <OpenLoco/CargoDist/CargoDist.h>
 
 using namespace OpenLoco::Vehicles;
 
@@ -60,6 +61,7 @@ namespace OpenLoco::GameCommands
         train.head->stationId = StationId::null;
         train.head->vehicleFlags |= VehicleFlags::commandStop;
         train.head->resetUnbunching();
+        CargoDist::markServicesDirty();
 
         // Clear ghost flag on primary vehicle pieces and all car components.
         train.applyToComponents([](auto& component) {

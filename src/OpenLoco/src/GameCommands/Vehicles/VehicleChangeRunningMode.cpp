@@ -14,6 +14,7 @@
 #include "Vehicles/VehicleHead.h"
 #include "World/CompanyManager.h"
 #include "World/StationManager.h"
+#include <OpenLoco/CargoDist/CargoDist.h>
 
 using namespace OpenLoco::Literals;
 
@@ -102,6 +103,7 @@ namespace OpenLoco::GameCommands
 
         train.veh1->var_48 ^= Vehicles::Flags48::expressMode;
         train.head->resetUnbunching();
+        CargoDist::markServicesDirty();
         invalidateWindow(train.head->head);
         return 0;
     }
@@ -134,6 +136,7 @@ namespace OpenLoco::GameCommands
 
         train.head->vehicleFlags ^= Vehicles::VehicleFlags::commandStop;
         train.head->resetUnbunching();
+        CargoDist::markServicesDirty();
         if (train.head->hasVehicleFlags(Vehicles::VehicleFlags::commandStop))
         {
             train.head->vehicleFlags &= ~Vehicles::VehicleFlags::manualControl;
@@ -170,6 +173,7 @@ namespace OpenLoco::GameCommands
         train.head->vehicleFlags ^= Vehicles::VehicleFlags::manualControl;
         train.head->manualPower = -40;
         train.head->resetUnbunching();
+        CargoDist::markServicesDirty();
 
         if ((train.head->vehicleFlags & Vehicles::VehicleFlags::manualControl) != Vehicles::VehicleFlags::none)
         {

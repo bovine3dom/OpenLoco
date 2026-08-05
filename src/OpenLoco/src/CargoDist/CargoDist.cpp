@@ -48,6 +48,19 @@ namespace OpenLoco::CargoDist
         return total;
     }
 
+    uint32_t PacketList::quantityFor(StationId nextHop, ServicePoint departure) const
+    {
+        uint32_t total = 0;
+        for (const auto& packet : _packets)
+        {
+            if (packet.nextHop == nextHop && packet.departure == departure)
+            {
+                total += packet.quantity;
+            }
+        }
+        return total;
+    }
+
     StationId PacketList::representativeOrigin() const
     {
         std::map<StationId, uint32_t> quantities;
@@ -84,7 +97,8 @@ namespace OpenLoco::CargoDist
     void PacketList::canonicalise()
     {
         std::sort(_packets.begin(), _packets.end(), [](const auto& lhs, const auto& rhs) {
-            return std::tie(lhs.nextHop, lhs.origin, lhs.age) < std::tie(rhs.nextHop, rhs.origin, rhs.age);
+            return std::tie(lhs.nextHop, lhs.origin, lhs.age, lhs.departure, lhs.arrival)
+                < std::tie(rhs.nextHop, rhs.origin, rhs.age, rhs.departure, rhs.arrival);
         });
         Container canonical;
         canonical.reserve(_packets.size());
@@ -97,7 +111,8 @@ namespace OpenLoco::CargoDist
             if (!canonical.empty())
             {
                 auto& previous = canonical.back();
-                if (previous.origin == packet.origin && previous.nextHop == packet.nextHop && previous.age == packet.age)
+                if (previous.origin == packet.origin && previous.nextHop == packet.nextHop && previous.age == packet.age
+                    && previous.departure == packet.departure && previous.arrival == packet.arrival)
                 {
                     const auto room = static_cast<uint32_t>(std::numeric_limits<uint16_t>::max() - previous.quantity);
                     const auto merged = std::min<uint32_t>(room, packet.quantity);
@@ -129,12 +144,12 @@ namespace OpenLoco::CargoDist
         canonicalise();
     }
 
-    PacketList PacketList::takeImpl(uint32_t requested, StationId nextHop, bool filterByNextHop)
+    PacketList PacketList::takeImpl(uint32_t requested, std::optional<StationId> nextHop, std::optional<ServicePoint> departure)
     {
         PacketList result;
         for (auto it = _packets.begin(); it != _packets.end() && requested != 0;)
         {
-            if (filterByNextHop && it->nextHop != nextHop)
+            if ((nextHop.has_value() && it->nextHop != *nextHop) || (departure.has_value() && it->departure != *departure))
             {
                 ++it;
                 continue;
@@ -161,12 +176,17 @@ namespace OpenLoco::CargoDist
 
     PacketList PacketList::take(uint32_t quantity)
     {
-        return takeImpl(quantity, StationId::null, false);
+        return takeImpl(quantity, std::nullopt, std::nullopt);
     }
 
     PacketList PacketList::takeFor(StationId nextHop, uint32_t quantity)
     {
-        return takeImpl(quantity, nextHop, true);
+        return takeImpl(quantity, nextHop, std::nullopt);
+    }
+
+    PacketList PacketList::takeFor(StationId nextHop, ServicePoint departure, uint32_t quantity)
+    {
+        return takeImpl(quantity, nextHop, departure);
     }
 
     uint32_t PacketList::remove(uint32_t requested)
@@ -186,6 +206,26 @@ namespace OpenLoco::CargoDist
             if (packet.nextHop == station)
             {
                 packet.nextHop = StationId::null;
+                packet.departure = {};
+                packet.arrival = {};
+            }
+        }
+        canonicalise();
+    }
+
+    void PacketList::removeServiceReferences(ServiceId service)
+    {
+        if (service == ServiceId::null)
+        {
+            return;
+        }
+        for (auto& packet : _packets)
+        {
+            if (packet.departure.service == service || packet.arrival.service == service)
+            {
+                packet.nextHop = StationId::null;
+                packet.departure = {};
+                packet.arrival = {};
             }
         }
         canonicalise();
@@ -290,8 +330,8 @@ namespace OpenLoco::CargoDist
             {
                 continue;
             }
-            auto& options = _state.flows[{ cargo, share.station, share.origin }];
-            options.push_back({ share.via, share.amount, 0 });
+            auto& options = _state.flows[{ cargo, share.station, share.origin, share.incoming }];
+            options.push_back({ share.via, share.amount, 0, share.departure, share.arrival });
         }
         for (auto& [key, options] : _state.flows)
         {
@@ -299,13 +339,15 @@ namespace OpenLoco::CargoDist
             {
                 continue;
             }
-            std::sort(options.begin(), options.end(), [](const auto& lhs, const auto& rhs) { return idValue(lhs.via) < idValue(rhs.via); });
+            std::sort(options.begin(), options.end(), [](const auto& lhs, const auto& rhs) {
+                return std::tie(lhs.via, lhs.departure, lhs.arrival) < std::tie(rhs.via, rhs.departure, rhs.arrival);
+            });
         }
     }
 
-    std::vector<ViaShare> allocateVia(uint8_t cargo, StationId station, StationId origin, uint32_t quantity, StationId excluded, StationId excluded2)
+    std::vector<ViaShare> allocateVia(uint8_t cargo, StationId station, StationId origin, uint32_t quantity, ServicePoint incoming, StationId excluded, StationId excluded2)
     {
-        const auto flow = _state.flows.find({ cargo, station, origin });
+        const auto flow = _state.flows.find({ cargo, station, origin, incoming });
         if (flow == _state.flows.end() || quantity == 0)
         {
             return {};
@@ -353,7 +395,8 @@ namespace OpenLoco::CargoDist
                 {
                     return lhs.option->current < rhs.option->current;
                 }
-                return idValue(lhs.option->via) > idValue(rhs.option->via);
+                return std::tie(lhs.option->via, lhs.option->departure, lhs.option->arrival)
+                    > std::tie(rhs.option->via, rhs.option->departure, rhs.option->arrival);
             });
             ++chosen->amount;
             chosen->option->current -= total;
@@ -366,7 +409,9 @@ namespace OpenLoco::CargoDist
             {
                 if (it->amount != 0
                     && (chosen == candidates.end() || it->option->current < chosen->option->current
-                        || (it->option->current == chosen->option->current && idValue(it->option->via) < idValue(chosen->option->via))))
+                        || (it->option->current == chosen->option->current
+                            && std::tie(it->option->via, it->option->departure, it->option->arrival)
+                                < std::tie(chosen->option->via, chosen->option->departure, chosen->option->arrival))))
                 {
                     chosen = it;
                 }
@@ -381,16 +426,10 @@ namespace OpenLoco::CargoDist
         {
             if (candidate.amount != 0)
             {
-                result.push_back({ candidate.option->via, candidate.amount });
+                result.push_back({ candidate.option->via, candidate.amount, candidate.option->departure, candidate.option->arrival });
             }
         }
         return result;
-    }
-
-    StationId chooseVia(uint8_t cargo, StationId station, StationId origin, StationId excluded, StationId excluded2)
-    {
-        const auto shares = allocateVia(cargo, station, origin, 1, excluded, excluded2);
-        return shares.empty() ? StationId::null : shares.front().via;
     }
 
     void markGraphDirty()
@@ -398,20 +437,29 @@ namespace OpenLoco::CargoDist
         _state.graphDirty = true;
     }
 
+    void markServicesDirty()
+    {
+        _state.graphDirty = true;
+        _state.servicesDirty = true;
+    }
+
     std::vector<PlannedServiceEdge> getPlannedServiceEdges(uint8_t cargo)
     {
         struct EdgeStats
         {
             uint64_t plannedDemand{};
-            std::optional<uint32_t> capacity;
+            uint64_t capacity{};
+            bool hasCapacity{};
         };
 
-        std::map<ServiceEdgeKey, EdgeStats> edges;
+        std::map<std::pair<StationId, StationId>, EdgeStats> edges;
         for (const auto& [key, stats] : _state.serviceEdges)
         {
             if (key.cargo == cargo && key.from != StationId::null && key.to != StationId::null && key.from != key.to)
             {
-                edges[key].capacity = stats.capacity;
+                auto& edge = edges[{ key.from, key.to }];
+                edge.capacity += stats.capacity;
+                edge.hasCapacity = true;
             }
         }
 
@@ -428,7 +476,7 @@ namespace OpenLoco::CargoDist
                     continue;
                 }
 
-                auto& plannedDemand = edges[{ cargo, key.station, option.via }].plannedDemand;
+                auto& plannedDemand = edges[{ key.station, option.via }].plannedDemand;
                 plannedDemand += std::min<uint64_t>(option.weight, std::numeric_limits<uint64_t>::max() - plannedDemand);
             }
         }
@@ -437,7 +485,10 @@ namespace OpenLoco::CargoDist
         result.reserve(edges.size());
         for (const auto& [key, stats] : edges)
         {
-            result.push_back({ key.from, key.to, stats.plannedDemand, stats.capacity });
+            const auto capacity = stats.hasCapacity
+                ? std::optional<uint32_t>{ static_cast<uint32_t>(std::min<uint64_t>(stats.capacity, std::numeric_limits<uint32_t>::max())) }
+                : std::nullopt;
+            result.push_back({ key.first, key.second, stats.plannedDemand, capacity });
         }
         return result;
     }

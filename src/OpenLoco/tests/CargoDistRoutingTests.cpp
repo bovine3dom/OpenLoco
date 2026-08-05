@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <gtest/gtest.h>
+#include <limits>
 #include <vector>
 
 using namespace OpenLoco;
@@ -16,6 +17,11 @@ namespace
         return static_cast<StationId>(value);
     }
 
+    constexpr ServicePoint servicePoint(uint16_t service, uint16_t occurrence)
+    {
+        return { static_cast<ServiceId>(service), occurrence };
+    }
+
     RoutingNode node(uint16_t id, int16_t x, int16_t y, uint32_t supply = 0, bool accepts = false, uint32_t attraction = 1)
     {
         return { station(id), x, y, supply, accepts, attraction };
@@ -26,12 +32,34 @@ namespace
         return { station(from), station(to), capacity, travelTime };
     }
 
-    uint32_t amountAt(const std::vector<FlowShare>& flows, uint16_t current, uint16_t origin, uint16_t via)
+    RoutingEdge serviceEdge(uint16_t from, uint16_t to, uint16_t service, uint16_t departure, uint16_t arrival, uint32_t travelTime, uint32_t waitTime, uint32_t capacity = 1000)
     {
-        const auto found = std::find_if(flows.begin(), flows.end(), [&](const auto& flow) {
-            return flow.station == station(current) && flow.origin == station(origin) && flow.via == station(via);
-        });
-        return found == flows.end() ? 0 : found->amount;
+        return { station(from), station(to), capacity, travelTime, servicePoint(service, departure), servicePoint(service, arrival), waitTime };
+    }
+
+    uint32_t amountAt(
+        const std::vector<FlowShare>& flows,
+        uint16_t current,
+        uint16_t origin,
+        uint16_t via,
+        ServicePoint incoming = {},
+        ServicePoint departure = {},
+        ServicePoint arrival = {})
+    {
+        uint32_t amount = 0;
+        for (const auto& flow : flows)
+        {
+            if (flow.station == station(current)
+                && flow.origin == station(origin)
+                && flow.via == station(via)
+                && flow.incoming == incoming
+                && flow.departure == departure
+                && flow.arrival == arrival)
+            {
+                amount += flow.amount;
+            }
+        }
+        return amount;
     }
 
     void expectSameFlows(const std::vector<FlowShare>& lhs, const std::vector<FlowShare>& rhs)
@@ -43,6 +71,9 @@ namespace
             EXPECT_EQ(lhs[i].origin, rhs[i].origin);
             EXPECT_EQ(lhs[i].via, rhs[i].via);
             EXPECT_EQ(lhs[i].amount, rhs[i].amount);
+            EXPECT_EQ(lhs[i].incoming, rhs[i].incoming);
+            EXPECT_EQ(lhs[i].departure, rhs[i].departure);
+            EXPECT_EQ(lhs[i].arrival, rhs[i].arrival);
         }
     }
 
@@ -51,6 +82,21 @@ namespace
         return {
             { node(1, 0, 0, 80), node(2, 10, -10), node(3, 10, 10), node(4, 20, 0, 0, true) },
             { edge(1, 2, 10, 10), edge(2, 4, 10, 10), edge(1, 3, 10, 10), edge(3, 4, 10, 10) },
+            true,
+            {},
+        };
+    }
+
+    RoutingGraph continuationGraph()
+    {
+        return {
+            { node(1, 0, 0, 1), node(2, 10, 0), node(3, 20, 0, 0, true) },
+            {
+                serviceEdge(1, 2, 1, 0, 1, 5, 1),
+                serviceEdge(2, 3, 1, 1, 2, 5, 20),
+                serviceEdge(1, 2, 2, 0, 1, 1, 1),
+                serviceEdge(2, 3, 3, 0, 1, 1, 13),
+            },
             true,
             {},
         };
@@ -272,4 +318,119 @@ TEST(CargoDistRouting, ZeroCapacityEdgeIsIgnored)
     };
 
     EXPECT_TRUE(calculateAsymmetricFlows(graph).empty());
+}
+
+TEST(CargoDistRouting, WaitMakesFastInfrequentServiceLoseToSlowerFrequentService)
+{
+    const RoutingGraph graph{
+        { node(1, 0, 0, 1), node(2, 10, 0, 0, true) },
+        {
+            serviceEdge(1, 2, 1, 0, 1, 1, 20),
+            serviceEdge(1, 2, 2, 0, 1, 10, 1),
+        },
+        true,
+        {},
+    };
+
+    const auto flows = calculateAsymmetricFlows(graph);
+
+    EXPECT_EQ(amountAt(flows, 1, 1, 2, {}, servicePoint(1, 0), servicePoint(1, 1)), 0U);
+    EXPECT_EQ(amountAt(flows, 1, 1, 2, {}, servicePoint(2, 0), servicePoint(2, 1)), 1U);
+    EXPECT_EQ(amountAt(flows, 2, 1, 2, servicePoint(2, 1)), 1U);
+}
+
+TEST(CargoDistRouting, ContinuingOnSameServicePaysOnlyOneWait)
+{
+    const auto flows = calculateAsymmetricFlows(continuationGraph());
+
+    EXPECT_EQ(amountAt(flows, 1, 1, 2, {}, servicePoint(1, 0), servicePoint(1, 1)), 1U);
+    EXPECT_EQ(amountAt(flows, 2, 1, 3, servicePoint(1, 1), servicePoint(1, 1), servicePoint(1, 2)), 1U);
+    EXPECT_EQ(amountAt(flows, 3, 1, 3, servicePoint(1, 2)), 1U);
+    EXPECT_EQ(amountAt(flows, 1, 1, 2, {}, servicePoint(2, 0), servicePoint(2, 1)), 0U);
+}
+
+TEST(CargoDistRouting, IncomingServiceDemandContinuesWithoutAnotherWait)
+{
+    RoutingGraph graph{
+        { node(1, 0, 0), node(2, 10, 0), node(3, 20, 0, 0, true) },
+        {
+            serviceEdge(1, 2, 1, 0, 1, 1, 100),
+            serviceEdge(2, 3, 1, 1, 2, 1, 100),
+            serviceEdge(2, 3, 2, 0, 1, 10, 1),
+        },
+        true,
+        {},
+    };
+    graph.demands.push_back({ station(2), station(1), 1, servicePoint(1, 1) });
+
+    const auto flows = calculateAsymmetricFlows(graph);
+
+    EXPECT_EQ(amountAt(flows, 2, 1, 3, servicePoint(1, 1), servicePoint(1, 1), servicePoint(1, 2)), 1U);
+    EXPECT_EQ(amountAt(flows, 2, 1, 3, servicePoint(1, 1), servicePoint(2, 0), servicePoint(2, 1)), 0U);
+    EXPECT_EQ(amountAt(flows, 3, 1, 3, servicePoint(1, 2)), 1U);
+}
+
+TEST(CargoDistRouting, DepartureOnlyIncomingServiceStillPaysBoardingWait)
+{
+    RoutingGraph graph{
+        { node(2, 0, 0), node(3, 10, 0, 0, true) },
+        {
+            serviceEdge(2, 3, 1, 1, 2, 1, 100),
+            serviceEdge(2, 3, 2, 0, 1, 10, 1),
+        },
+        true,
+        {},
+    };
+    graph.demands.push_back({ station(2), station(1), 1, servicePoint(1, 1) });
+
+    const auto flows = calculateAsymmetricFlows(graph);
+
+    EXPECT_EQ(amountAt(flows, 2, 1, 3, servicePoint(1, 1), servicePoint(1, 1), servicePoint(1, 2)), 0U);
+    EXPECT_EQ(amountAt(flows, 2, 1, 3, servicePoint(1, 1), servicePoint(2, 0), servicePoint(2, 1)), 1U);
+}
+
+TEST(CargoDistRouting, FlowWeightScalingPreservesSmallOptions)
+{
+    constexpr auto maximum = std::numeric_limits<uint32_t>::max();
+    RoutingGraph graph{
+        {
+            node(1, 0, 0),
+            node(2, 0, 0),
+            node(3, 10, 0),
+            node(4, 20, 0, 0, true, 1),
+            node(5, 20, 0, 0, true, maximum),
+        },
+        {
+            edge(1, 3, maximum),
+            edge(2, 3, maximum),
+            edge(3, 4, maximum),
+            edge(3, 5, maximum),
+        },
+        false,
+        {
+            { station(1), station(9), maximum },
+            { station(2), station(9), 2 },
+        },
+    };
+    RoutingSettings settings{};
+    settings.distanceEffect = 0;
+
+    const auto flows = calculateAsymmetricFlows(graph, settings);
+    const auto small = amountAt(flows, 3, 9, 4);
+    const auto large = amountAt(flows, 3, 9, 5);
+
+    EXPECT_EQ(small, 1U);
+    EXPECT_GT(large, 0U);
+    EXPECT_LE(static_cast<uint64_t>(small) + large, maximum);
+}
+
+TEST(CargoDistRouting, ServiceRoutingIsIndependentOfInputOrder)
+{
+    auto ordered = continuationGraph();
+    auto reversed = ordered;
+    std::reverse(reversed.nodes.begin(), reversed.nodes.end());
+    std::reverse(reversed.edges.begin(), reversed.edges.end());
+    std::reverse(reversed.demands.begin(), reversed.demands.end());
+
+    expectSameFlows(calculateAsymmetricFlows(ordered), calculateAsymmetricFlows(reversed));
 }

@@ -26,6 +26,8 @@ namespace OpenLoco::CargoDist
         StationId origin = StationId::null;
         StationId nextHop = StationId::null;
         uint8_t age{};
+        ServicePoint departure{};
+        ServicePoint arrival{};
 
         auto operator<=>(const CargoPacket&) const = default;
     };
@@ -39,6 +41,7 @@ namespace OpenLoco::CargoDist
         size_t size() const { return _packets.size(); }
         uint32_t quantity() const;
         uint32_t quantityFor(StationId nextHop) const;
+        uint32_t quantityFor(StationId nextHop, ServicePoint departure) const;
         StationId representativeOrigin() const;
         uint8_t averageAge() const;
         std::span<const CargoPacket> packets() const { return _packets; }
@@ -48,14 +51,16 @@ namespace OpenLoco::CargoDist
         void append(PacketList packets);
         PacketList take(uint32_t quantity);
         PacketList takeFor(StationId nextHop, uint32_t quantity);
+        PacketList takeFor(StationId nextHop, ServicePoint departure, uint32_t quantity);
         uint32_t remove(uint32_t quantity);
         void removeStationReferences(StationId station);
+        void removeServiceReferences(ServiceId service);
         void ageAtStation(StationId station);
         void ageInVehicle();
 
     private:
         void canonicalise();
-        PacketList takeImpl(uint32_t quantity, StationId nextHop, bool filterByNextHop);
+        PacketList takeImpl(uint32_t quantity, std::optional<StationId> nextHop, std::optional<ServicePoint> departure);
 
         Container _packets;
     };
@@ -87,6 +92,8 @@ namespace OpenLoco::CargoDist
         uint8_t cargo{};
         StationId from = StationId::null;
         StationId to = StationId::null;
+        ServicePoint departure{};
+        ServicePoint arrival{};
 
         auto operator<=>(const ServiceEdgeKey&) const = default;
     };
@@ -95,6 +102,18 @@ namespace OpenLoco::CargoDist
     {
         uint32_t capacity{};
         uint32_t travelTime{};
+        uint32_t waitTime{};
+    };
+
+    struct VehicleServiceLeg
+    {
+        uint16_t currentOrder{};
+        StationId from = StationId::null;
+        StationId to = StationId::null;
+        ServicePoint departure{};
+        ServicePoint arrival{};
+
+        auto operator<=>(const VehicleServiceLeg&) const = default;
     };
 
     struct PlannedServiceEdge
@@ -112,6 +131,7 @@ namespace OpenLoco::CargoDist
         uint8_t cargo{};
         StationId station = StationId::null;
         StationId origin = StationId::null;
+        ServicePoint incoming{};
 
         auto operator<=>(const FlowKey&) const = default;
     };
@@ -121,12 +141,16 @@ namespace OpenLoco::CargoDist
         StationId via = StationId::null;
         uint32_t weight{};
         int64_t current{};
+        ServicePoint departure{};
+        ServicePoint arrival{};
     };
 
     struct ViaShare
     {
         StationId via = StationId::null;
         uint32_t amount{};
+        ServicePoint departure{};
+        ServicePoint arrival{};
     };
 
     struct Settings
@@ -144,10 +168,12 @@ namespace OpenLoco::CargoDist
         std::map<std::pair<uint8_t, StationId>, uint32_t> supply;
         std::map<StationCargoKey, uint32_t> stationAttraction;
         std::map<ServiceEdgeKey, ServiceEdgeStats> serviceEdges;
+        std::map<EntityId, std::vector<VehicleServiceLeg>> vehicleServiceLegs;
         std::map<FlowKey, std::vector<FlowOption>> flows;
         uint64_t routingRevision{};
         uint32_t nextRecalculationDay{};
         bool graphDirty{};
+        bool servicesDirty{};
     };
 
     State& getState();
@@ -158,6 +184,7 @@ namespace OpenLoco::CargoDist
     bool isEnabled(uint8_t cargo);
     void setMode(uint8_t cargo, DistributionMode mode);
     void markGraphDirty();
+    void markServicesDirty();
     std::vector<PlannedServiceEdge> getPlannedServiceEdges(uint8_t cargo);
 
     PacketList* getStationCargo(StationId station, uint8_t cargo);
@@ -170,6 +197,10 @@ namespace OpenLoco::CargoDist
     void eraseVehicleCargo(VehicleCargoKey key);
 
     void setFlows(uint8_t cargo, std::span<const FlowShare> shares);
-    std::vector<ViaShare> allocateVia(uint8_t cargo, StationId station, StationId origin, uint32_t quantity, StationId excluded = StationId::null, StationId excluded2 = StationId::null);
-    StationId chooseVia(uint8_t cargo, StationId station, StationId origin, StationId excluded = StationId::null, StationId excluded2 = StationId::null);
+    std::vector<ViaShare> allocateVia(uint8_t cargo, StationId station, StationId origin, uint32_t quantity, ServicePoint incoming = {}, StationId excluded = StationId::null, StationId excluded2 = StationId::null);
+
+    inline std::vector<ViaShare> allocateVia(uint8_t cargo, StationId station, StationId origin, uint32_t quantity, StationId excluded, StationId excluded2 = StationId::null)
+    {
+        return allocateVia(cargo, station, origin, quantity, {}, excluded, excluded2);
+    }
 }

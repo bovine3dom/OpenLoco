@@ -3226,6 +3226,7 @@ namespace OpenLoco::Vehicles
                 cargoComponent,
                 isSecondaryCargo ? CargoDist::VehicleCargoSlot::secondary : CargoDist::VehicleCargoSlot::primary,
             };
+            const auto serviceLeg = CargoDist::getCurrentServiceLeg(*this);
             std::vector<StationId> remainingStops;
             for (const auto& order : getCurrentOrders())
             {
@@ -3234,7 +3235,7 @@ namespace OpenLoco::Vehicles
                     remainingStops.push_back(stop->getStation());
                 }
             }
-            auto result = CargoDist::unloadVehicleCargo(key, cargo, stationId, cargoStats, remainingStops, forceUnload);
+            auto result = CargoDist::unloadVehicleCargo(key, cargo, stationId, cargoStats, remainingStops, forceUnload, serviceLeg);
             const auto quantity = result.quantity();
             if (quantity == 0)
             {
@@ -3423,7 +3424,7 @@ namespace OpenLoco::Vehicles
         uint8_t loadingModifier = getLoadingModifier(bogie);
 
         auto* station = StationManager::get(stationId);
-        const auto nextStop = CargoDist::getNextStop(*this);
+        const auto serviceLeg = CargoDist::getCurrentServiceLeg(*this);
         auto orders = getCurrentOrders();
         if (cargo.qty == 0)
         {
@@ -3476,7 +3477,7 @@ namespace OpenLoco::Vehicles
                 else
                 {
                     const auto availableQuantity = CargoDist::isEnabled(possibleCargo)
-                        ? CargoDist::getLoadableQuantity(stationId, possibleCargo, nextStop)
+                        ? (serviceLeg.has_value() ? CargoDist::getLoadableQuantity(stationId, possibleCargo, *serviceLeg) : 0)
                         : station->cargoStats[possibleCargo].quantity;
                     if (highestQty < availableQuantity)
                     {
@@ -3521,7 +3522,9 @@ namespace OpenLoco::Vehicles
                 cargoComponent,
                 isSecondaryCargo ? CargoDist::VehicleCargoSlot::secondary : CargoDist::VehicleCargoSlot::primary,
             };
-            qtyTransferred = CargoDist::loadVehicleCargo(key, cargo, stationId, stationCargo, nextStop);
+            qtyTransferred = serviceLeg.has_value()
+                ? CargoDist::loadVehicleCargo(key, cargo, stationId, stationCargo, *serviceLeg)
+                : 0;
         }
         else
         {
@@ -6966,6 +6969,7 @@ namespace OpenLoco::Vehicles
         train.veh1->var_3C = 0;
         status = Status::unk_0;
         stationId = StationId::null;
+        CargoDist::markServicesDirty();
     }
 
     // 0x004C3BA6

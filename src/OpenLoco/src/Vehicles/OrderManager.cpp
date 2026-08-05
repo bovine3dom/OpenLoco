@@ -262,7 +262,7 @@ namespace OpenLoco::Vehicles::OrderManager
         head.sizeOfOrderTable = newSize;
         head.currentOrder = 0;
         head.resetUnbunching();
-        CargoDist::markGraphDirty();
+        CargoDist::markServicesDirty();
     }
 
     // 0x004704AB
@@ -293,7 +293,7 @@ namespace OpenLoco::Vehicles::OrderManager
         // Recalculate order offsets for other vehicles
         reoffsetVehicleOrderTables(head->orderTableOffset + 1, insOrderLength);
         head->resetUnbunching();
-        CargoDist::markGraphDirty();
+        CargoDist::markServicesDirty();
     }
 
     // 0x004705C0
@@ -328,7 +328,7 @@ namespace OpenLoco::Vehicles::OrderManager
         // Compensate other vehicles to use new table offsets
         reoffsetVehicleOrderTables(head->orderTableOffset + orderOffset + 1, -removeOrderSize);
         head->resetUnbunching();
-        CargoDist::markGraphDirty();
+        CargoDist::markServicesDirty();
     }
 
     // 0x004702F7
@@ -366,7 +366,7 @@ namespace OpenLoco::Vehicles::OrderManager
         shiftOrdersLeft(offset, size);
 
         orderTableLength() -= head->sizeOfOrderTable;
-        CargoDist::markGraphDirty();
+        CargoDist::markServicesDirty();
     }
 
     // 0x00470312
@@ -618,7 +618,7 @@ namespace OpenLoco::Vehicles::OrderManager
             std::memcpy(dest, &rawOrder, orderLength);
             dest += orderLength;
         }
-        CargoDist::markGraphDirty();
+        CargoDist::markServicesDirty();
 
         // Figure out the new position of the order of interest
         auto newOOIOffset = dest - orderOfInterest - kOrderSizes[enumValue(ooiType)];
@@ -643,7 +643,7 @@ namespace OpenLoco::Vehicles::OrderManager
         const auto dest = reinterpret_cast<uint8_t*>(&a);
         std::memcpy(dest, &rawOrderB, lengthOrderB);
         std::memcpy(dest + lengthOrderB, &rawOrderA, lengthOrderA);
-        CargoDist::markGraphDirty();
+        CargoDist::markServicesDirty();
 
         // Return the length with which to offset
         return lengthOrderB;

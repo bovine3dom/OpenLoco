@@ -85,7 +85,7 @@ namespace OpenLoco::GameCommands
 
             head->updateTrainProperties();
             Vehicles::SharedOrderManager::detachIfIncompatible(head->id);
-            CargoDist::markGraphDirty();
+            CargoDist::markServicesDirty();
             Ui::WindowManager::invalidate(Ui::WindowType::vehicle, static_cast<Ui::WindowNumber_t>(head->id));
 
             return 0;

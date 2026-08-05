@@ -165,7 +165,7 @@ namespace OpenLoco::GameCommands
             {
                 VehicleManager::placeDownVehicle(destHead, destPlacement->tileX, destPlacement->tileY, destPlacement->tileBaseZ, destPlacement->trackAndDirection, destPlacement->subPosition);
             }
-            CargoDist::markGraphDirty();
+            CargoDist::markServicesDirty();
             return 0;
         }
     }

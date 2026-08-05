@@ -16,6 +16,7 @@
 #include "Vehicles/VehicleHead.h"
 #include "Vehicles/VehicleTail.h"
 #include "World/StationManager.h"
+#include <OpenLoco/CargoDist/CargoDist.h>
 
 using namespace OpenLoco::Literals;
 
@@ -152,6 +153,7 @@ namespace OpenLoco::GameCommands
         if ((flags & Flags::apply) && !(flags & Flags::ghost))
         {
             playWaterPlacedownSound(getPosition());
+            CargoDist::markServicesDirty();
         }
         return 0;
     }

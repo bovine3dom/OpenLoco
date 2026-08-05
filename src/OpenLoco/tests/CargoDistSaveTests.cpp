@@ -29,6 +29,85 @@ namespace
         return static_cast<EntityId>(value);
     }
 
+    constexpr ServicePoint servicePoint(uint16_t service, uint16_t occurrence)
+    {
+        return { static_cast<ServiceId>(service), occurrence };
+    }
+
+    template<typename T>
+    void appendValue(std::vector<std::byte>& data, T value)
+    {
+        for (size_t i = 0; i < sizeof(T); ++i)
+        {
+            data.push_back(static_cast<std::byte>((static_cast<uint64_t>(value) >> (i * 8)) & 0xFF));
+        }
+    }
+
+    std::vector<std::byte> legacyEncodedState(uint16_t version)
+    {
+        std::vector<std::byte> data;
+        for (const auto value : std::array{ 'O', 'L', 'C', 'D', 'I', 'S', 'T', '\0' })
+        {
+            appendValue<uint8_t>(data, value);
+        }
+        appendValue<uint16_t>(data, version);
+        appendValue<uint16_t>(data, 16);
+        appendValue<uint32_t>(data, 0);
+
+        for (uint8_t cargo = 0; cargo < 32; ++cargo)
+        {
+            appendValue<uint8_t>(data, cargo == 0 ? 1 : 0);
+        }
+        appendValue<uint8_t>(data, 100);
+        appendValue<uint8_t>(data, 80);
+        appendValue<uint8_t>(data, 16);
+        appendValue<uint8_t>(data, 0);
+        appendValue<uint16_t>(data, 8);
+        appendValue<uint16_t>(data, 0);
+        appendValue<uint32_t>(data, 42);
+        appendValue<uint32_t>(data, 0);
+
+        appendValue<uint32_t>(data, 1);
+        appendValue<uint16_t>(data, 2);
+        appendValue<uint8_t>(data, 0);
+        appendValue<uint8_t>(data, 0);
+        appendValue<uint32_t>(data, 1);
+        appendValue<uint16_t>(data, 10);
+        appendValue<uint16_t>(data, 1);
+        appendValue<uint16_t>(data, 3);
+        appendValue<uint8_t>(data, 4);
+        appendValue<uint8_t>(data, 0);
+
+        appendValue<uint32_t>(data, 0);
+        appendValue<uint32_t>(data, 0);
+        appendValue<uint32_t>(data, 1);
+        appendValue<uint8_t>(data, 0);
+        appendValue<uint8_t>(data, 0);
+        appendValue<uint16_t>(data, 2);
+        appendValue<uint16_t>(data, 1);
+        appendValue<uint16_t>(data, 1);
+        appendValue<uint16_t>(data, 3);
+        appendValue<uint16_t>(data, 0);
+        appendValue<uint32_t>(data, 10);
+        appendValue<uint64_t>(data, 0);
+
+        if (version >= 2)
+        {
+            appendValue<uint32_t>(data, 1);
+            appendValue<uint16_t>(data, 2);
+            appendValue<uint8_t>(data, 0);
+            appendValue<uint8_t>(data, 0);
+            appendValue<uint32_t>(data, 25);
+        }
+
+        const auto payloadSize = static_cast<uint32_t>(data.size() - 16);
+        for (size_t i = 0; i < sizeof(payloadSize); ++i)
+        {
+            data[12 + i] = static_cast<std::byte>((payloadSize >> (i * 8)) & 0xFF);
+        }
+        return data;
+    }
+
     void expectPacketListsEqual(const PacketList& lhs, const PacketList& rhs)
     {
         EXPECT_TRUE(std::ranges::equal(lhs.packets(), rhs.packets()));
@@ -69,6 +148,8 @@ namespace
                 EXPECT_EQ(options[i].via, other[i].via);
                 EXPECT_EQ(options[i].weight, other[i].weight);
                 EXPECT_EQ(options[i].current, other[i].current);
+                EXPECT_EQ(options[i].departure, other[i].departure);
+                EXPECT_EQ(options[i].arrival, other[i].arrival);
             }
         }
     }
@@ -82,16 +163,17 @@ namespace
         state.settings.recalculationInterval = 5;
         state.nextRecalculationDay = 1234;
         state.graphDirty = true;
-        state.stationCargo[{ station(2), 0 }].append({ 30, station(1), station(3), 4 });
+        state.stationCargo[{ station(2), 0 }].append({ 30, station(1), station(3), 4, servicePoint(7, 1), servicePoint(7, 2) });
         state.stationCargo[{ station(2), 0 }].append({ 10, station(4), StationId::null, 2 });
-        state.vehicleCargo[{ entity(20), VehicleCargoSlot::primary }].append({ 25, station(1), station(2), 6 });
+        state.vehicleCargo[{ entity(20), VehicleCargoSlot::primary }].append({ 25, station(1), station(2), 6, servicePoint(8, 3), servicePoint(8, 4) });
         state.supply[{ 0, station(1) }] = 120;
-        state.flows[{ 0, station(2), station(1) }] = {
-            { station(3), 75, -25 },
-            { station(4), 25, 25 },
+        state.flows[{ 0, station(2), station(1), servicePoint(6, 4) }] = {
+            { station(3), 75, -25, servicePoint(9, 1), servicePoint(9, 2) },
+            { station(3), 25, 25, servicePoint(10, 1), servicePoint(10, 2) },
         };
         state.stationAttraction[{ station(2), 0 }] = 120;
-        state.serviceEdges[{ 0, station(1), station(2) }] = { 40, 10 };
+        state.serviceEdges[{ 0, station(1), station(2), servicePoint(8, 3), servicePoint(8, 4) }] = { 40, 10, 2 };
+        state.vehicleServiceLegs[entity(7)] = { { 3, station(1), station(2), servicePoint(8, 3), servicePoint(8, 4) } };
         return state;
     }
 
@@ -154,22 +236,33 @@ TEST(CargoDistSave, RoundTripsCanonicalState)
 
     expectStatesEqual(original, decoded);
     EXPECT_TRUE(decoded.serviceEdges.empty());
+    EXPECT_TRUE(decoded.vehicleServiceLegs.empty());
+    EXPECT_EQ(std::to_integer<uint8_t>(encoded[8]), 3);
 }
 
-TEST(CargoDistSave, DecodesVersionOneWithoutStationAttraction)
+TEST(CargoDistSave, MigratesVersionOneWithoutStationAttraction)
 {
-    auto encoded = encodeState(State{});
-    encoded[8] = std::byte{ 1 };
-    encoded.resize(encoded.size() - sizeof(uint32_t));
-    const auto payloadSize = static_cast<uint32_t>(encoded.size() - 16);
-    for (size_t i = 0; i < sizeof(payloadSize); ++i)
-    {
-        encoded[12 + i] = static_cast<std::byte>((payloadSize >> (i * 8)) & 0xFF);
-    }
-
-    const auto decoded = decodeState(encoded);
+    const auto decoded = decodeState(legacyEncodedState(1));
 
     EXPECT_TRUE(decoded.stationAttraction.empty());
+    EXPECT_TRUE(decoded.flows.empty());
+    EXPECT_TRUE(decoded.graphDirty);
+    const auto& packet = decoded.stationCargo.at({ station(2), 0 }).packets().front();
+    EXPECT_EQ(packet.nextHop, station(3));
+    EXPECT_TRUE(packet.departure.empty());
+    EXPECT_TRUE(packet.arrival.empty());
+}
+
+TEST(CargoDistSave, MigratesVersionTwoAndRetainsStationAttraction)
+{
+    const auto decoded = decodeState(legacyEncodedState(2));
+
+    EXPECT_EQ(decoded.stationAttraction.at({ station(2), 0 }), 25U);
+    EXPECT_TRUE(decoded.flows.empty());
+    EXPECT_TRUE(decoded.graphDirty);
+    const auto& packet = decoded.stationCargo.at({ station(2), 0 }).packets().front();
+    EXPECT_TRUE(packet.departure.empty());
+    EXPECT_TRUE(packet.arrival.empty());
 }
 
 TEST(CargoDistSave, EncodingIsDeterministic)
@@ -179,7 +272,7 @@ TEST(CargoDistSave, EncodingIsDeterministic)
     auto& packets = reordered.stationCargo.at({ station(2), 0 });
     packets = {};
     packets.append({ 10, station(4), StationId::null, 2 });
-    packets.append({ 30, station(1), station(3), 4 });
+    packets.append({ 30, station(1), station(3), 4, servicePoint(7, 1), servicePoint(7, 2) });
 
     EXPECT_EQ(encodeState(state), encodeState(reordered));
 }
@@ -222,7 +315,7 @@ TEST(CargoDistSave, RejectsTruncatedData)
 TEST(CargoDistSave, RejectsUnknownVersion)
 {
     auto encoded = encodeState(populatedState());
-    encoded[8] = std::byte{ 3 };
+    encoded[8] = std::byte{ 4 };
 
     EXPECT_THROW(decodeState(encoded), std::runtime_error);
 }
@@ -237,12 +330,60 @@ TEST(CargoDistSave, RejectsInvalidMode)
 
 TEST(CargoDistSave, RejectsInvalidFlowCursor)
 {
-    auto state = populatedState();
-    state.stationAttraction.clear();
+    State state;
+    state.flows[{ 0, station(2), station(1), servicePoint(6, 4) }] = {
+        { station(3), 1, 0, servicePoint(9, 1), servicePoint(9, 2) },
+    };
     auto encoded = encodeState(state);
-    std::fill(encoded.end() - sizeof(uint32_t) - sizeof(int64_t), encoded.end() - sizeof(uint32_t), std::byte{ 0x7F });
+    std::fill(encoded.begin() + 100, encoded.begin() + 108, std::byte{ 0x7F });
 
     EXPECT_THROW(decodeState(encoded), std::runtime_error);
+}
+
+TEST(CargoDistSave, RejectsInvalidServicePointEncoding)
+{
+    State state;
+    state.stationCargo[{ station(2), 0 }].append({ 10, station(1), station(3), 4, servicePoint(7, 1), servicePoint(7, 2) });
+    auto encoded = encodeState(state);
+    encoded[86] = std::byte{ 0xFF };
+    encoded[87] = std::byte{ 0xFF };
+
+    EXPECT_THROW(decodeState(encoded), std::runtime_error);
+}
+
+TEST(CargoDistSave, RejectsMismatchedFlowServices)
+{
+    State state;
+    state.flows[{ 0, station(2), station(1) }] = {
+        { station(3), 1, 0, servicePoint(7, 1), servicePoint(8, 2) },
+    };
+
+    EXPECT_THROW(encodeState(state), std::runtime_error);
+}
+
+TEST(CargoDistSave, RoundTripsMoreServiceOptionsThanStations)
+{
+    State state;
+    state.settings.modes[0] = DistributionMode::asymmetric;
+    auto& options = state.flows[{ 0, station(2), station(1) }];
+    for (uint16_t service = 0; service < 1025; ++service)
+    {
+        options.push_back({ station(3), 1, 0, servicePoint(service, 0), servicePoint(service, 1) });
+    }
+
+    const auto decoded = decodeState(encodeState(state));
+
+    ASSERT_EQ(decoded.flows.size(), 1);
+    EXPECT_EQ(decoded.flows.begin()->second.size(), 1025);
+}
+
+TEST(CargoDistSave, RejectsOutOfRangeServiceReference)
+{
+    State state;
+    state.settings.modes[0] = DistributionMode::asymmetric;
+    state.stationCargo[{ station(2), 0 }].append({ 10, station(1), station(3), 4, servicePoint(20000, 0), servicePoint(20000, 1) });
+
+    EXPECT_THROW(encodeState(state), std::runtime_error);
 }
 
 TEST(CargoDistSave, S5TailRoundTripsExtension)

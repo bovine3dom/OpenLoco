@@ -33,10 +33,11 @@ namespace OpenLoco::CargoDist
     void updateStationCargoDaily(StationId station, uint8_t cargo, StationCargoStats& nativeCargo, uint16_t quantityBeforeUpdate);
     void updateVehicleCargoDaily(VehicleCargoKey key, Vehicles::VehicleCargo& nativeCargo);
 
-    uint32_t getLoadableQuantity(StationId station, uint8_t cargo, StationId nextStop);
-    uint16_t loadVehicleCargo(VehicleCargoKey key, Vehicles::VehicleCargo& nativeCargo, StationId station, StationCargoStats& nativeStationCargo, StationId nextStop);
-    UnloadResult unloadVehicleCargo(VehicleCargoKey key, Vehicles::VehicleCargo& nativeCargo, StationId station, StationCargoStats& nativeStationCargo, std::span<const StationId> remainingStops, bool forceUnload);
+    uint32_t getLoadableQuantity(StationId station, uint8_t cargo, const VehicleServiceLeg& serviceLeg);
+    uint16_t loadVehicleCargo(VehicleCargoKey key, Vehicles::VehicleCargo& nativeCargo, StationId station, StationCargoStats& nativeStationCargo, const VehicleServiceLeg& serviceLeg);
+    UnloadResult unloadVehicleCargo(VehicleCargoKey key, Vehicles::VehicleCargo& nativeCargo, StationId station, StationCargoStats& nativeStationCargo, std::span<const StationId> remainingStops, bool forceUnload, std::optional<VehicleServiceLeg> onwardLeg);
 
+    std::optional<VehicleServiceLeg> getCurrentServiceLeg(const Vehicles::VehicleHead& head);
     StationId getNextStop(const Vehicles::VehicleHead& head);
     void recalculateNow();
     void validateState(const State& state, const GameState& gameState);
@@ -44,6 +45,7 @@ namespace OpenLoco::CargoDist
     void updateDaily();
 
     void removeStation(StationId station);
+    void removeVehicleService(EntityId vehicle);
     void eraseVehicleCargoForComponent(EntityId component);
     void moveVehicleCargo(VehicleCargoKey source, VehicleCargoKey destination);
 }

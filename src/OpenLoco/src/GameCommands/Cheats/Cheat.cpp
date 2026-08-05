@@ -21,6 +21,7 @@
 #include "World/CompanyManager.h"
 #include "World/StationManager.h"
 #include "World/TownManager.h"
+#include <OpenLoco/CargoDist/CargoDist.h>
 
 using namespace OpenLoco::World;
 using namespace OpenLoco::Diagnostics;
@@ -76,6 +77,7 @@ namespace OpenLoco::GameCommands
                     component.owner = ourCompanyId;
                 });
             }
+            CargoDist::markServicesDirty();
 
             return 0;
         }

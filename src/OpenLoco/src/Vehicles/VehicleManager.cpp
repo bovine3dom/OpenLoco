@@ -17,8 +17,8 @@
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/Orders.h"
 #include "Vehicles/PathSignals.h"
-#include "Vehicles/RoutingManager.h"
 #include "Vehicles/RailTraffic.h"
+#include "Vehicles/RoutingManager.h"
 #include "Vehicles/Vehicle.h"
 #include "Vehicles/Vehicle1.h"
 #include "Vehicles/Vehicle2.h"
@@ -271,6 +271,7 @@ namespace OpenLoco::VehicleManager
         head->var_52 = oldVar52;
         head->status = Vehicles::Status::stopped;
         train.veh1->var_48 |= Vehicles::Flags48::flag2;
+        CargoDist::markServicesDirty();
 
         return PlaceDownResult::Okay;
     }
@@ -422,6 +423,7 @@ namespace OpenLoco::VehicleManager
 
         Audio::stopVehicleNoise(head.id);
         Vehicles::RoutingManager::freeRoutingHandle(head.routingHandle);
+        CargoDist::removeVehicleService(head.id);
         Vehicles::OrderManager::freeOrders(&head);
         MessageManager::removeAllSubjectRefs(enumValue(head.id), MessageItemArgumentType::vehicle);
         const auto companyId = head.owner;

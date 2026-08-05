@@ -26,6 +26,7 @@
 #include "Vehicles/VehicleHead.h"
 #include "Vehicles/VehicleTail.h"
 #include "ViewportManager.h"
+#include <OpenLoco/CargoDist/CargoDist.h>
 #include <OpenLoco/CargoDist/Simulation.h>
 #include <OpenLoco/Core/Exception.hpp>
 
@@ -183,6 +184,7 @@ namespace OpenLoco::Vehicles
         {
             train.head->status = Status::crashed;
             train.head->crashedTimeout = 0;
+            CargoDist::markServicesDirty();
 
             if (train.head->owner == getGameState().playerCompanies[0])
             {

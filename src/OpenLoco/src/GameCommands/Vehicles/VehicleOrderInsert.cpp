@@ -178,7 +178,7 @@ namespace OpenLoco::GameCommands
                 existingOrder.setType(OrderType::RouteThrough);
                 member->resetUnbunching();
             }
-            CargoDist::markGraphDirty();
+            CargoDist::markServicesDirty();
             return 0;
         }
 

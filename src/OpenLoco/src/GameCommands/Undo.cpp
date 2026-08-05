@@ -898,7 +898,7 @@ namespace OpenLoco::GameCommands::Undo
         {
             CargoDist::removeStation(station);
         }
-        CargoDist::markGraphDirty();
+        CargoDist::markServicesDirty();
         if (stationsChanged)
         {
             StationManager::updateLabels();

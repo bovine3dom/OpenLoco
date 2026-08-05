@@ -2,11 +2,33 @@
 #pragma once
 
 #include <OpenLoco/Types.hpp>
+#include <compare>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 namespace OpenLoco::CargoDist
 {
+    enum class ServiceId : uint16_t
+    {
+        null = std::numeric_limits<uint16_t>::max(),
+    };
+
+    inline constexpr uint16_t kNoServiceOccurrence = std::numeric_limits<uint16_t>::max();
+
+    struct ServicePoint
+    {
+        ServiceId service = ServiceId::null;
+        uint16_t occurrence = kNoServiceOccurrence;
+
+        auto operator<=>(const ServicePoint&) const = default;
+
+        [[nodiscard]] constexpr bool empty() const
+        {
+            return service == ServiceId::null && occurrence == kNoServiceOccurrence;
+        }
+    };
+
     struct RoutingNode
     {
         StationId station;
@@ -23,6 +45,9 @@ namespace OpenLoco::CargoDist
         StationId to;
         uint32_t capacity;
         uint32_t travelTime;
+        ServicePoint departure{};
+        ServicePoint arrival{};
+        uint32_t waitTime{};
     };
 
     struct RoutingDemand
@@ -30,6 +55,7 @@ namespace OpenLoco::CargoDist
         StationId source;
         StationId origin;
         uint32_t amount;
+        ServicePoint incoming{};
     };
 
     struct RoutingGraph
@@ -53,6 +79,9 @@ namespace OpenLoco::CargoDist
         StationId origin;
         StationId via;
         uint32_t amount;
+        ServicePoint incoming{};
+        ServicePoint departure{};
+        ServicePoint arrival{};
     };
 
     std::vector<FlowShare> calculateAsymmetricFlows(const RoutingGraph& graph, const RoutingSettings& settings = {});

@@ -11,6 +11,7 @@
 #include "Vehicles/VehicleBogie.h"
 #include "Vehicles/VehicleHead.h"
 #include "Vehicles/VehicleTail.h"
+#include <OpenLoco/CargoDist/CargoDist.h>
 
 using namespace OpenLoco::Vehicles;
 
@@ -81,6 +82,7 @@ namespace OpenLoco::GameCommands
 
         train.head->vehicleFlags |= VehicleFlags::commandStop;
         train.head->resetUnbunching();
+        CargoDist::markServicesDirty();
         if (!Config::get().keepCargoModifyPickup)
         {
             for (auto& car : train.cars)

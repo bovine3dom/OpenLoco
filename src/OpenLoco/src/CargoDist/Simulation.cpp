@@ -8,6 +8,7 @@
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/Orders.h"
 #include "Vehicles/Vehicle.h"
+#include "Vehicles/Vehicle1.h"
 #include "Vehicles/Vehicle2.h"
 #include "Vehicles/VehicleBody.h"
 #include "Vehicles/VehicleBogie.h"
@@ -18,26 +19,59 @@
 #include <OpenLoco/Math/Vector.hpp>
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <limits>
 #include <map>
 #include <set>
 #include <stdexcept>
+#include <tuple>
 #include <vector>
 
 namespace OpenLoco::CargoDist
 {
     namespace
     {
-        struct RoutePoint
+        struct RouteOrder
         {
-            World::Pos2 position;
+            uint64_t raw{};
+            uint16_t offset{};
+            std::optional<World::Pos2> position;
             StationId stop = StationId::null;
+            uint8_t unloadCargo = 0xFF;
+            uint8_t waitForCargo = 0xFF;
         };
 
         struct EdgeAccumulator
         {
             uint64_t capacity{};
             uint64_t weightedTravelTime{};
+            uint64_t departureFrequency{};
+        };
+
+        struct VehicleRoute
+        {
+            const Vehicles::VehicleHead* head{};
+            std::vector<uint64_t> canonicalOrders;
+            std::vector<VehicleServiceLeg> legs;
+            std::vector<uint32_t> legTimes;
+            std::vector<uint32_t> unloadMasks;
+            std::vector<std::array<uint32_t, 32>> legCapacities;
+            uint16_t occurrenceCount{};
+            uint64_t cycleTime{};
+            bool active{};
+            bool express{};
+        };
+
+        struct ServiceGroupKey
+        {
+            CompanyId owner{};
+            VehicleType vehicleType{};
+            TransportMode mode{};
+            uint8_t trackType{};
+            bool express{};
+            std::vector<uint64_t> orders;
+
+            auto operator<=>(const ServiceGroupKey&) const = default;
         };
 
         uint32_t saturatedAdd(uint32_t lhs, uint32_t rhs)
@@ -57,13 +91,13 @@ namespace OpenLoco::CargoDist
             getOrCreateStationCargo(station, cargo).append({ nativeCargo.quantity, origin, StationId::null, nativeCargo.enrouteAge });
         }
 
-        void seedVehicleCargo(VehicleCargoKey key, const Vehicles::VehicleCargo& nativeCargo, StationId nextHop)
+        void seedVehicleCargo(VehicleCargoKey key, const Vehicles::VehicleCargo& nativeCargo, StationId nextHop, ServicePoint departure = {}, ServicePoint arrival = {})
         {
             if (nativeCargo.qty == 0)
             {
                 return;
             }
-            getOrCreateVehicleCargo(key).append({ nativeCargo.qty, nativeCargo.townFrom, nextHop, nativeCargo.numDays });
+            getOrCreateVehicleCargo(key).append({ nativeCargo.qty, nativeCargo.townFrom, nextHop, nativeCargo.numDays, departure, arrival });
         }
 
         template<typename TFunc>
@@ -141,48 +175,67 @@ namespace OpenLoco::CargoDist
             });
         }
 
-        void addCargoCapacity(std::array<uint32_t, 32>& capacities, const Vehicles::VehicleCargo& cargo)
+        void addCargoCapacity(std::array<uint32_t, 32>& capacities, const Vehicles::VehicleCargo& cargo, uint32_t routeWaitForMask, uint32_t departureWaitForMask)
         {
             if (cargo.maxQty == 0)
             {
                 return;
             }
+            auto acceptedTypes = cargo.acceptedTypes;
+            if (routeWaitForMask != 0)
+            {
+                const auto waitedTypes = acceptedTypes & routeWaitForMask;
+                acceptedTypes = waitedTypes != 0 ? waitedTypes : acceptedTypes & (1U << cargo.type);
+            }
+            const auto requiredTypes = acceptedTypes & departureWaitForMask;
+            acceptedTypes = requiredTypes != 0 ? std::bit_floor(requiredTypes) : acceptedTypes;
             for (uint8_t cargoType = 0; cargoType < capacities.size(); ++cargoType)
             {
-                if ((cargo.acceptedTypes & (1U << cargoType)) != 0)
+                if ((acceptedTypes & (1U << cargoType)) != 0)
                 {
                     capacities[cargoType] = saturatedAdd(capacities[cargoType], cargo.maxQty);
                 }
             }
         }
 
-        std::vector<RoutePoint> getRoutePoints(const Vehicles::VehicleHead& head)
+        size_t getCanonicalRotation(const std::vector<RouteOrder>& orders)
         {
-            std::vector<RoutePoint> points;
-            for (const auto& order : Vehicles::OrderRingView(head.orderTableOffset))
+            size_t best = 0;
+            for (size_t candidate = 1; candidate < orders.size(); ++candidate)
             {
-                if (const auto* stop = order.as<Vehicles::OrderStopAt>())
+                for (size_t i = 0; i < orders.size(); ++i)
                 {
-                    const auto* station = StationManager::get(stop->getStation());
-                    if (station != nullptr && !station->empty())
+                    const auto candidateRaw = orders[(candidate + i) % orders.size()].raw;
+                    const auto bestRaw = orders[(best + i) % orders.size()].raw;
+                    if (candidateRaw != bestRaw)
                     {
-                        points.push_back({ { station->x, station->y }, stop->getStation() });
+                        if (candidateRaw < bestRaw)
+                        {
+                            best = candidate;
+                        }
+                        break;
                     }
-                }
-                else if (const auto* through = order.as<Vehicles::OrderRouteThrough>())
-                {
-                    const auto* station = StationManager::get(through->getStation());
-                    if (station != nullptr && !station->empty())
-                    {
-                        points.push_back({ { station->x, station->y }, StationId::null });
-                    }
-                }
-                else if (const auto* waypoint = order.as<Vehicles::OrderRouteWaypoint>())
-                {
-                    points.push_back({ World::Pos2{ waypoint->getWaypoint() }, StationId::null });
                 }
             }
-            return points;
+            return best;
+        }
+
+        size_t getPrimitivePeriod(const std::vector<RouteOrder>& orders)
+        {
+            for (size_t period = 1; period < orders.size(); ++period)
+            {
+                if (orders.size() % period != 0)
+                {
+                    continue;
+                }
+                if (std::equal(orders.begin() + period, orders.end(), orders.begin(), [](const auto& lhs, const auto& rhs) {
+                        return lhs.raw == rhs.raw;
+                    }))
+                {
+                    return period;
+                }
+            }
+            return orders.size();
         }
 
         uint32_t estimateTravelTime(uint64_t distance, const Vehicles::VehicleHead& head, const Vehicles::Vehicle& train)
@@ -203,113 +256,402 @@ namespace OpenLoco::CargoDist
                         return 21U;
                 }
             }();
-            const auto numerator = std::min<uint64_t>(distance * modeModifier, std::numeric_limits<uint64_t>::max() - speed);
+            const auto maximumNumerator = std::numeric_limits<uint64_t>::max() - speed;
+            const auto numerator = distance > maximumNumerator / modeModifier ? maximumNumerator : distance * modeModifier;
             return static_cast<uint32_t>(std::min<uint64_t>(std::max<uint64_t>(1, (numerator + speed - 1) / speed), std::numeric_limits<uint32_t>::max()));
         }
 
-        void addVehicleEdges(const Vehicles::VehicleHead& head, std::map<ServiceEdgeKey, EdgeAccumulator>& accumulators)
+        std::optional<VehicleRoute> getVehicleRoute(const Vehicles::VehicleHead& head)
         {
             Vehicles::Vehicle train(head);
-            if (train.cars.empty())
+            if (train.cars.empty() || train.veh2->maxSpeed.getRaw() <= 0)
             {
-                return;
+                return std::nullopt;
             }
 
-            std::array<uint32_t, 32> capacities{};
-            for (const auto& car : train.cars)
+            std::vector<RouteOrder> orders;
+            uint32_t routeWaitForMask = 0;
+            for (const auto& order : Vehicles::OrderRingView(head.orderTableOffset))
             {
-                addCargoCapacity(capacities, car.body->primaryCargo);
-                addCargoCapacity(capacities, car.front->secondaryCargo);
+                RouteOrder routeOrder{ order.getRaw(), static_cast<uint16_t>(order.getOffset() - head.orderTableOffset), std::nullopt, StationId::null };
+                if (const auto* stop = order.as<Vehicles::OrderStopAt>())
+                {
+                    const auto* station = StationManager::get(stop->getStation());
+                    if (station == nullptr || station->empty())
+                    {
+                        return std::nullopt;
+                    }
+                    routeOrder.position = World::Pos2{ station->x, station->y };
+                    routeOrder.stop = stop->getStation();
+                }
+                else if (const auto* through = order.as<Vehicles::OrderRouteThrough>())
+                {
+                    const auto* station = StationManager::get(through->getStation());
+                    if (station == nullptr || station->empty())
+                    {
+                        return std::nullopt;
+                    }
+                    routeOrder.position = World::Pos2{ station->x, station->y };
+                }
+                else if (const auto* waypoint = order.as<Vehicles::OrderRouteWaypoint>())
+                {
+                    routeOrder.position = World::Pos2{ waypoint->getWaypoint() };
+                }
+                else if (const auto* unload = order.as<Vehicles::OrderUnloadAll>())
+                {
+                    routeOrder.unloadCargo = unload->getCargo();
+                }
+                else if (const auto* waitFor = order.as<Vehicles::OrderWaitFor>())
+                {
+                    routeOrder.waitForCargo = waitFor->getCargo();
+                    routeWaitForMask |= 1U << routeOrder.waitForCargo;
+                }
+                orders.push_back(routeOrder);
+            }
+            if (orders.empty())
+            {
+                return std::nullopt;
             }
 
-            const auto points = getRoutePoints(head);
+            const auto rotation = getCanonicalRotation(orders);
+            std::rotate(orders.begin(), orders.begin() + rotation, orders.end());
+
             std::vector<size_t> stops;
-            for (size_t i = 0; i < points.size(); ++i)
+            for (size_t i = 0; i < orders.size(); ++i)
             {
-                if (points[i].stop != StationId::null)
+                if (orders[i].stop != StationId::null)
                 {
                     stops.push_back(i);
                 }
             }
             if (stops.size() < 2)
             {
-                return;
+                return std::nullopt;
             }
+
+            VehicleRoute route;
+            route.head = &head;
+            const auto period = getPrimitivePeriod(orders);
+            route.canonicalOrders.reserve(period);
+            for (size_t i = 0; i < period; ++i)
+            {
+                route.canonicalOrders.push_back(orders[i].raw);
+                if (orders[i].stop != StationId::null)
+                {
+                    ++route.occurrenceCount;
+                }
+            }
+            route.active = head.isPlaced()
+                && !head.hasVehicleFlags(Vehicles::VehicleFlags::commandStop | Vehicles::VehicleFlags::manualControl)
+                && head.status != Vehicles::Status::crashed
+                && head.status != Vehicles::Status::stuck;
+            route.express = (train.veh1->var_48 & Vehicles::Flags48::expressMode) != Vehicles::Flags48::none;
 
             for (size_t stopIndex = 0; stopIndex < stops.size(); ++stopIndex)
             {
                 const auto fromIndex = stops[stopIndex];
                 const auto toIndex = stops[(stopIndex + 1) % stops.size()];
-                const auto from = points[fromIndex].stop;
-                const auto to = points[toIndex].stop;
-                if (from == to)
-                {
-                    continue;
-                }
 
                 uint64_t distance = 0;
-                auto previous = points[fromIndex].position;
-                for (auto pointIndex = (fromIndex + 1) % points.size();; pointIndex = (pointIndex + 1) % points.size())
+                auto previous = *orders[fromIndex].position;
+                for (auto orderIndex = (fromIndex + 1) % orders.size();; orderIndex = (orderIndex + 1) % orders.size())
                 {
-                    distance += Math::Vector::distance2D(previous, points[pointIndex].position);
-                    previous = points[pointIndex].position;
-                    if (pointIndex == toIndex)
+                    if (orders[orderIndex].position.has_value())
+                    {
+                        distance += Math::Vector::distance2D(previous, *orders[orderIndex].position);
+                        previous = *orders[orderIndex].position;
+                    }
+                    if (orderIndex == toIndex)
                     {
                         break;
                     }
                 }
 
                 const auto travelTime = estimateTravelTime(distance, head, train);
-                if (travelTime == 0)
+                uint32_t unloadMask = 0;
+                uint32_t departureWaitForMask = 0;
+                for (auto orderIndex = (fromIndex + 1) % orders.size(); orderIndex != toIndex; orderIndex = (orderIndex + 1) % orders.size())
                 {
-                    continue;
+                    if (orders[orderIndex].position.has_value())
+                    {
+                        break;
+                    }
+                    if (orders[orderIndex].unloadCargo != 0xFF)
+                    {
+                        unloadMask |= 1U << orders[orderIndex].unloadCargo;
+                    }
+                    if (orders[orderIndex].waitForCargo != 0xFF)
+                    {
+                        departureWaitForMask |= 1U << orders[orderIndex].waitForCargo;
+                    }
                 }
-                for (uint8_t cargo = 0; cargo < capacities.size(); ++cargo)
+                std::array<uint32_t, 32> capacities{};
+                for (const auto& car : train.cars)
                 {
-                    if (!isEnabled(cargo) || capacities[cargo] == 0)
+                    addCargoCapacity(capacities, car.body->primaryCargo, routeWaitForMask, departureWaitForMask);
+                    addCargoCapacity(capacities, car.front->secondaryCargo, routeWaitForMask, departureWaitForMask);
+                }
+                route.legs.push_back({
+                    orders[(fromIndex + 1) % orders.size()].offset,
+                    orders[fromIndex].stop,
+                    orders[toIndex].stop,
+                });
+                route.legTimes.push_back(travelTime);
+                route.unloadMasks.push_back(unloadMask);
+                route.legCapacities.push_back(capacities);
+                route.cycleTime += travelTime;
+            }
+            return route;
+        }
+
+        const VehicleServiceLeg* findCurrentServiceLeg(const Vehicles::VehicleHead& head, bool allowDirty = false)
+        {
+            if (getStateConst().servicesDirty && !allowDirty)
+            {
+                return nullptr;
+            }
+            const auto found = getStateConst().vehicleServiceLegs.find(head.id);
+            if (found == getStateConst().vehicleServiceLegs.end() || found->second.empty())
+            {
+                return nullptr;
+            }
+
+            const auto& legs = found->second;
+            const auto atStation = head.stationId != StationId::null
+                && (head.status == Vehicles::Status::unloading || head.status == Vehicles::Status::loading);
+            const auto direct = std::find_if(legs.begin(), legs.end(), [&](const auto& leg) {
+                return leg.currentOrder == head.currentOrder && (!atStation || leg.from == head.stationId);
+            });
+            if (direct != legs.end())
+            {
+                return &*direct;
+            }
+            const auto anyDirect = std::find_if(legs.begin(), legs.end(), [&](const auto& leg) {
+                return leg.currentOrder == head.currentOrder;
+            });
+            if (anyDirect != legs.end())
+            {
+                return &*anyDirect;
+            }
+
+            if (head.sizeOfOrderTable <= sizeof(Vehicles::OrderEnd))
+            {
+                return nullptr;
+            }
+            const auto ringSize = static_cast<uint16_t>(head.sizeOfOrderTable - sizeof(Vehicles::OrderEnd));
+            const auto findClosest = [&](bool requireCurrentStation) {
+                const VehicleServiceLeg* best = nullptr;
+                uint16_t bestDistance = std::numeric_limits<uint16_t>::max();
+                for (const auto& leg : legs)
+                {
+                    if (requireCurrentStation && leg.from != head.stationId)
                     {
                         continue;
                     }
-                    auto& edge = accumulators[{ cargo, from, to }];
-                    edge.capacity += capacities[cargo];
-                    edge.weightedTravelTime += static_cast<uint64_t>(capacities[cargo]) * travelTime;
+                    const auto distance = static_cast<uint16_t>((head.currentOrder + ringSize - leg.currentOrder) % ringSize);
+                    if (distance < bestDistance)
+                    {
+                        best = &leg;
+                        bestDistance = distance;
+                    }
                 }
+                return best;
+            };
+            const auto* stationLeg = atStation ? findClosest(true) : nullptr;
+            return stationLeg != nullptr ? stationLeg : findClosest(false);
+        }
+
+        const VehicleServiceLeg* findPriorServiceLeg(const Vehicles::VehicleHead& head, const VehicleServiceLeg& onward)
+        {
+            const auto found = getStateConst().vehicleServiceLegs.find(head.id);
+            if (found == getStateConst().vehicleServiceLegs.end())
+            {
+                return nullptr;
             }
+            const auto prior = std::find_if(found->second.begin(), found->second.end(), [&](const auto& leg) {
+                return leg.to == head.stationId && leg.arrival == onward.departure;
+            });
+            return prior == found->second.end() ? nullptr : &*prior;
+        }
+
+        void retagVehiclePackets()
+        {
+            forEachVehicleCargo([](const auto& head, VehicleCargoKey key, const auto&) {
+                auto* vehiclePackets = getVehicleCargo(key);
+                if (vehiclePackets == nullptr)
+                {
+                    return;
+                }
+
+                const auto* current = findCurrentServiceLeg(head, true);
+                const auto* prior = current != nullptr
+                        && head.status == Vehicles::Status::unloading
+                        && head.stationId != StationId::null
+                        && current->from == head.stationId
+                    ? findPriorServiceLeg(head, *current)
+                    : nullptr;
+
+                auto packets = vehiclePackets->take(std::numeric_limits<uint32_t>::max());
+                for (auto packet : packets.packets())
+                {
+                    const auto* packetLeg = current != nullptr && packet.nextHop == current->to
+                        ? current
+                        : (prior != nullptr && packet.nextHop == head.stationId ? prior : nullptr);
+                    packet.departure = packetLeg != nullptr ? packetLeg->departure : ServicePoint{};
+                    packet.arrival = packetLeg != nullptr ? packetLeg->arrival : ServicePoint{};
+                    vehiclePackets->append(packet);
+                }
+            });
         }
 
         void rebuildServiceEdges()
         {
-            std::map<ServiceEdgeKey, EdgeAccumulator> accumulators;
+            std::map<ServiceGroupKey, std::vector<VehicleRoute>> groups;
             for (const auto* head : VehicleManager::VehicleList())
             {
-                addVehicleEdges(*head, accumulators);
+                auto route = getVehicleRoute(*head);
+                if (!route.has_value())
+                {
+                    continue;
+                }
+                ServiceGroupKey key{
+                    head->owner,
+                    head->vehicleType,
+                    head->mode,
+                    head->trackType,
+                    route->express,
+                    std::move(route->canonicalOrders),
+                };
+                groups[std::move(key)].push_back(std::move(*route));
             }
 
             auto& state = getState();
             state.serviceEdges.clear();
+            state.vehicleServiceLegs.clear();
+            state.servicesDirty = false;
+            std::map<ServiceEdgeKey, EdgeAccumulator> accumulators;
+            // Q16.48 keeps reciprocal rounding accurate while summing every active departure.
+            constexpr uint64_t kFrequencyOne = uint64_t{ 1 } << 48;
+            for (auto& group : groups)
+            {
+                auto& members = group.second;
+                auto serviceValue = EntityId::null;
+                for (const auto& member : members)
+                {
+                    serviceValue = std::min(serviceValue, member.head->id);
+                }
+                const auto service = static_cast<ServiceId>(static_cast<uint16_t>(serviceValue));
+                for (auto& member : members)
+                {
+                    for (size_t i = 0; i < member.legs.size(); ++i)
+                    {
+                        const auto occurrence = static_cast<uint16_t>(i % member.occurrenceCount);
+                        member.legs[i].departure = { service, occurrence };
+                        member.legs[i].arrival = { service, static_cast<uint16_t>((occurrence + 1) % member.occurrenceCount) };
+                    }
+                    state.vehicleServiceLegs[member.head->id] = member.legs;
+                    if (!member.active)
+                    {
+                        continue;
+                    }
+
+                    const auto frequency = std::max<uint64_t>(1, kFrequencyOne / member.cycleTime + (kFrequencyOne % member.cycleTime != 0));
+                    for (uint8_t cargo = 0; cargo < member.legCapacities.front().size(); ++cargo)
+                    {
+                        if (!isEnabled(cargo))
+                        {
+                            continue;
+                        }
+                        std::set<ServiceEdgeKey> memberEdges;
+                        for (size_t i = 0; i < member.legs.size(); ++i)
+                        {
+                            if ((member.unloadMasks[i] & (1U << cargo)) != 0)
+                            {
+                                continue;
+                            }
+                            const auto capacity = member.legCapacities[i][cargo];
+                            if (capacity == 0)
+                            {
+                                continue;
+                            }
+                            const auto& leg = member.legs[i];
+                            const ServiceEdgeKey key{ cargo, leg.from, leg.to, leg.departure, leg.arrival };
+                            auto& edge = accumulators[key];
+                            edge.departureFrequency += frequency;
+                            if (memberEdges.insert(key).second)
+                            {
+                                edge.capacity += capacity;
+                                edge.weightedTravelTime += static_cast<uint64_t>(capacity) * member.legTimes[i];
+                            }
+                        }
+                    }
+                }
+            }
+
             for (const auto& [key, edge] : accumulators)
             {
                 const auto capacity = std::min<uint64_t>(edge.capacity, std::numeric_limits<uint32_t>::max());
+                const auto waitTime = std::max<uint64_t>(1, (kFrequencyOne / 2) / edge.departureFrequency + ((kFrequencyOne / 2) % edge.departureFrequency != 0));
                 state.serviceEdges[key] = {
                     static_cast<uint32_t>(capacity),
                     static_cast<uint32_t>(std::min<uint64_t>(edge.weightedTravelTime / edge.capacity, std::numeric_limits<uint32_t>::max())),
+                    static_cast<uint32_t>(std::min<uint64_t>(waitTime, std::numeric_limits<uint32_t>::max())),
                 };
             }
+            retagVehiclePackets();
         }
 
-        std::map<std::pair<StationId, StationId>, uint32_t> getRoutingDemands(uint8_t cargo)
+        bool hasValidServicePlans()
         {
             const auto& state = getStateConst();
-            std::map<std::pair<StationId, StationId>, uint32_t> demands;
+            std::set<std::tuple<uint8_t, StationId, ServicePoint>> arrivals;
+            for (const auto& [key, edge] : state.serviceEdges)
+            {
+                arrivals.emplace(key.cargo, key.to, key.arrival);
+            }
+            for (const auto& [key, packets] : state.stationCargo)
+            {
+                for (const auto& packet : packets.packets())
+                {
+                    if (packet.nextHop != StationId::null
+                        && !state.serviceEdges.contains({ key.cargo, key.station, packet.nextHop, packet.departure, packet.arrival }))
+                    {
+                        return false;
+                    }
+                }
+            }
+            for (const auto& [key, options] : state.flows)
+            {
+                if (!key.incoming.empty() && !arrivals.contains({ key.cargo, key.station, key.incoming }))
+                {
+                    return false;
+                }
+                for (const auto& option : options)
+                {
+                    if (option.via != key.station
+                        && !state.serviceEdges.contains({ key.cargo, key.station, option.via, option.departure, option.arrival }))
+                    {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+
+        std::map<std::tuple<StationId, StationId, ServicePoint>, uint32_t> getRoutingDemands(uint8_t cargo)
+        {
+            const auto& state = getStateConst();
+            using DemandKey = std::tuple<StationId, StationId, ServicePoint>;
+            std::map<DemandKey, uint32_t> demands;
             for (const auto& [key, amount] : state.supply)
             {
                 if (key.first == cargo)
                 {
-                    demands[{ key.second, key.second }] = amount;
+                    demands[{ key.second, key.second, {} }] = amount;
                 }
             }
 
-            std::map<std::pair<StationId, StationId>, uint32_t> outstanding;
+            std::map<DemandKey, uint32_t> outstanding;
             const auto addPackets = [&outstanding](StationId source, const PacketList* packets) {
                 if (packets == nullptr)
                 {
@@ -319,7 +661,8 @@ namespace OpenLoco::CargoDist
                 {
                     if (packet.origin != StationId::null)
                     {
-                        outstanding[{ source, packet.origin }] = saturatedAdd(outstanding[{ source, packet.origin }], packet.quantity);
+                        auto& amount = outstanding[{ source, packet.origin, {} }];
+                        amount = saturatedAdd(amount, packet.quantity);
                     }
                 }
             };
@@ -332,7 +675,8 @@ namespace OpenLoco::CargoDist
                 {
                     if (packet.origin != StationId::null && packet.nextHop != StationId::null)
                     {
-                        outstanding[{ packet.nextHop, packet.origin }] = saturatedAdd(outstanding[{ packet.nextHop, packet.origin }], packet.quantity);
+                        auto& amount = outstanding[{ packet.nextHop, packet.origin, packet.arrival }];
+                        amount = saturatedAdd(amount, packet.quantity);
                     }
                 }
             };
@@ -396,13 +740,14 @@ namespace OpenLoco::CargoDist
             }
             for (const auto& [key, amount] : demands)
             {
-                graph.demands.push_back({ key.first, key.second, amount });
+                const auto& [source, origin, incoming] = key;
+                graph.demands.push_back({ source, origin, amount, incoming });
             }
             for (const auto& [key, edge] : state.serviceEdges)
             {
                 if (key.cargo == cargo)
                 {
-                    graph.edges.push_back({ key.from, key.to, edge.capacity, edge.travelTime });
+                    graph.edges.push_back({ key.from, key.to, edge.capacity, edge.travelTime, key.departure, key.arrival, edge.waitTime });
                 }
             }
             return graph;
@@ -420,13 +765,12 @@ namespace OpenLoco::CargoDist
                 PacketList rerouted;
                 for (auto packet : packets.packets())
                 {
-                    const auto shares = allocateVia(cargo, key.station, packet.origin, packet.quantity, key.station);
+                    const auto shares = allocateVia(cargo, key.station, packet.origin, packet.quantity, ServicePoint{}, key.station);
                     if (shares.empty())
                     {
-                        if (packet.nextHop == key.station)
-                        {
-                            packet.nextHop = StationId::null;
-                        }
+                        packet.nextHop = StationId::null;
+                        packet.departure = {};
+                        packet.arrival = {};
                         rerouted.append(packet);
                         continue;
                     }
@@ -434,6 +778,8 @@ namespace OpenLoco::CargoDist
                     {
                         packet.quantity = static_cast<uint16_t>(share.amount);
                         packet.nextHop = share.via;
+                        packet.departure = share.departure;
+                        packet.arrival = share.arrival;
                         rerouted.append(packet);
                     }
                 }
@@ -539,7 +885,7 @@ namespace OpenLoco::CargoDist
             {
                 for (const auto& share : shares)
                 {
-                    packets.append({ static_cast<uint16_t>(share.amount), station, share.via, 0 });
+                    packets.append({ static_cast<uint16_t>(share.amount), station, share.via, 0, share.departure, share.arrival });
                 }
             }
         }
@@ -576,19 +922,19 @@ namespace OpenLoco::CargoDist
         synchroniseVehicleCargo(key, nativeCargo);
     }
 
-    uint32_t getLoadableQuantity(StationId station, uint8_t cargo, StationId nextStop)
+    uint32_t getLoadableQuantity(StationId station, uint8_t cargo, const VehicleServiceLeg& serviceLeg)
     {
-        if (nextStop == StationId::null)
+        if (serviceLeg.from != station || serviceLeg.to == StationId::null)
         {
             return 0;
         }
         const auto* packets = getStationCargoConst(station, cargo);
-        return packets == nullptr ? 0 : packets->quantityFor(nextStop);
+        return packets == nullptr ? 0 : packets->quantityFor(serviceLeg.to, serviceLeg.departure);
     }
 
-    uint16_t loadVehicleCargo(VehicleCargoKey key, Vehicles::VehicleCargo& nativeCargo, StationId station, StationCargoStats& nativeStationCargo, StationId nextStop)
+    uint16_t loadVehicleCargo(VehicleCargoKey key, Vehicles::VehicleCargo& nativeCargo, StationId station, StationCargoStats& nativeStationCargo, const VehicleServiceLeg& serviceLeg)
     {
-        if (nextStop == StationId::null)
+        if (serviceLeg.from != station || serviceLeg.to == StationId::null)
         {
             return 0;
         }
@@ -598,13 +944,13 @@ namespace OpenLoco::CargoDist
         }
         if (getVehicleCargoConst(key) == nullptr)
         {
-            seedVehicleCargo(key, nativeCargo, nextStop);
+            seedVehicleCargo(key, nativeCargo, serviceLeg.to, serviceLeg.departure, serviceLeg.arrival);
         }
 
         auto& stationPackets = getOrCreateStationCargo(station, nativeCargo.type);
         auto& vehiclePackets = getOrCreateVehicleCargo(key);
         const auto freeCapacity = nativeCargo.maxQty - std::min<uint32_t>(vehiclePackets.quantity(), nativeCargo.maxQty);
-        auto loaded = stationPackets.takeFor(nextStop, freeCapacity);
+        auto loaded = stationPackets.takeFor(serviceLeg.to, serviceLeg.departure, freeCapacity);
         const auto quantity = static_cast<uint16_t>(loaded.quantity());
         vehiclePackets.append(std::move(loaded));
         synchroniseStationCargo(station, nativeCargo.type, nativeStationCargo);
@@ -612,7 +958,7 @@ namespace OpenLoco::CargoDist
         return quantity;
     }
 
-    UnloadResult unloadVehicleCargo(VehicleCargoKey key, Vehicles::VehicleCargo& nativeCargo, StationId station, StationCargoStats& nativeStationCargo, std::span<const StationId> remainingStops, bool forceUnload)
+    UnloadResult unloadVehicleCargo(VehicleCargoKey key, Vehicles::VehicleCargo& nativeCargo, StationId station, StationCargoStats& nativeStationCargo, std::span<const StationId> remainingStops, bool forceUnload, std::optional<VehicleServiceLeg> onwardLeg)
     {
         if (getVehicleCargoConst(key) == nullptr)
         {
@@ -649,23 +995,43 @@ namespace OpenLoco::CargoDist
                 result.delivered.append(packet);
                 continue;
             }
-            auto shares = allocateVia(nativeCargo.type, station, packet.origin, packet.quantity);
+            auto shares = allocateVia(nativeCargo.type, station, packet.origin, packet.quantity, packet.arrival);
+            if (shares.empty() && !packet.arrival.empty())
+            {
+                shares = allocateVia(nativeCargo.type, station, packet.origin, packet.quantity);
+            }
             if (shares.empty())
             {
                 shares.push_back({ StationId::null, packet.quantity });
             }
             for (const auto& share : shares)
             {
-                packet.quantity = static_cast<uint16_t>(share.amount);
+                auto routedPacket = packet;
+                routedPacket.quantity = static_cast<uint16_t>(share.amount);
                 const auto via = share.via;
-                if ((via == station || via == StationId::null) && nativeStationCargo.isAccepted())
+                if (!forceUnload && onwardLeg.has_value()
+                    && onwardLeg->from == station
+                    && routedPacket.arrival == onwardLeg->departure
+                    && via == onwardLeg->to
+                    && share.departure == onwardLeg->departure
+                    && share.arrival == onwardLeg->arrival)
                 {
-                    result.delivered.append(packet);
+                    routedPacket.nextHop = via;
+                    routedPacket.departure = share.departure;
+                    routedPacket.arrival = share.arrival;
+                    vehiclePackets->append(routedPacket);
                     continue;
                 }
-                packet.nextHop = via == station ? StationId::null : via;
-                needsRecalculation |= packet.nextHop == StationId::null;
-                transferred.append(packet);
+                if ((via == station || via == StationId::null) && nativeStationCargo.isAccepted())
+                {
+                    result.delivered.append(routedPacket);
+                    continue;
+                }
+                routedPacket.nextHop = via == station ? StationId::null : via;
+                routedPacket.departure = share.departure;
+                routedPacket.arrival = share.arrival;
+                needsRecalculation |= routedPacket.nextHop == StationId::null;
+                transferred.append(routedPacket);
             }
         }
 
@@ -683,6 +1049,17 @@ namespace OpenLoco::CargoDist
         synchroniseStationCargo(station, nativeCargo.type, nativeStationCargo);
         synchroniseVehicleCargo(key, nativeCargo);
         return result;
+    }
+
+    std::optional<VehicleServiceLeg> getCurrentServiceLeg(const Vehicles::VehicleHead& head)
+    {
+        if (getStateConst().servicesDirty)
+        {
+            recalculateFlows();
+            getState().graphDirty = false;
+        }
+        const auto* leg = findCurrentServiceLeg(head);
+        return leg == nullptr ? std::nullopt : std::optional{ *leg };
     }
 
     StationId getNextStop(const Vehicles::VehicleHead& head)
@@ -746,6 +1123,7 @@ namespace OpenLoco::CargoDist
         }
         state.nextRecalculationDay = 0;
         state.graphDirty = true;
+        state.servicesDirty = true;
         ++state.routingRevision;
     }
 
@@ -755,6 +1133,7 @@ namespace OpenLoco::CargoDist
         if (std::none_of(state.settings.modes.begin(), state.settings.modes.end(), [](auto mode) { return mode != DistributionMode::manual; }))
         {
             state.graphDirty = false;
+            state.servicesDirty = false;
             return;
         }
         recalculateFlows();
@@ -870,10 +1249,17 @@ namespace OpenLoco::CargoDist
         }
         validateState(state, getGameState());
         state.serviceEdges.clear();
+        state.vehicleServiceLegs.clear();
         state.routingRevision = getStateConst().routingRevision + 1;
 
+        const auto needsRecalculation = state.graphDirty;
         getState() = std::move(state);
         rebuildServiceEdges();
+        if (needsRecalculation || !hasValidServicePlans())
+        {
+            recalculateFlows();
+            getState().graphDirty = false;
+        }
     }
 
     void updateDaily()
@@ -956,6 +1342,7 @@ namespace OpenLoco::CargoDist
         }
         synchroniseAllCargo();
         state.graphDirty = true;
+        state.servicesDirty = true;
         ++state.routingRevision;
     }
 
@@ -963,7 +1350,67 @@ namespace OpenLoco::CargoDist
     {
         eraseVehicleCargo({ component, VehicleCargoSlot::primary });
         eraseVehicleCargo({ component, VehicleCargoSlot::secondary });
-        markGraphDirty();
+        markServicesDirty();
+    }
+
+    void removeVehicleService(EntityId vehicle)
+    {
+        auto& state = getState();
+        const auto found = state.vehicleServiceLegs.find(vehicle);
+        if (found == state.vehicleServiceLegs.end() || found->second.empty())
+        {
+            markServicesDirty();
+            return;
+        }
+
+        const auto service = found->second.front().departure.service;
+        state.vehicleServiceLegs.erase(found);
+        if (service != static_cast<ServiceId>(static_cast<uint16_t>(vehicle)))
+        {
+            markServicesDirty();
+            return;
+        }
+
+        for (auto& [key, packets] : state.stationCargo)
+        {
+            packets.removeServiceReferences(service);
+        }
+        for (auto& [key, packets] : state.vehicleCargo)
+        {
+            packets.removeServiceReferences(service);
+        }
+        std::erase_if(state.serviceEdges, [service](const auto& item) {
+            return item.first.departure.service == service || item.first.arrival.service == service;
+        });
+        for (auto it = state.flows.begin(); it != state.flows.end();)
+        {
+            if (it->first.incoming.service == service)
+            {
+                it = state.flows.erase(it);
+                continue;
+            }
+            const auto removed = std::erase_if(it->second, [service](const auto& option) {
+                return option.departure.service == service || option.arrival.service == service;
+            });
+            if (removed != 0)
+            {
+                for (auto& option : it->second)
+                {
+                    option.current = 0;
+                }
+            }
+            if (it->second.empty())
+            {
+                it = state.flows.erase(it);
+            }
+            else
+            {
+                ++it;
+            }
+        }
+        state.graphDirty = true;
+        state.servicesDirty = true;
+        ++state.routingRevision;
     }
 
     void moveVehicleCargo(VehicleCargoKey source, VehicleCargoKey destination)

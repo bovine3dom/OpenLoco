@@ -7,6 +7,7 @@
 #include "Vehicles/SharedOrderManager.h"
 #include "Vehicles/VehicleHead.h"
 #include "Vehicles/VehicleManager.h"
+#include <OpenLoco/CargoDist/CargoDist.h>
 #include <algorithm>
 #include <ranges>
 #include <vector>
@@ -99,6 +100,7 @@ namespace OpenLoco::GameCommands
             member->resetUnbunching();
             Ui::WindowManager::invalidate(Ui::WindowType::vehicle, enumValue(member->id));
         }
+        CargoDist::markServicesDirty();
         return 0;
     }
 
