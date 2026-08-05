@@ -1,5 +1,6 @@
 #include "Entities/EntityManager.h"
 #include "Entities/EntityTweener.h"
+#include "Map/Tile.h"
 #include "Ui/WindowManager.h"
 #include "Vehicles/Vehicle2.h"
 #include "Vehicles/VehicleBody.h"
@@ -64,7 +65,74 @@ TEST_F(EntityTweenerTest, PreservesFractionalMovementAtMagnifiedZoom)
     EXPECT_EQ(tweener.getInterpolatedRasterOffset(*body, 0, ZoomLevel::sixteenfold), (Ui::Point{ 0, 8 }));
 }
 
-TEST_F(EntityTweenerTest, LeavesLegacyZoomLevelsAndTickEndpointsUnchanged)
+TEST_F(EntityTweenerTest, PreservesExactIsometricPhaseAtMagnifiedZoom)
+{
+    auto* body = createComponent<VehicleBody>({ 65, 64, 0 });
+    ASSERT_NE(body, nullptr);
+
+    auto& tweener = EntityTweener::get();
+    for (uint8_t rotation = 0; rotation < 4; ++rotation)
+    {
+        EXPECT_EQ(tweener.getInterpolatedRasterOffset(*body, rotation, ZoomLevel::doubled), (Ui::Point{ 0, 1 }));
+        EXPECT_EQ(tweener.getInterpolatedRasterOffset(*body, rotation, ZoomLevel::quadrupled), (Ui::Point{ 0, 2 }));
+        EXPECT_EQ(tweener.getInterpolatedRasterOffset(*body, rotation, ZoomLevel::eightfold), (Ui::Point{ 0, 4 }));
+        EXPECT_EQ(tweener.getInterpolatedRasterOffset(*body, rotation, ZoomLevel::sixteenfold), (Ui::Point{ 0, 8 }));
+    }
+
+    tweener.preTick();
+    tweener.postTick();
+    tweener.tween(0.5F);
+    EXPECT_EQ(tweener.getInterpolatedRasterOffset(*body, 0, ZoomLevel::quadrupled), (Ui::Point{ 0, 2 }));
+    EXPECT_EQ(tweener.getInterpolatedRasterOffset(*body, 0, ZoomLevel::full), Ui::Point{});
+}
+
+TEST_F(EntityTweenerTest, RetainsExactPhaseAfterTweenReset)
+{
+    auto* body = createComponent<VehicleBody>({ 64, 64, 0 });
+    ASSERT_NE(body, nullptr);
+
+    auto& tweener = EntityTweener::get();
+    tweener.preTick();
+    body->moveTo({ 65, 64, 0 });
+    tweener.postTick();
+    tweener.tween(1.0F);
+    EXPECT_EQ(tweener.getInterpolatedRasterOffset(*body, 0, ZoomLevel::quadrupled), (Ui::Point{ 0, 2 }));
+
+    tweener.reset();
+    EXPECT_EQ(tweener.getInterpolatedRasterOffset(*body, 0, ZoomLevel::quadrupled), (Ui::Point{ 0, 2 }));
+}
+
+TEST_F(EntityTweenerTest, ProjectsSuccessiveWorldPositionsUniformly)
+{
+    auto* body = createComponent<VehicleBody>({ 64, 64, 0 });
+    ASSERT_NE(body, nullptr);
+
+    constexpr std::array<Ui::Point, 4> kExpectedSteps = {
+        Ui::Point{ -4, 2 },
+        Ui::Point{ -4, -2 },
+        Ui::Point{ 4, -2 },
+        Ui::Point{ 4, 2 },
+    };
+    auto& tweener = EntityTweener::get();
+    for (uint8_t rotation = 0; rotation < 4; ++rotation)
+    {
+        Ui::Point previousPosition{};
+        for (int16_t x = 64; x <= 66; ++x)
+        {
+            body->moveTo({ x, 64, 0 });
+            const auto integerPosition = World::gameToScreen(body->position, rotation);
+            const auto offset = tweener.getInterpolatedRasterOffset(*body, rotation, ZoomLevel::quadrupled);
+            const Ui::Point rasterPosition{ integerPosition.x * 4 + offset.x, integerPosition.y * 4 + offset.y };
+            if (x != 64)
+            {
+                EXPECT_EQ(rasterPosition - previousPosition, kExpectedSteps[rotation]);
+            }
+            previousPosition = rasterPosition;
+        }
+    }
+}
+
+TEST_F(EntityTweenerTest, LeavesLegacyZoomLevelsAndIntegralTickEndpointsUnchanged)
 {
     auto* body = createComponent<VehicleBody>({ 64, 64, 0 });
     ASSERT_NE(body, nullptr);

@@ -1197,7 +1197,13 @@ namespace OpenLoco::Paint
     }
 
     // 0x00447A5F
-    static bool isSpriteInteractedWithPaletteSet(const Gfx::RenderTarget* rt, ZoomLevel zoom, ImageId imageId, const Ui::Point& coords, const Gfx::PaletteMap::View paletteMap)
+    static bool isSpriteInteractedWithPaletteSet(
+        const Gfx::RenderTarget* rt,
+        ZoomLevel zoom,
+        ImageId imageId,
+        const Ui::Point& coords,
+        const Gfx::PaletteMap::View paletteMap,
+        const Ui::Point& rasterOffset)
     {
         const auto* g1 = Gfx::getG1Element(imageId.getIndex());
         if (g1 == nullptr)
@@ -1206,7 +1212,8 @@ namespace OpenLoco::Paint
         }
 
         auto zoomLevel = zoom;
-        Ui::Point interactionPoint{ zoom.applyTo(static_cast<int32_t>(rt->x)), zoom.applyTo(static_cast<int32_t>(rt->y)) };
+        const auto appliedOffset = zoom < ZoomLevel::full ? rasterOffset : Ui::Point{};
+        Ui::Point interactionPoint{ zoom.applyTo(rt->x - appliedOffset.x), zoom.applyTo(rt->y - appliedOffset.y) };
         Ui::Point origin = coords;
 
         if (zoomLevel > 0)
@@ -1255,7 +1262,7 @@ namespace OpenLoco::Paint
     }
 
     // 0x00447A0E
-    static bool isSpriteInteractedWith(const Gfx::RenderTarget* rt, ZoomLevel zoom, ImageId imageId, const Ui::Point& coords)
+    static bool isSpriteInteractedWith(const Gfx::RenderTarget* rt, ZoomLevel zoom, ImageId imageId, const Ui::Point& coords, const Ui::Point& rasterOffset)
     {
         auto paletteMap = Gfx::PaletteMap::getDefault();
         if (imageId.hasPrimary())
@@ -1266,7 +1273,7 @@ namespace OpenLoco::Paint
                 paletteMap = *pm;
             }
         }
-        return isSpriteInteractedWithPaletteSet(rt, zoom, imageId, coords, paletteMap);
+        return isSpriteInteractedWithPaletteSet(rt, zoom, imageId, coords, paletteMap, rasterOffset);
     }
 
     // 0x0045EDFC
@@ -1318,7 +1325,7 @@ namespace OpenLoco::Paint
         std::optional<InteractionArg> info = std::nullopt;
         for (auto* attachedPS = ps.attachedPS; attachedPS != nullptr; attachedPS = attachedPS->next)
         {
-            if (isSpriteInteractedWith(&rt, zoom, attachedPS->imageId, attachedPS->vpPos + ps.vpPos))
+            if (isSpriteInteractedWith(&rt, zoom, attachedPS->imageId, attachedPS->vpPos + ps.vpPos, ps.rasterOffset))
             {
                 if (isPSSpriteTypeInFilter(ps.type, flags))
                 {
@@ -1337,7 +1344,7 @@ namespace OpenLoco::Paint
         for (auto* ps = _paintHead; ps != nullptr; ps = ps->nextQuadrantPS)
         {
             // Check main paint struct
-            if (isSpriteInteractedWith(getRenderTarget(), getZoom(), ps->imageId, ps->vpPos))
+            if (isSpriteInteractedWith(getRenderTarget(), getZoom(), ps->imageId, ps->vpPos, ps->rasterOffset))
             {
                 if (isPSSpriteTypeInFilter(ps->type, flags))
                 {
@@ -1348,7 +1355,7 @@ namespace OpenLoco::Paint
             // Check children paint structs
             for (const auto* childPs = ps->children; childPs != nullptr; childPs = childPs->children)
             {
-                if (isSpriteInteractedWith(getRenderTarget(), getZoom(), childPs->imageId, childPs->vpPos))
+                if (isSpriteInteractedWith(getRenderTarget(), getZoom(), childPs->imageId, childPs->vpPos, childPs->rasterOffset))
                 {
                     if (isPSSpriteTypeInFilter(childPs->type, flags))
                     {

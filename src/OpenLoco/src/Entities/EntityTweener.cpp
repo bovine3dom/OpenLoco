@@ -5,6 +5,7 @@
 #include "Ui/WindowManager.h"
 #include "Vehicles/Vehicle.h"
 #include "ViewportManager.h"
+#include <OpenLoco/Math/Vector.hpp>
 #include <algorithm>
 #include <cmath>
 
@@ -20,6 +21,13 @@ namespace OpenLoco
         return static_cast<int32_t>(numerator >= 0 ? (numerator + denominator / 2) / denominator : -((-numerator + denominator / 2) / denominator));
     }
 
+    static Ui::Point getProjectedPositionDoubled(const World::Pos3& pos, const uint8_t rotation)
+    {
+        // Keep isometric Y doubled so odd coordinates retain their half-pixel phase.
+        const auto rotated = Math::Vector::rotate(Ui::Point{ pos.x, pos.y }, rotation);
+        return { 2 * (rotated.y - rotated.x), rotated.y + rotated.x - 2 * pos.z };
+    }
+
     static Ui::Point getInterpolatedRasterPosition(
         const World::Pos3& posA,
         const World::Pos3& posB,
@@ -27,13 +35,12 @@ namespace OpenLoco
         const uint8_t rotation,
         const ZoomLevel zoom)
     {
-        // Preserve legacy tick endpoints while retaining their fractional in-between position.
-        const auto vpPosA = World::gameToScreen(posA, rotation);
-        const auto vpPosB = World::gameToScreen(posB, rotation);
+        const auto vpPosA = getProjectedPositionDoubled(posA, rotation);
+        const auto vpPosB = getProjectedPositionDoubled(posB, rotation);
         const auto rasterScale = zoom.applyInversedTo(1);
         const auto interpolate = [fraction, rasterScale](const int32_t a, const int32_t b) {
             const auto value = static_cast<int64_t>(a) * kTweenPrecision + static_cast<int64_t>(b - a) * fraction;
-            return roundDivNearest(value * rasterScale, kTweenPrecision);
+            return roundDivNearest(value * rasterScale, 2 * kTweenPrecision);
         };
         return { interpolate(vpPosA.x, vpPosB.x), interpolate(vpPosA.y, vpPosB.y) };
     }
@@ -196,19 +203,17 @@ namespace OpenLoco
             return {};
         }
 
+        auto interpolatedPosition = getInterpolatedRasterPosition(entity.position, entity.position, 0, rotation, zoom);
         const auto id = static_cast<size_t>(entity.id);
-        if (id >= _entityIndices.size() || _entityIndices[id] == 0)
+        if (id < _entityIndices.size() && _entityIndices[id] != 0)
         {
-            return {};
+            const auto index = static_cast<size_t>(_entityIndices[id] - 1);
+            if (index < _entities.size() && index < _postPos.size() && _entities[index] == &entity)
+            {
+                interpolatedPosition = getInterpolatedRasterPosition(_prePos[index], _postPos[index], _tweenFraction, rotation, zoom);
+            }
         }
 
-        const auto index = static_cast<size_t>(_entityIndices[id] - 1);
-        if (index >= _entities.size() || index >= _postPos.size() || _entities[index] != &entity)
-        {
-            return {};
-        }
-
-        const auto interpolatedPosition = getInterpolatedRasterPosition(_prePos[index], _postPos[index], _tweenFraction, rotation, zoom);
         const auto integerPosition = World::gameToScreen(entity.position, rotation);
         const auto rasterScale = zoom.applyInversedTo(1);
         const Ui::Point offset{

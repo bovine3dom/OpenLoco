@@ -15,7 +15,6 @@
 #include "Vehicles/VehicleBogie.h"
 #include "Vehicles/VehicleHead.h"
 #include "Vehicles/VehicleTail.h"
-#include "ViewportManager.h"
 #include "World/StationManager.h"
 
 using namespace OpenLoco::Literals;
@@ -66,7 +65,7 @@ namespace OpenLoco::GameCommands
         {
             train.applyToComponents([](auto& component) {
                 component.var_38 &= ~Vehicles::Flags38::isGhost;
-                Ui::ViewportManager::invalidate(&component, ZoomLevel::eighth);
+                component.invalidateSprite();
             });
         }
         else

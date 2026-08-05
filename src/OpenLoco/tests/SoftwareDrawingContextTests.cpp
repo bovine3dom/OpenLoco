@@ -1,6 +1,8 @@
 #include "Graphics/Gfx.h"
 #include "Graphics/RenderTarget.h"
 #include "Graphics/SoftwareDrawingContext.h"
+#include "Paint/Paint.h"
+#include "Ui/ViewportInteraction.h"
 #include <array>
 #include <gtest/gtest.h>
 
@@ -54,6 +56,23 @@ namespace
             }
         }
     }
+
+    bool isSpriteHit(const ZoomLevel zoom, const Ui::Point& position, const Ui::Point& rasterOffset)
+    {
+        const Gfx::RenderTarget target{ nullptr, position.x, position.y, 1, 1, 0 };
+        Paint::SessionOptions options{};
+        Paint::PaintSession session(target, zoom, options);
+        session.setCurrentItem(reinterpret_cast<void*>(1));
+        session.setItemType(Ui::ViewportInteraction::InteractionItem::entity);
+        session.setEntityPosition({ 0, 0 }, rasterOffset);
+        if (session.addToPlotListAsParent(ImageId(0), { 0, 0, 0 }, { 1, 1, 1 }) == nullptr)
+        {
+            return false;
+        }
+        session.arrangeStructs();
+        return session.getNormalInteractionInfo(Ui::ViewportInteraction::InteractionItemFlags::none).type
+            == Ui::ViewportInteraction::InteractionItem::entity;
+    }
 }
 
 TEST(SoftwareDrawingContextTest, AppliesRasterOffsetAfterMagnification)
@@ -102,4 +121,27 @@ TEST(SoftwareDrawingContextTest, AppliesRasterOffsetToMaskedSprites)
     drawingCtx.drawImageMasked(ZoomLevel::quadrupled, { 1, 1 }, ImageId(kImage), ImageId(kMask), { 1, 1 });
 
     expectFilledRect(pixels, 10, 10, Ui::Rect::fromLTRB(5, 5, 9, 9), 3);
+}
+
+TEST(PaintInteractionTest, AppliesRasterOffsetAfterMagnification)
+{
+    uint8_t sourcePixel = 7;
+    const G1ElementGuard imageGuard(0, &sourcePixel, 1, 1, Gfx::G1ElementFlags::hasTransparency);
+
+    for (int32_t y = 2; y < 6; ++y)
+    {
+        for (int32_t x = 1; x < 5; ++x)
+        {
+            EXPECT_TRUE(isSpriteHit(ZoomLevel::quadrupled, { x, y }, { 1, 2 })) << "at " << x << ", " << y;
+        }
+    }
+    EXPECT_FALSE(isSpriteHit(ZoomLevel::quadrupled, { 0, 2 }, { 1, 2 }));
+    EXPECT_FALSE(isSpriteHit(ZoomLevel::quadrupled, { 5, 2 }, { 1, 2 }));
+    EXPECT_FALSE(isSpriteHit(ZoomLevel::quadrupled, { 1, 1 }, { 1, 2 }));
+    EXPECT_FALSE(isSpriteHit(ZoomLevel::quadrupled, { 1, 6 }, { 1, 2 }));
+    EXPECT_TRUE(isSpriteHit(ZoomLevel::quadrupled, { -1, -2 }, { -1, -2 }));
+    EXPECT_FALSE(isSpriteHit(ZoomLevel::quadrupled, { 3, -2 }, { -1, -2 }));
+
+    EXPECT_TRUE(isSpriteHit(ZoomLevel::full, { 0, 0 }, { 1, 2 }));
+    EXPECT_FALSE(isSpriteHit(ZoomLevel::full, { 1, 2 }, { 1, 2 }));
 }

@@ -1,5 +1,6 @@
 #include "Entities/Entity.h"
 #include "Entities/EntityManager.h"
+#include "Entities/EntityTweener.h"
 #include "Ui/WindowManager.h"
 #include "ViewportManager.h"
 
@@ -44,6 +45,7 @@ namespace OpenLoco
     // 0x004CBB01
     void EntityBase::invalidateSprite()
     {
-        Ui::ViewportManager::invalidate(this, ZoomLevel::eighth);
+        const auto padding = baseType == EntityBaseType::vehicle ? EntityTweener::kRenderPadding : 0;
+        Ui::ViewportManager::invalidate(this, ZoomLevel::eighth, padding);
     }
 }

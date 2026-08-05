@@ -2,6 +2,7 @@
 #include "Audio/Audio.h"
 #include "Config.h"
 #include "Entities/EntityManager.h"
+#include "Entities/EntityTweener.h"
 #include "GameCommands/Airports/RemoveAirport.h"
 #include "GameCommands/Buildings/RemoveBuilding.h"
 #include "GameCommands/Company/RemoveCompanyHeadquarters.h"
@@ -64,17 +65,22 @@ using namespace OpenLoco::World;
 
 namespace OpenLoco::Ui::ViewportInteraction
 {
-    viewport_pos screenToViewport(const Point& screenPosition, const Window& owner, const Viewport& viewport)
+    static Point screenToViewportRaster(const Point& screenPosition, const Window& owner, const Viewport& viewport)
     {
+        const auto viewportOrigin = owner.position() + Point{ viewport.x, viewport.y };
         if (viewport.rasterWidth != viewport.width || viewport.rasterHeight != viewport.height)
         {
             if (const auto outputPosition = Input::getMouseLocationOutput(screenPosition); outputPosition.has_value())
             {
-                const auto outputOrigin = Ui::uiToOutput(owner.position() + Point{ viewport.x, viewport.y });
-                return viewport.rasterToViewport(*outputPosition - outputOrigin);
+                return *outputPosition - Ui::uiToOutput(viewportOrigin);
             }
         }
-        return viewport.windowToViewport(screenPosition - owner.position());
+        return viewport.uiToRaster(screenPosition - viewportOrigin);
+    }
+
+    viewport_pos screenToViewport(const Point& screenPosition, const Window& owner, const Viewport& viewport)
+    {
+        return viewport.rasterToViewport(screenToViewportRaster(screenPosition, owner, viewport));
     }
 
     InteractionArg::InteractionArg(const Paint::PaintStruct& ps)
@@ -373,11 +379,28 @@ namespace OpenLoco::Ui::ViewportInteraction
         return {};
     }
 
-    static void checkAndSetNearestVehicle(uint32_t& nearestDistance, Vehicles::VehicleBase*& nearestVehicle, Vehicles::VehicleBase& checkVehicle, const viewport_pos& targetPosition)
+    static void checkAndSetNearestVehicle(
+        uint32_t& nearestDistance,
+        Vehicles::VehicleBase*& nearestVehicle,
+        Vehicles::VehicleBase& checkVehicle,
+        const viewport_pos& targetPosition,
+        const Point& targetRasterPosition,
+        const uint8_t rotation,
+        const ZoomLevel zoom)
     {
         if (checkVehicle.spriteLeft != Location::null)
         {
-            auto distanceRes = vehicleDistanceFromLocation(checkVehicle, targetPosition);
+            auto interactionPosition = targetPosition;
+            if (zoom < ZoomLevel::full && (checkVehicle.isVehicleBody() || checkVehicle.isVehicleBogie()))
+            {
+                const auto offset = EntityTweener::get().getInterpolatedRasterOffset(checkVehicle, rotation, zoom);
+                interactionPosition = {
+                    zoom.applyTo(targetRasterPosition.x - offset.x),
+                    zoom.applyTo(targetRasterPosition.y - offset.y),
+                };
+            }
+
+            auto distanceRes = vehicleDistanceFromLocation(checkVehicle, interactionPosition);
             if (distanceRes)
             {
                 if (*distanceRes < nearestDistance)
@@ -470,14 +493,18 @@ namespace OpenLoco::Ui::ViewportInteraction
 
         uint32_t nearestDistance = std::numeric_limits<uint32_t>().max();
         Vehicles::VehicleBase* nearestVehicle = nullptr;
-        auto targetPosition = screenToViewport({ tempX, tempY }, *window, *viewport);
+        const auto localRasterPosition = screenToViewportRaster({ tempX, tempY }, *window, *viewport);
+        const auto targetPosition = viewport->rasterToViewport(localRasterPosition);
+        const auto targetRasterPosition = viewport->getViewOriginInRaster() + localRasterPosition;
+        const auto rotation = viewport->getRotation();
+        const auto zoom = viewport->zoom;
 
         for (auto* v : VehicleManager::VehicleList())
         {
             auto train = Vehicles::Vehicle(*v);
-            checkAndSetNearestVehicle(nearestDistance, nearestVehicle, *train.veh2, targetPosition);
-            train.cars.applyToComponents([&nearestDistance, &nearestVehicle, &targetPosition](auto& component) {
-                checkAndSetNearestVehicle(nearestDistance, nearestVehicle, component, targetPosition);
+            checkAndSetNearestVehicle(nearestDistance, nearestVehicle, *train.veh2, targetPosition, targetRasterPosition, rotation, zoom);
+            train.cars.applyToComponents([&](auto& component) {
+                checkAndSetNearestVehicle(nearestDistance, nearestVehicle, component, targetPosition, targetRasterPosition, rotation, zoom);
             });
         }
 
@@ -1526,13 +1553,22 @@ namespace OpenLoco::Ui::ViewportInteraction
 
             chosenV = vp;
             const auto windowPosition = screenPos - w->position();
-            auto vpPos = screenToViewport(screenPos, *w, *vp);
-
-            const int32_t alignMask = vp->zoom > ZoomLevel::full ? ~(vp->zoom.applyTo(1) - 1) : ~0;
+            const auto viewportRasterPosition = screenToViewportRaster(screenPos, *w, *vp);
 
             Gfx::RenderTarget _rt1; // 0x00E0C3E4
-            _rt1.x = vp->zoom.applyInversedTo(alignMask & vpPos.x);
-            _rt1.y = vp->zoom.applyInversedTo(alignMask & vpPos.y);
+            if (vp->zoom < ZoomLevel::full)
+            {
+                const auto viewOrigin = vp->getViewOriginInRaster();
+                _rt1.x = viewOrigin.x + viewportRasterPosition.x;
+                _rt1.y = viewOrigin.y + viewportRasterPosition.y;
+            }
+            else
+            {
+                const auto vpPos = vp->rasterToViewport(viewportRasterPosition);
+                const int32_t alignMask = vp->zoom > ZoomLevel::full ? ~(vp->zoom.applyTo(1) - 1) : ~0;
+                _rt1.x = vp->zoom.applyInversedTo(alignMask & vpPos.x);
+                _rt1.y = vp->zoom.applyInversedTo(alignMask & vpPos.y);
+            }
 
             Gfx::RenderTarget _rt2; // 0x00E0C3F4
             _rt2.x = _rt1.x;
