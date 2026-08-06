@@ -221,6 +221,7 @@ namespace OpenLoco::Scenes::GameScene
         ScenarioManager::setScenarioTicks(ScenarioManager::getScenarioTicks() + 1);
         ScenarioManager::setScenarioTicks2(ScenarioManager::getScenarioTicks2() + 1);
         Network::processGameCommands(ScenarioManager::getScenarioTicks());
+        CargoDist::update();
 
         recordTickStartPrng();
         World::TileManager::defragmentTilePeriodic();

@@ -25,6 +25,16 @@ namespace OpenLoco::CargoDist
         uint32_t quantity() const { return delivered.quantity() + transferred; }
     };
 
+    struct RecalculationMetrics
+    {
+        uint64_t preparationNanoseconds{};
+        uint64_t graphNanoseconds{};
+        uint64_t solveNanoseconds{};
+        uint64_t waitNanoseconds{};
+        uint64_t commitNanoseconds{};
+        uint32_t calculations{};
+    };
+
     void synchroniseStationCargo(StationId station, uint8_t cargo, StationCargoStats& nativeCargo);
     void synchroniseVehicleCargo(VehicleCargoKey key, Vehicles::VehicleCargo& nativeCargo);
     void setStationAttraction(StationId station, uint8_t cargo, uint32_t attraction);
@@ -40,6 +50,12 @@ namespace OpenLoco::CargoDist
 
     std::optional<VehicleServiceLeg> getCurrentServiceLeg(const Vehicles::VehicleHead& head);
     StationId getNextStop(const Vehicles::VehicleHead& head);
+    void update();
+    bool isServiceRecalculationPending();
+    void notifyRecalculationDirty();
+    void notifyGraphDirty();
+    void cancelPendingRecalculation();
+    RecalculationMetrics getRecalculationMetrics();
     void recalculateNow();
     void validateState(const State& state, const GameState& gameState);
     void restoreState(State state);

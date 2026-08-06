@@ -3194,6 +3194,10 @@ namespace OpenLoco::Vehicles
     // 0x004B9A88
     bool VehicleHead::updateUnloadCargoComponent(VehicleCargo& cargo, VehicleBogie* bogie, EntityId cargoComponent, bool isSecondaryCargo)
     {
+        if (CargoDist::isEnabled(cargo.type) && CargoDist::isServiceRecalculationPending())
+        {
+            return false;
+        }
         if (cargo.qty == 0)
         {
             return false;
@@ -3412,6 +3416,10 @@ namespace OpenLoco::Vehicles
     // 0x004BA19D
     bool VehicleHead::updateLoadCargoComponent(VehicleCargo& cargo, VehicleBogie* bogie, EntityId cargoComponent, bool isSecondaryCargo)
     {
+        if (CargoDist::isEnabled(cargo.type) && CargoDist::isServiceRecalculationPending())
+        {
+            return false;
+        }
         if (cargo.maxQty == 0)
         {
             return false;

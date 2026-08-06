@@ -50,6 +50,16 @@ namespace OpenLoco::CargoDist
         std::span<const CargoPacket> packets() const { return _packets; }
         static PacketList fromPackets(Container packets);
 
+        template<typename TFunc>
+        void transform(TFunc&& func)
+        {
+            for (auto& packet : _packets)
+            {
+                func(packet);
+            }
+            canonicalise();
+        }
+
         void append(CargoPacket packet);
         void append(PacketList packets);
         PacketList take(uint32_t quantity);

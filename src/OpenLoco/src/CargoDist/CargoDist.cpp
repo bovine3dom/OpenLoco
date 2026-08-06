@@ -463,6 +463,7 @@ namespace OpenLoco::CargoDist
 
     void reset()
     {
+        cancelPendingRecalculation();
         const auto routingRevision = _state.routingRevision + 1;
         const auto cargoRevision = _state.cargoRevision + 1;
         _state = {};
@@ -672,12 +673,14 @@ namespace OpenLoco::CargoDist
     void markGraphDirty()
     {
         _state.graphDirty = true;
+        notifyGraphDirty();
     }
 
     void markServicesDirty()
     {
         _state.graphDirty = true;
         _state.servicesDirty = true;
+        notifyRecalculationDirty();
     }
 
     std::vector<PlannedServiceEdge> getPlannedServiceEdges(uint8_t cargo)

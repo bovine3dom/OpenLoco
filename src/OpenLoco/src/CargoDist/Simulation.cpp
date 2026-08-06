@@ -5,6 +5,7 @@
 #include "GameState.h"
 #include "Objects/CargoObject.h"
 #include "Objects/ObjectManager.h"
+#include "Scenario/ScenarioManager.h"
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/Orders.h"
 #include "Vehicles/Vehicle.h"
@@ -20,10 +21,16 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
+#include <condition_variable>
 #include <limits>
 #include <map>
+#include <memory>
+#include <mutex>
+#include <optional>
 #include <set>
 #include <stdexcept>
+#include <thread>
 #include <tuple>
 #include <vector>
 
@@ -56,9 +63,30 @@ namespace OpenLoco::CargoDist
             uint64_t travelTime{};
         };
 
+        struct CargoCapacityInput
+        {
+            uint32_t acceptedTypes{};
+            uint8_t type{};
+            uint16_t maxQty{};
+        };
+
+        struct VehicleServiceInput
+        {
+            EntityId id{};
+            CompanyId owner{};
+            VehicleType vehicleType{};
+            TransportMode mode{};
+            uint8_t trackType{};
+            bool active{};
+            bool express{};
+            int32_t maxSpeed{};
+            std::vector<RouteOrder> orders;
+            std::vector<CargoCapacityInput> compartments;
+        };
+
         struct VehicleRoute
         {
-            const Vehicles::VehicleHead* head{};
+            EntityId vehicle{};
             std::vector<uint64_t> canonicalOrders;
             std::vector<VehicleServiceLeg> legs;
             std::vector<uint32_t> legTimes;
@@ -68,6 +96,24 @@ namespace OpenLoco::CargoDist
             uint64_t cycleTime{};
             bool active{};
             bool express{};
+        };
+
+        struct ServiceCalculationResult
+        {
+            std::map<ServiceEdgeKey, ServiceEdgeStats> serviceEdges;
+            std::map<EntityId, std::vector<VehicleServiceLeg>> vehicleServiceLegs;
+        };
+
+        struct FlowCalculationInput
+        {
+            RoutingSettings settings;
+            std::array<std::optional<RoutingGraph>, 32> graphs;
+        };
+
+        struct FlowCalculationResult
+        {
+            std::array<std::optional<std::vector<FlowShare>>, 32> flows;
+            uint64_t solveNanoseconds{};
         };
 
         struct ServiceGroupKey
@@ -236,7 +282,7 @@ namespace OpenLoco::CargoDist
             });
         }
 
-        void addCargoCapacity(std::array<uint32_t, 32>& capacities, const Vehicles::VehicleCargo& cargo, uint32_t routeWaitForMask, uint32_t departureWaitForMask)
+        void addCargoCapacity(std::array<uint32_t, 32>& capacities, const CargoCapacityInput& cargo, uint32_t routeWaitForMask, uint32_t departureWaitForMask)
         {
             if (cargo.maxQty == 0)
             {
@@ -299,15 +345,14 @@ namespace OpenLoco::CargoDist
             return orders.size();
         }
 
-        uint32_t estimateTravelTime(uint64_t distance, const Vehicles::VehicleHead& head, const Vehicles::Vehicle& train)
+        uint32_t estimateTravelTime(uint64_t distance, TransportMode mode, int32_t speed)
         {
-            const auto speed = train.veh2->maxSpeed.getRaw();
             if (speed <= 0)
             {
                 return 0;
             }
-            const uint32_t modeModifier = [&head]() {
-                switch (head.mode)
+            const uint32_t modeModifier = [mode]() {
+                switch (mode)
                 {
                     case TransportMode::air:
                         return 36U;
@@ -322,52 +367,21 @@ namespace OpenLoco::CargoDist
             return static_cast<uint32_t>(std::min<uint64_t>(std::max<uint64_t>(1, (numerator + speed - 1) / speed), std::numeric_limits<uint32_t>::max()));
         }
 
-        std::optional<VehicleRoute> getVehicleRoute(const Vehicles::VehicleHead& head)
+        std::optional<VehicleRoute> getVehicleRoute(const VehicleServiceInput& vehicle)
         {
-            Vehicles::Vehicle train(head);
-            if (train.cars.empty() || train.veh2->maxSpeed.getRaw() <= 0)
+            if (vehicle.orders.empty() || vehicle.maxSpeed <= 0)
             {
                 return std::nullopt;
             }
 
-            std::vector<RouteOrder> orders;
+            std::vector<RouteOrder> orders = vehicle.orders;
             uint32_t routeWaitForMask = 0;
-            for (const auto& order : Vehicles::OrderRingView(head.orderTableOffset))
+            for (const auto& order : orders)
             {
-                RouteOrder routeOrder{ order.getRaw(), static_cast<uint16_t>(order.getOffset() - head.orderTableOffset), std::nullopt, StationId::null };
-                if (const auto* stop = order.as<Vehicles::OrderStopAt>())
+                if (order.waitForCargo != 0xFF)
                 {
-                    const auto* station = StationManager::get(stop->getStation());
-                    if (station == nullptr || station->empty())
-                    {
-                        return std::nullopt;
-                    }
-                    routeOrder.position = World::Pos2{ station->x, station->y };
-                    routeOrder.stop = stop->getStation();
+                    routeWaitForMask |= 1U << order.waitForCargo;
                 }
-                else if (const auto* through = order.as<Vehicles::OrderRouteThrough>())
-                {
-                    const auto* station = StationManager::get(through->getStation());
-                    if (station == nullptr || station->empty())
-                    {
-                        return std::nullopt;
-                    }
-                    routeOrder.position = World::Pos2{ station->x, station->y };
-                }
-                else if (const auto* waypoint = order.as<Vehicles::OrderRouteWaypoint>())
-                {
-                    routeOrder.position = World::Pos2{ waypoint->getWaypoint() };
-                }
-                else if (const auto* unload = order.as<Vehicles::OrderUnloadAll>())
-                {
-                    routeOrder.unloadCargo = unload->getCargo();
-                }
-                else if (const auto* waitFor = order.as<Vehicles::OrderWaitFor>())
-                {
-                    routeOrder.waitForCargo = waitFor->getCargo();
-                    routeWaitForMask |= 1U << routeOrder.waitForCargo;
-                }
-                orders.push_back(routeOrder);
             }
             if (orders.empty())
             {
@@ -391,7 +405,7 @@ namespace OpenLoco::CargoDist
             }
 
             VehicleRoute route;
-            route.head = &head;
+            route.vehicle = vehicle.id;
             const auto period = getPrimitivePeriod(orders);
             route.canonicalOrders.reserve(period);
             for (size_t i = 0; i < period; ++i)
@@ -402,11 +416,8 @@ namespace OpenLoco::CargoDist
                     ++route.occurrenceCount;
                 }
             }
-            route.active = head.isPlaced()
-                && !head.hasVehicleFlags(Vehicles::VehicleFlags::commandStop | Vehicles::VehicleFlags::manualControl)
-                && head.status != Vehicles::Status::crashed
-                && head.status != Vehicles::Status::stuck;
-            route.express = (train.veh1->var_48 & Vehicles::Flags48::expressMode) != Vehicles::Flags48::none;
+            route.active = vehicle.active;
+            route.express = vehicle.express;
 
             for (size_t stopIndex = 0; stopIndex < stops.size(); ++stopIndex)
             {
@@ -428,7 +439,7 @@ namespace OpenLoco::CargoDist
                     }
                 }
 
-                const auto travelTime = estimateTravelTime(distance, head, train);
+                const auto travelTime = estimateTravelTime(distance, vehicle.mode, vehicle.maxSpeed);
                 uint32_t unloadMask = 0;
                 uint32_t departureWaitForMask = 0;
                 for (auto orderIndex = (fromIndex + 1) % orders.size(); orderIndex != toIndex; orderIndex = (orderIndex + 1) % orders.size())
@@ -447,10 +458,9 @@ namespace OpenLoco::CargoDist
                     }
                 }
                 std::array<uint32_t, 32> capacities{};
-                for (const auto& car : train.cars)
+                for (const auto& cargo : vehicle.compartments)
                 {
-                    addCargoCapacity(capacities, car.body->primaryCargo, routeWaitForMask, departureWaitForMask);
-                    addCargoCapacity(capacities, car.front->secondaryCargo, routeWaitForMask, departureWaitForMask);
+                    addCargoCapacity(capacities, cargo, routeWaitForMask, departureWaitForMask);
                 }
                 route.legs.push_back({
                     orders[(fromIndex + 1) % orders.size()].offset,
@@ -552,44 +562,129 @@ namespace OpenLoco::CargoDist
                     ? findPriorServiceLeg(head, *current)
                     : nullptr;
 
-                auto packets = vehiclePackets->take(std::numeric_limits<uint32_t>::max());
-                for (auto packet : packets.packets())
-                {
+                vehiclePackets->transform([&](CargoPacket& packet) {
                     const auto* packetLeg = current != nullptr && packet.nextHop == current->to
                         ? current
                         : (prior != nullptr && packet.nextHop == head.stationId ? prior : nullptr);
                     packet.departure = packetLeg != nullptr ? packetLeg->departure : ServicePoint{};
                     packet.arrival = packetLeg != nullptr ? packetLeg->arrival : ServicePoint{};
-                    vehiclePackets->append(packet);
-                }
+                });
             });
         }
 
-        void rebuildServiceEdges()
+        uint32_t getEnabledCargoMask()
         {
-            std::map<ServiceGroupKey, std::vector<VehicleRoute>> groups;
+            uint32_t mask = 0;
+            const auto& state = getStateConst();
+            for (uint8_t cargo = 0; cargo < state.settings.modes.size(); ++cargo)
+            {
+                if (state.settings.modes[cargo] != DistributionMode::manual)
+                {
+                    mask |= 1U << cargo;
+                }
+            }
+            return mask;
+        }
+
+        std::vector<VehicleServiceInput> captureServiceCalculationInput()
+        {
+            std::vector<VehicleServiceInput> vehicles;
             for (const auto* head : VehicleManager::VehicleList())
             {
-                auto route = getVehicleRoute(*head);
+                Vehicles::Vehicle train(*head);
+                if (train.cars.empty() || train.veh2->maxSpeed.getRaw() <= 0)
+                {
+                    continue;
+                }
+
+                VehicleServiceInput vehicle;
+                vehicle.id = head->id;
+                vehicle.owner = head->owner;
+                vehicle.vehicleType = head->vehicleType;
+                vehicle.mode = head->mode;
+                vehicle.trackType = head->trackType;
+                vehicle.active = head->isPlaced()
+                    && !head->hasVehicleFlags(Vehicles::VehicleFlags::commandStop | Vehicles::VehicleFlags::manualControl)
+                    && head->status != Vehicles::Status::crashed
+                    && head->status != Vehicles::Status::stuck;
+                vehicle.express = (train.veh1->var_48 & Vehicles::Flags48::expressMode) != Vehicles::Flags48::none;
+                vehicle.maxSpeed = train.veh2->maxSpeed.getRaw();
+
+                for (const auto& order : Vehicles::OrderRingView(head->orderTableOffset))
+                {
+                    RouteOrder routeOrder{ order.getRaw(), static_cast<uint16_t>(order.getOffset() - head->orderTableOffset), std::nullopt, StationId::null };
+                    if (const auto* stop = order.as<Vehicles::OrderStopAt>())
+                    {
+                        const auto* station = StationManager::get(stop->getStation());
+                        if (station == nullptr || station->empty())
+                        {
+                            continue;
+                        }
+                        routeOrder.position = World::Pos2{ station->x, station->y };
+                        routeOrder.stop = stop->getStation();
+                    }
+                    else if (const auto* through = order.as<Vehicles::OrderRouteThrough>())
+                    {
+                        const auto* station = StationManager::get(through->getStation());
+                        if (station == nullptr || station->empty())
+                        {
+                            continue;
+                        }
+                        routeOrder.position = World::Pos2{ station->x, station->y };
+                    }
+                    else if (const auto* waypoint = order.as<Vehicles::OrderRouteWaypoint>())
+                    {
+                        routeOrder.position = World::Pos2{ waypoint->getWaypoint() };
+                    }
+                    else if (const auto* unload = order.as<Vehicles::OrderUnloadAll>())
+                    {
+                        routeOrder.unloadCargo = unload->getCargo();
+                    }
+                    else if (const auto* waitFor = order.as<Vehicles::OrderWaitFor>())
+                    {
+                        routeOrder.waitForCargo = waitFor->getCargo();
+                    }
+                    vehicle.orders.push_back(std::move(routeOrder));
+                }
+                if (vehicle.orders.empty())
+                {
+                    continue;
+                }
+
+                vehicle.compartments.reserve(train.cars.size() * 2);
+                for (const auto& car : train.cars)
+                {
+                    vehicle.compartments.push_back({ car.body->primaryCargo.acceptedTypes, car.body->primaryCargo.type, car.body->primaryCargo.maxQty });
+                    vehicle.compartments.push_back({ car.front->secondaryCargo.acceptedTypes, car.front->secondaryCargo.type, car.front->secondaryCargo.maxQty });
+                }
+                vehicles.push_back(std::move(vehicle));
+            }
+            return vehicles;
+        }
+
+        ServiceCalculationResult calculateServiceEdges(const std::vector<VehicleServiceInput>& vehicles)
+        {
+            ServiceCalculationResult result;
+            std::map<ServiceGroupKey, std::vector<VehicleRoute>> groups;
+            for (const auto& input : vehicles)
+            {
+                auto route = getVehicleRoute(input);
                 if (!route.has_value())
                 {
                     continue;
                 }
                 ServiceGroupKey key{
-                    head->owner,
-                    head->vehicleType,
-                    head->mode,
-                    head->trackType,
+                    input.owner,
+                    input.vehicleType,
+                    input.mode,
+                    input.trackType,
                     route->express,
                     std::move(route->canonicalOrders),
                 };
                 groups[std::move(key)].push_back(std::move(*route));
             }
 
-            auto& state = getState();
-            state.serviceEdges.clear();
-            state.vehicleServiceLegs.clear();
-            state.servicesDirty = false;
+            const auto enabledCargoMask = getEnabledCargoMask();
             std::map<ServiceEdgeKey, EdgeAccumulator> accumulators;
             // Q32.32 leaves enough headroom to accumulate capacity-weighted frequencies.
             constexpr uint64_t kFrequencyOne = uint64_t{ 1 } << 32;
@@ -599,7 +694,7 @@ namespace OpenLoco::CargoDist
                 auto serviceValue = EntityId::null;
                 for (const auto& member : members)
                 {
-                    serviceValue = std::min(serviceValue, member.head->id);
+                    serviceValue = std::min(serviceValue, member.vehicle);
                 }
                 const auto service = static_cast<ServiceId>(static_cast<uint16_t>(serviceValue));
                 for (auto& member : members)
@@ -610,7 +705,7 @@ namespace OpenLoco::CargoDist
                         member.legs[i].departure = { service, occurrence };
                         member.legs[i].arrival = { service, static_cast<uint16_t>((occurrence + 1) % member.occurrenceCount) };
                     }
-                    state.vehicleServiceLegs[member.head->id] = member.legs;
+                    result.vehicleServiceLegs[member.vehicle] = member.legs;
                     if (!member.active)
                     {
                         continue;
@@ -618,7 +713,7 @@ namespace OpenLoco::CargoDist
 
                     for (uint8_t cargo = 0; cargo < member.legCapacities.front().size(); ++cargo)
                     {
-                        if (!isEnabled(cargo))
+                        if ((enabledCargoMask & (1U << cargo)) == 0)
                         {
                             continue;
                         }
@@ -666,7 +761,7 @@ namespace OpenLoco::CargoDist
                 const auto capacity = std::clamp<uint64_t>(averageCapacity, 1, std::numeric_limits<uint32_t>::max());
                 const auto headway = std::max<uint64_t>(1, kFrequencyOne / edge.departureFrequency + (kFrequencyOne % edge.departureFrequency != 0));
                 const auto waitTime = headway / 2 + (headway % 2 != 0);
-                state.serviceEdges[key] = {
+                result.serviceEdges[key] = {
                     static_cast<uint32_t>(capacity),
                     static_cast<uint32_t>(std::min<uint64_t>(edge.weightedTravelTime / edge.departureFrequency + (edge.weightedTravelTime % edge.departureFrequency >= edge.departureFrequency / 2 + edge.departureFrequency % 2), std::numeric_limits<uint32_t>::max())),
                     static_cast<uint32_t>(std::min<uint64_t>(waitTime, std::numeric_limits<uint32_t>::max())),
@@ -674,6 +769,15 @@ namespace OpenLoco::CargoDist
                     static_cast<uint32_t>(std::min<uint64_t>(edge.fleetCapacity, std::numeric_limits<uint32_t>::max())),
                 };
             }
+            return result;
+        }
+
+        void rebuildServiceEdges()
+        {
+            const auto serviceEdges = calculateServiceEdges(captureServiceCalculationInput());
+            getState().serviceEdges = serviceEdges.serviceEdges;
+            getState().vehicleServiceLegs = serviceEdges.vehicleServiceLegs;
+            getState().servicesDirty = false;
             retagVehiclePackets();
         }
 
@@ -1108,7 +1212,8 @@ namespace OpenLoco::CargoDist
                 {
                     continue;
                 }
-                PacketList rerouted;
+                PacketList::Container rerouted;
+                rerouted.reserve(packets.size());
                 for (auto packet : packets.packets())
                 {
                     const auto requested = packet.quantity;
@@ -1118,7 +1223,7 @@ namespace OpenLoco::CargoDist
                         packet.nextHop = StationId::null;
                         packet.departure = {};
                         packet.arrival = {};
-                        rerouted.append(packet);
+                        rerouted.push_back(packet);
                         continue;
                     }
                     uint32_t allocated = 0;
@@ -1130,7 +1235,7 @@ namespace OpenLoco::CargoDist
                         packet.departure = share.departure;
                         packet.arrival = share.arrival;
                         packet.destination = share.destination;
-                        rerouted.append(packet);
+                        rerouted.push_back(packet);
                     }
                     if (allocated < requested)
                     {
@@ -1138,10 +1243,10 @@ namespace OpenLoco::CargoDist
                         packet.nextHop = StationId::null;
                         packet.departure = {};
                         packet.arrival = {};
-                        rerouted.append(packet);
+                        rerouted.push_back(packet);
                     }
                 }
-                packets = std::move(rerouted);
+                packets = PacketList::fromPackets(std::move(rerouted));
                 if (auto* station = StationManager::get(key.station); station != nullptr && !station->empty())
                 {
                     synchroniseStationCargo(key.station, cargo, station->cargoStats[cargo]);
@@ -1149,12 +1254,10 @@ namespace OpenLoco::CargoDist
             }
         }
 
-        void releaseRejectedDestinations(uint8_t cargo)
+        void releaseRejectedDestinations()
         {
-            const auto release = [cargo](PacketList& packets, bool clearRoute) {
-                auto pending = packets.take(std::numeric_limits<uint32_t>::max());
-                for (auto packet : pending.packets())
-                {
+            const auto release = [](PacketList& packets, uint8_t cargo, bool clearRoute) {
+                packets.transform([cargo, clearRoute](CargoPacket& packet) {
                     if (packet.destination != StationId::null)
                     {
                         const auto* destination = StationManager::get(packet.destination);
@@ -1169,24 +1272,24 @@ namespace OpenLoco::CargoDist
                             }
                         }
                     }
-                    packets.append(packet);
-                }
+                });
             };
 
             for (auto& [key, packets] : getState().stationCargo)
             {
-                if (key.cargo == cargo)
+                if (isEnabled(key.cargo))
                 {
-                    release(packets, true);
+                    release(packets, key.cargo, true);
                 }
             }
             forEachVehicleCargo([&](const auto&, VehicleCargoKey key, const auto& nativeCargo) {
-                if (nativeCargo.type == cargo)
+                if (!isEnabled(nativeCargo.type))
                 {
-                    if (auto* packets = getVehicleCargo(key); packets != nullptr)
-                    {
-                        release(*packets, false);
-                    }
+                    return;
+                }
+                if (auto* packets = getVehicleCargo(key); packets != nullptr)
+                {
+                    release(*packets, nativeCargo.type, false);
                 }
             });
         }
@@ -1200,20 +1303,223 @@ namespace OpenLoco::CargoDist
             std::erase_if(state.destinationFlows, [cargo](const auto& item) { return item.first.cargo == cargo; });
         }
 
+        FlowCalculationInput captureFlowCalculationInput()
+        {
+            FlowCalculationInput input;
+            input.settings = getStateConst().settings.routing;
+            for (uint8_t cargo = 0; cargo < input.graphs.size(); ++cargo)
+            {
+                if (isEnabled(cargo))
+                {
+                    input.graphs[cargo] = buildGraph(cargo);
+                }
+            }
+            return input;
+        }
+
+        FlowCalculationResult solveFlowCalculation(const FlowCalculationInput& input)
+        {
+            FlowCalculationResult result;
+            for (uint8_t cargo = 0; cargo < input.graphs.size(); ++cargo)
+            {
+                if (input.graphs[cargo].has_value())
+                {
+                    result.flows[cargo] = calculateAsymmetricFlows(*input.graphs[cargo], input.settings);
+                }
+            }
+            return result;
+        }
+
+        class FlowCalculationWorker
+        {
+        public:
+            FlowCalculationWorker()
+                : _thread([this] { run(); })
+            {
+            }
+
+            ~FlowCalculationWorker()
+            {
+                {
+                    const std::scoped_lock lock(_mutex);
+                    _stopping = true;
+                }
+                _condition.notify_all();
+                _thread.join();
+            }
+
+            void submit(uint64_t generation, FlowCalculationInput input)
+            {
+                {
+                    const std::scoped_lock lock(_mutex);
+                    _request = { generation, std::move(input) };
+                    _result.reset();
+                }
+                _condition.notify_all();
+            }
+
+            std::optional<FlowCalculationResult> take(uint64_t generation, bool wait)
+            {
+                std::unique_lock lock(_mutex);
+                if (wait)
+                {
+                    _condition.wait(lock, [&] {
+                        return _stopping || (_result.has_value() && _result->generation == generation);
+                    });
+                }
+                if (!_result.has_value() || _result->generation != generation)
+                {
+                    return std::nullopt;
+                }
+                auto result = std::move(_result->flows);
+                _result.reset();
+                return result;
+            }
+
+        private:
+            struct Request
+            {
+                uint64_t generation;
+                FlowCalculationInput input;
+            };
+
+            struct Result
+            {
+                uint64_t generation;
+                FlowCalculationResult flows;
+            };
+
+            void run()
+            {
+                while (true)
+                {
+                    Request request{};
+                    {
+                        std::unique_lock lock(_mutex);
+                        _condition.wait(lock, [&] { return _stopping || _request.has_value(); });
+                        if (_stopping)
+                        {
+                            return;
+                        }
+                        request = std::move(*_request);
+                        _request.reset();
+                    }
+
+                    const auto solveStart = std::chrono::steady_clock::now();
+                    auto result = solveFlowCalculation(request.input);
+                    result.solveNanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - solveStart).count();
+                    {
+                        const std::scoped_lock lock(_mutex);
+                        if (_stopping)
+                        {
+                            return;
+                        }
+                        if (!_request.has_value())
+                        {
+                            _result = { request.generation, std::move(result) };
+                        }
+                    }
+                    _condition.notify_all();
+                }
+            }
+
+            std::mutex _mutex;
+            std::condition_variable _condition;
+            std::thread _thread;
+            std::optional<Request> _request;
+            std::optional<Result> _result;
+            bool _stopping{};
+        };
+
+        struct PendingFlowCalculation
+        {
+            uint64_t generation;
+            uint32_t deadline;
+            bool scheduled;
+            bool blocksTransfers;
+            uint64_t dirtyEpoch;
+        };
+
+        std::unique_ptr<FlowCalculationWorker> _flowWorker;
+        std::optional<PendingFlowCalculation> _pendingFlowCalculation;
+        uint64_t _flowCalculationGeneration;
+        uint64_t _dirtyEpoch;
+        RecalculationMetrics _recalculationMetrics;
+
+        bool isDeadlineReached(uint32_t deadline)
+        {
+            return static_cast<int32_t>(ScenarioManager::getScenarioTicks() - deadline) >= 0;
+        }
+
+        uint32_t nextDayDeadline()
+        {
+            constexpr uint32_t kDayCounterIncrement = 682;
+            const auto ticksUntilNextDay = (std::numeric_limits<uint16_t>::max() - getDayProgression()) / kDayCounterIncrement + 1;
+            return ScenarioManager::getScenarioTicks() + ticksUntilNextDay;
+        }
+
+        void startFlowCalculation(bool scheduled, bool nextDay)
+        {
+            const auto captureStart = std::chrono::steady_clock::now();
+            auto& state = getState();
+            const auto blocksTransfers = state.servicesDirty;
+            rebuildServiceEdges();
+            releaseRejectedDestinations();
+            const auto graphStart = std::chrono::steady_clock::now();
+            if (_flowWorker == nullptr)
+            {
+                _flowWorker = std::make_unique<FlowCalculationWorker>();
+            }
+            _flowWorker->submit(_flowCalculationGeneration, captureFlowCalculationInput());
+            const auto captureEnd = std::chrono::steady_clock::now();
+            _recalculationMetrics.preparationNanoseconds += std::chrono::duration_cast<std::chrono::nanoseconds>(graphStart - captureStart).count();
+            _recalculationMetrics.graphNanoseconds += std::chrono::duration_cast<std::chrono::nanoseconds>(captureEnd - graphStart).count();
+            _pendingFlowCalculation = {
+                _flowCalculationGeneration,
+                nextDay ? nextDayDeadline() : ScenarioManager::getScenarioTicks() + 48,
+                scheduled,
+                blocksTransfers,
+                _dirtyEpoch,
+            };
+        }
+
+        void finishScheduledRecalculation()
+        {
+            auto& state = getState();
+            for (auto it = state.supply.begin(); it != state.supply.end();)
+            {
+                it->second /= 2;
+                if (it->second == 0)
+                {
+                    it = state.supply.erase(it);
+                }
+                else
+                {
+                    ++it;
+                }
+            }
+            state.nextRecalculationDay = getCurrentDay() + std::max<uint16_t>(1, state.settings.recalculationInterval);
+        }
+
+        void commitFlowCalculation(FlowCalculationResult result)
+        {
+            for (uint8_t cargo = 0; cargo < result.flows.size(); ++cargo)
+            {
+                if (result.flows[cargo].has_value())
+                {
+                    setFlows(cargo, *result.flows[cargo]);
+                    rerouteWaitingCargo(cargo);
+                }
+            }
+        }
+
         void recalculateFlows()
         {
             auto& state = getState();
             rebuildServiceEdges();
-            for (uint8_t cargo = 0; cargo < state.settings.modes.size(); ++cargo)
-            {
-                if (!isEnabled(cargo))
-                {
-                    continue;
-                }
-                releaseRejectedDestinations(cargo);
-                setFlows(cargo, calculateAsymmetricFlows(buildGraph(cargo), state.settings.routing));
-                rerouteWaitingCargo(cargo);
-            }
+            releaseRejectedDestinations();
+            auto input = captureFlowCalculationInput();
+            commitFlowCalculation(solveFlowCalculation(input));
             ++state.routingRevision;
         }
     }
@@ -1573,10 +1879,9 @@ namespace OpenLoco::CargoDist
 
     std::optional<VehicleServiceLeg> getCurrentServiceLeg(const Vehicles::VehicleHead& head)
     {
-        if (getStateConst().servicesDirty)
+        if (getStateConst().servicesDirty || isServiceRecalculationPending())
         {
-            recalculateFlows();
-            getState().graphDirty = false;
+            return std::nullopt;
         }
         const auto* leg = findCurrentServiceLeg(head);
         return leg == nullptr ? std::nullopt : std::optional{ *leg };
@@ -1645,10 +1950,12 @@ namespace OpenLoco::CargoDist
         state.graphDirty = true;
         state.servicesDirty = true;
         ++state.routingRevision;
+        notifyRecalculationDirty();
     }
 
     void recalculateNow()
     {
+        cancelPendingRecalculation();
         auto& state = getState();
         if (std::none_of(state.settings.modes.begin(), state.settings.modes.end(), [](auto mode) { return mode != DistributionMode::manual; }))
         {
@@ -1659,6 +1966,84 @@ namespace OpenLoco::CargoDist
         recalculateFlows();
         state.nextRecalculationDay = getCurrentDay() + std::max<uint16_t>(1, state.settings.recalculationInterval);
         state.graphDirty = false;
+    }
+
+    void update()
+    {
+        auto& state = getState();
+        if (_pendingFlowCalculation.has_value() && _pendingFlowCalculation->generation != _flowCalculationGeneration)
+        {
+            _pendingFlowCalculation.reset();
+        }
+        if (_pendingFlowCalculation.has_value())
+        {
+            const auto pending = *_pendingFlowCalculation;
+            if (!isDeadlineReached(pending.deadline))
+            {
+                return;
+            }
+            const auto waitStart = std::chrono::steady_clock::now();
+            const auto result = _flowWorker->take(pending.generation, true);
+            const auto waitEnd = std::chrono::steady_clock::now();
+            if (pending.generation != _flowCalculationGeneration || !result.has_value())
+            {
+                _pendingFlowCalculation.reset();
+                return;
+            }
+            const auto commitStart = waitEnd;
+            commitFlowCalculation(*result);
+            _recalculationMetrics.solveNanoseconds += result->solveNanoseconds;
+            _recalculationMetrics.waitNanoseconds += std::chrono::duration_cast<std::chrono::nanoseconds>(waitEnd - waitStart).count();
+            _recalculationMetrics.commitNanoseconds += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - commitStart).count();
+            ++_recalculationMetrics.calculations;
+            ++state.routingRevision;
+            if (pending.scheduled)
+            {
+                finishScheduledRecalculation();
+            }
+            if (pending.dirtyEpoch == _dirtyEpoch)
+            {
+                state.graphDirty = false;
+            }
+            _pendingFlowCalculation.reset();
+            return;
+        }
+        if (state.servicesDirty)
+        {
+            startFlowCalculation(false, false);
+        }
+        else if (state.nextRecalculationDay != 0 && getCurrentDay() + 1 >= state.nextRecalculationDay)
+        {
+            startFlowCalculation(true, true);
+        }
+    }
+
+    bool isServiceRecalculationPending()
+    {
+        return getStateConst().servicesDirty
+            || (_pendingFlowCalculation.has_value() && _pendingFlowCalculation->blocksTransfers);
+    }
+
+    void notifyRecalculationDirty()
+    {
+        ++_flowCalculationGeneration;
+    }
+
+    void notifyGraphDirty()
+    {
+        ++_dirtyEpoch;
+    }
+
+    void cancelPendingRecalculation()
+    {
+        ++_flowCalculationGeneration;
+        _pendingFlowCalculation.reset();
+        _flowWorker.reset();
+    }
+
+    RecalculationMetrics getRecalculationMetrics()
+    {
+        return _recalculationMetrics;
     }
 
     void validateState(const State& state, const GameState& gameState)
@@ -1770,6 +2155,7 @@ namespace OpenLoco::CargoDist
 
     void restoreState(State state)
     {
+        cancelPendingRecalculation();
         for (uint8_t cargo = 0; cargo < state.settings.modes.size(); ++cargo)
         {
             if (ObjectManager::get<CargoObject>(cargo) == nullptr && state.settings.modes[cargo] != DistributionMode::manual)
@@ -1811,24 +2197,16 @@ namespace OpenLoco::CargoDist
             return;
         }
 
-        recalculateFlows();
-        if (scheduled)
+        if (_pendingFlowCalculation.has_value())
         {
-            for (auto it = state.supply.begin(); it != state.supply.end();)
+            if (!scheduled || _pendingFlowCalculation->scheduled)
             {
-                it->second /= 2;
-                if (it->second == 0)
-                {
-                    it = state.supply.erase(it);
-                }
-                else
-                {
-                    ++it;
-                }
+                return;
             }
-            state.nextRecalculationDay = currentDay + std::max<uint16_t>(1, state.settings.recalculationInterval);
+            notifyRecalculationDirty();
+            _pendingFlowCalculation.reset();
         }
-        state.graphDirty = false;
+        startFlowCalculation(scheduled, true);
     }
 
     void removeStation(StationId station)
@@ -1881,6 +2259,7 @@ namespace OpenLoco::CargoDist
         synchroniseAllCargo();
         state.graphDirty = true;
         state.servicesDirty = true;
+        notifyRecalculationDirty();
         ++state.routingRevision;
     }
 

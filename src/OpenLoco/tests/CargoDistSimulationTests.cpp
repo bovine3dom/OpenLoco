@@ -232,6 +232,20 @@ TEST_F(CargoDistServiceSimulationTest, FullLoadOrdersRestrictOnlyFlexibleCompart
     EXPECT_EQ(serviceCapacity(1, 1, 2), 10);
 }
 
+TEST_F(CargoDistServiceSimulationTest, RecalculationBuildsFlowsForAllEnabledCargoes)
+{
+    getGameState().stations[2].cargoStats[1].isAccepted(true);
+    getState().settings.modes[1] = DistributionMode::asymmetric;
+    createVehicle(false, 0b11);
+    getState().stationCargo[{ station(1), 0 }].append({ 10, station(1), StationId::null, 0, {}, {}, station(2) });
+    getState().stationCargo[{ station(1), 1 }].append({ 10, station(1), StationId::null, 0, {}, {}, station(2) });
+
+    recalculateNow();
+
+    EXPECT_TRUE(getStateConst().flows.contains({ 0, station(1), station(1), {}, station(2) }));
+    EXPECT_TRUE(getStateConst().flows.contains({ 1, station(1), station(1), {}, station(2) }));
+}
+
 TEST_F(CargoDistServiceSimulationTest, FullLoadCapacityAppliesAtItsDeparture)
 {
     getState().settings.modes[1] = DistributionMode::asymmetric;
@@ -261,7 +275,7 @@ TEST_F(CargoDistServiceSimulationTest, MultipleFullLoadOrdersUseRuntimeCargoPrio
     EXPECT_EQ(serviceCapacity(1, 1, 2), 10);
 }
 
-TEST_F(CargoDistServiceSimulationTest, DirtyServicesRebuildBeforeResolvingLeg)
+TEST_F(CargoDistServiceSimulationTest, DirtyServicesDoNotExposeStaleLeg)
 {
     auto* head = createVehicle();
     recalculateNow();
@@ -274,12 +288,89 @@ TEST_F(CargoDistServiceSimulationTest, DirtyServicesRebuildBeforeResolvingLeg)
     markServicesDirty();
 
     const auto current = getCurrentServiceLeg(*head);
-    ASSERT_TRUE(current.has_value());
-    EXPECT_EQ(current->from, initial.from);
-    EXPECT_EQ(current->to, initial.to);
-    EXPECT_FALSE(getStateConst().servicesDirty);
-    EXPECT_FALSE(getStateConst().graphDirty);
+    EXPECT_FALSE(current.has_value());
+    EXPECT_TRUE(getStateConst().servicesDirty);
+    EXPECT_TRUE(getStateConst().graphDirty);
     EXPECT_EQ(getStateConst().nextRecalculationDay, 1234);
+}
+
+TEST_F(CargoDistServiceSimulationTest, ServiceRecalculationCommitsAtItsDeadline)
+{
+    auto* head = createVehicle();
+    recalculateNow();
+    const auto initial = getStateConst().vehicleServiceLegs.at(head->id).front();
+    head->currentOrder = initial.currentOrder;
+    head->stationId = initial.from;
+    head->status = Vehicles::Status::loading;
+
+    markServicesDirty();
+    update();
+
+    EXPECT_TRUE(isServiceRecalculationPending());
+    EXPECT_FALSE(getCurrentServiceLeg(*head).has_value());
+
+    getGameState().scenarioTicks += 48;
+    update();
+
+    EXPECT_FALSE(isServiceRecalculationPending());
+    EXPECT_TRUE(getCurrentServiceLeg(*head).has_value());
+    EXPECT_FALSE(getStateConst().graphDirty);
+}
+
+TEST_F(CargoDistServiceSimulationTest, ServiceRecalculationDiscardsSupersededGeneration)
+{
+    createVehicle();
+    recalculateNow();
+
+    markServicesDirty();
+    update();
+    markServicesDirty();
+    getGameState().scenarioTicks += 48;
+    update();
+
+    EXPECT_TRUE(isServiceRecalculationPending());
+    EXPECT_TRUE(getStateConst().graphDirty);
+
+    getGameState().scenarioTicks += 48;
+    update();
+
+    EXPECT_FALSE(isServiceRecalculationPending());
+    EXPECT_FALSE(getStateConst().graphDirty);
+}
+
+TEST_F(CargoDistServiceSimulationTest, PeriodicRecalculationCommitsOnTheNextDayBoundary)
+{
+    createVehicle();
+    recalculateNow();
+    getGameState().currentDay = getStateConst().nextRecalculationDay - 1;
+    getGameState().dayCounter = 0;
+    getGameState().scenarioTicks = 0;
+
+    update();
+
+    EXPECT_FALSE(isServiceRecalculationPending());
+    EXPECT_EQ(getStateConst().nextRecalculationDay, getGameState().currentDay + 1);
+
+    getGameState().currentDay++;
+    getGameState().scenarioTicks += 97;
+    update();
+
+    EXPECT_EQ(getStateConst().nextRecalculationDay, getGameState().currentDay + getStateConst().settings.recalculationInterval);
+}
+
+TEST_F(CargoDistServiceSimulationTest, ResetDiscardsPendingServiceRecalculation)
+{
+    createVehicle();
+    recalculateNow();
+    markServicesDirty();
+    update();
+
+    ASSERT_TRUE(isServiceRecalculationPending());
+    reset();
+
+    EXPECT_FALSE(isServiceRecalculationPending());
+    EXPECT_TRUE(getStateConst().serviceEdges.empty());
+    EXPECT_TRUE(getStateConst().flows.empty());
 }
 
 TEST_F(CargoDistServiceSimulationTest, RecalculationReleasesRejectedDestination)
