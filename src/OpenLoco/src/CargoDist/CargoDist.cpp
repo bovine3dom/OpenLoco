@@ -520,29 +520,75 @@ namespace OpenLoco::CargoDist
         _state.vehicleCargo.erase(key);
     }
 
-    void setFlows(uint8_t cargo, std::span<const FlowShare> shares)
+    void buildFlowMaps(std::map<FlowKey, std::vector<FlowOption>>& flows, std::map<DestinationFlowKey, std::vector<DestinationOption>>& destinationFlows, uint8_t cargo, std::span<const FlowShare> shares)
     {
-        std::erase_if(_state.flows, [cargo](const auto& item) { return item.first.cargo == cargo; });
+        std::vector<FlowKey> touched;
         for (const auto& share : shares)
         {
             if (share.amount == 0)
             {
                 continue;
             }
-            auto& options = _state.flows[{ cargo, share.station, share.origin, share.incoming, share.destination }];
+            const FlowKey key{ cargo, share.station, share.origin, share.incoming, share.destination };
+            auto& options = flows[key];
+            if (options.empty())
+            {
+                touched.push_back(key);
+            }
             options.push_back({ share.via, share.amount, 0, share.departure, share.arrival });
         }
-        for (auto& [key, options] : _state.flows)
+        for (const auto& key : touched)
         {
-            if (key.cargo != cargo)
-            {
-                continue;
-            }
+            auto& options = flows.at(key);
             std::sort(options.begin(), options.end(), [](const auto& lhs, const auto& rhs) {
                 return std::tie(lhs.via, lhs.departure, lhs.arrival) < std::tie(rhs.via, rhs.departure, rhs.arrival);
             });
         }
-        rebuildDestinationFlows(cargo);
+
+        std::map<DestinationFlowKey, std::map<StationId, uint64_t>> destinationWeights;
+        for (const auto& key : touched)
+        {
+            auto& weight = destinationWeights[{ cargo, key.station, key.origin, key.incoming }][key.destination];
+            for (const auto& route : flows.at(key))
+            {
+                weight += std::min<uint64_t>(route.weight, std::numeric_limits<uint64_t>::max() - weight);
+            }
+        }
+        for (const auto& [key, weights] : destinationWeights)
+        {
+            uint64_t total = 0;
+            for (const auto& [destination, weight] : weights)
+            {
+                total += weight;
+            }
+            const auto maximum = std::numeric_limits<uint32_t>::max();
+            const auto divisor = total > maximum ? total / maximum + (total % maximum != 0) : 1;
+            auto& options = destinationFlows[key];
+            uint64_t representableTotal = 0;
+            for (const auto& [destination, weight] : weights)
+            {
+                const auto representableWeight = static_cast<uint32_t>(std::max<uint64_t>(1, weight / divisor));
+                options.push_back({ destination, representableWeight, 0 });
+                representableTotal += representableWeight;
+            }
+            for (auto& option : options)
+            {
+                if (representableTotal <= maximum)
+                {
+                    break;
+                }
+                const auto reduction = std::min<uint64_t>(option.weight - 1, representableTotal - maximum);
+                option.weight -= static_cast<uint32_t>(reduction);
+                representableTotal -= reduction;
+            }
+        }
+    }
+
+    void setFlows(uint8_t cargo, std::span<const FlowShare> shares)
+    {
+        std::erase_if(_state.flows, [cargo](const auto& item) { return item.first.cargo == cargo; });
+        std::erase_if(_state.destinationFlows, [cargo](const auto& item) { return item.first.cargo == cargo; });
+        buildFlowMaps(_state.flows, _state.destinationFlows, cargo, shares);
         ++_state.routingRevision;
     }
 

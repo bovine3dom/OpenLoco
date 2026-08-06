@@ -112,7 +112,9 @@ namespace OpenLoco::CargoDist
 
         struct FlowCalculationResult
         {
-            std::array<std::optional<std::vector<FlowShare>>, 32> flows;
+            std::map<FlowKey, std::vector<FlowOption>> flows;
+            std::map<DestinationFlowKey, std::vector<DestinationOption>> destinationFlows;
+            std::vector<uint8_t> computedCargoes;
             uint64_t solveNanoseconds{};
         };
 
@@ -1324,7 +1326,8 @@ namespace OpenLoco::CargoDist
             {
                 if (input.graphs[cargo].has_value())
                 {
-                    result.flows[cargo] = calculateAsymmetricFlows(*input.graphs[cargo], input.settings);
+                    buildFlowMaps(result.flows, result.destinationFlows, cargo, calculateAsymmetricFlows(*input.graphs[cargo], input.settings));
+                    result.computedCargoes.push_back(cargo);
                 }
             }
             return result;
@@ -1501,26 +1504,24 @@ namespace OpenLoco::CargoDist
             state.nextRecalculationDay = getCurrentDay() + std::max<uint16_t>(1, state.settings.recalculationInterval);
         }
 
-        void commitFlowCalculation(FlowCalculationResult result)
+        void commitFlowCalculation(FlowCalculationResult&& result)
         {
-            for (uint8_t cargo = 0; cargo < result.flows.size(); ++cargo)
+            auto& state = getState();
+            state.flows = std::move(result.flows);
+            state.destinationFlows = std::move(result.destinationFlows);
+            for (const auto cargo : result.computedCargoes)
             {
-                if (result.flows[cargo].has_value())
-                {
-                    setFlows(cargo, *result.flows[cargo]);
-                    rerouteWaitingCargo(cargo);
-                }
+                rerouteWaitingCargo(cargo);
             }
+            ++state.routingRevision;
         }
 
         void recalculateFlows()
         {
-            auto& state = getState();
             rebuildServiceEdges();
             releaseRejectedDestinations();
             auto input = captureFlowCalculationInput();
             commitFlowCalculation(solveFlowCalculation(input));
-            ++state.routingRevision;
         }
     }
 
@@ -1983,7 +1984,7 @@ namespace OpenLoco::CargoDist
                 return;
             }
             const auto waitStart = std::chrono::steady_clock::now();
-            const auto result = _flowWorker->take(pending.generation, true);
+            auto result = _flowWorker->take(pending.generation, true);
             const auto waitEnd = std::chrono::steady_clock::now();
             if (pending.generation != _flowCalculationGeneration || !result.has_value())
             {
@@ -1991,12 +1992,11 @@ namespace OpenLoco::CargoDist
                 return;
             }
             const auto commitStart = waitEnd;
-            commitFlowCalculation(*result);
+            commitFlowCalculation(std::move(*result));
             _recalculationMetrics.solveNanoseconds += result->solveNanoseconds;
             _recalculationMetrics.waitNanoseconds += std::chrono::duration_cast<std::chrono::nanoseconds>(waitEnd - waitStart).count();
             _recalculationMetrics.commitNanoseconds += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - commitStart).count();
             ++_recalculationMetrics.calculations;
-            ++state.routingRevision;
             if (pending.scheduled)
             {
                 finishScheduledRecalculation();

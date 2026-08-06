@@ -252,6 +252,7 @@ namespace OpenLoco::CargoDist
 
     void setFlows(uint8_t cargo, std::span<const FlowShare> shares);
     void rebuildDestinationFlows(uint8_t cargo);
+    void buildFlowMaps(std::map<FlowKey, std::vector<FlowOption>>& flows, std::map<DestinationFlowKey, std::vector<DestinationOption>>& destinationFlows, uint8_t cargo, std::span<const FlowShare> shares);
     std::vector<ViaShare> allocateVia(uint8_t cargo, StationId station, StationId origin, StationId destination, uint32_t quantity, ServicePoint incoming = {}, StationId excluded = StationId::null, StationId excluded2 = StationId::null);
     std::vector<ViaShare> previewVia(uint8_t cargo, StationId station, StationId origin, StationId destination, uint32_t quantity, ServicePoint incoming = {}, StationId excluded = StationId::null, StationId excluded2 = StationId::null);
 
