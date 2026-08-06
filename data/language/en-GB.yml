@@ -2566,3 +2566,5 @@ strings:
   2511: "Renew below reliability"
   2512: "{INT16}%"
   2513: "{SMALLFONT}{COLOUR BLACK}Renew complete vehicles at matching 'Stop at' orders when reliability is below the selected threshold and sufficient funds are available"
+  2514: "Replace shared vehicles"
+  2515: "{SMALLFONT}{COLOUR BLACK}Replace every other vehicle sharing these orders with a clone of this vehicle at its next 'Stop at' order"

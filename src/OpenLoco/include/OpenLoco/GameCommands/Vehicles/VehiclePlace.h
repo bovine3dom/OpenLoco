@@ -24,6 +24,8 @@ namespace OpenLoco::GameCommands
         EntityId head;
         bool convertGhost = false;
 
+        bool operator==(const VehiclePlacementArgs&) const = default;
+
         explicit operator registers() const
         {
             registers regs;

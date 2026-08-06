@@ -2223,6 +2223,8 @@ namespace OpenLoco::StringIds
     constexpr StringId vehicle_auto_renewal_threshold = 2511;
     constexpr StringId vehicle_auto_renewal_threshold_value = 2512;
     constexpr StringId tooltip_vehicle_auto_renewal = 2513;
+    constexpr StringId replace_shared_order_vehicles = 2514;
+    constexpr StringId tooltip_replace_shared_order_vehicles = 2515;
 
     constexpr StringId temporary_object_load_str_0 = 8192;
     constexpr StringId temporary_object_load_str_1 = 8193;

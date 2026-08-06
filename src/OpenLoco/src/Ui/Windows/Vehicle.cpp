@@ -83,6 +83,7 @@
 #include "Vehicles/VehicleDraw.h"
 #include "Vehicles/VehicleHead.h"
 #include "Vehicles/VehicleManager.h"
+#include "Vehicles/VehicleReplacement.h"
 #include "Vehicles/VehicleTail.h"
 #include "ViewportManager.h"
 #include "World/CompanyManager.h"
@@ -348,6 +349,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
             sharedOrderStatus,
             sharedOrderPrimary,
             sharedOrderLeave,
+            sharedOrderReplace,
             routeList,
             orderForceUnload,
             orderWait,
@@ -366,6 +368,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
             constexpr WidgetId kSharedOrderStatus{ "sharedOrderStatus" };
             constexpr WidgetId kSharedOrderPrimary{ "sharedOrderPrimary" };
             constexpr WidgetId kSharedOrderLeave{ "sharedOrderLeave" };
+            constexpr WidgetId kSharedOrderReplace{ "sharedOrderReplace" };
             constexpr WidgetId kRouteList{ "routeList" };
             constexpr WidgetId kOrderForceUnload{ "orderForceUnload" };
             constexpr WidgetId kOrderWait{ "orderWait" };
@@ -389,7 +392,8 @@ namespace OpenLoco::Ui::Windows::Vehicle
             Widgets::Label(Widx::kSharedOrderStatus, { 3, 70 }, { 100, 12 }, WindowColour::secondary, ContentAlign::left),
             Widgets::Button(Widx::kSharedOrderPrimary, { 103, 70 }, { 95, 12 }, WindowColour::secondary, StringIds::use_shared_orders_from, StringIds::tooltip_use_shared_orders_from),
             Widgets::Button(Widx::kSharedOrderLeave, { 198, 70 }, { 42, 12 }, WindowColour::secondary, StringIds::leave_shared_orders, StringIds::tooltip_leave_shared_orders),
-            Widgets::ScrollView(Widx::kRouteList, { 3, 84 }, { 237, 94 }, WindowColour::secondary, Scrollbars::vertical, StringIds::tooltip_route_scrollview),
+            Widgets::Button(Widx::kSharedOrderReplace, { 3, 82 }, { 237, 12 }, WindowColour::secondary, StringIds::replace_shared_order_vehicles, StringIds::tooltip_replace_shared_order_vehicles),
+            Widgets::ScrollView(Widx::kRouteList, { 3, 96 }, { 237, 82 }, WindowColour::secondary, Scrollbars::vertical, StringIds::tooltip_route_scrollview),
             Widgets::ImageButton(Widx::kOrderForceUnload, { 240, 44 }, { 24, 24 }, WindowColour::secondary, ImageIds::route_force_unload, StringIds::tooltip_route_insert_force_unload),
             Widgets::ImageButton(Widx::kOrderWait, { 240, 68 }, { 24, 24 }, WindowColour::secondary, ImageIds::route_wait, StringIds::tooltip_route_insert_wait_full_cargo),
             Widgets::ImageButton(Widx::kOrderSkip, { 240, 92 }, { 24, 24 }, WindowColour::secondary, ImageIds::route_skip, StringIds::tooltip_route_skip_next_order),
@@ -3194,6 +3198,12 @@ namespace OpenLoco::Ui::Windows::Vehicle
                     GameCommands::doCommand(args, GameCommands::Flags::apply);
                     break;
                 }
+                case Widx::kSharedOrderReplace:
+                    if (head->owner == CompanyManager::getControllingId())
+                    {
+                        Vehicles::VehicleReplacement::schedule(head->id);
+                    }
+                    break;
             }
         }
 
@@ -4240,11 +4250,13 @@ namespace OpenLoco::Ui::Windows::Vehicle
             auto& sharedStatus = self.widgets[widx::sharedOrderStatus];
             auto& sharedPrimary = self.widgets[widx::sharedOrderPrimary];
             auto& sharedLeave = self.widgets[widx::sharedOrderLeave];
+            auto& sharedReplace = self.widgets[widx::sharedOrderReplace];
             const auto contentRight = self.widgets[widx::routeList].right;
 
             self.disabledWidgets &= ~((1 << widx::sharedOrderPrimary) | (1 << widx::sharedOrderLeave));
             sharedPrimary.hidden = !hasSharedOrders && isOtherCompany;
             sharedLeave.hidden = !hasSharedOrders || isOtherCompany;
+            sharedReplace.hidden = !hasSharedOrders || isOtherCompany;
             if (hasSharedOrders)
             {
                 sharedStatus.text = StringIds::shared_orders_vehicle_count;

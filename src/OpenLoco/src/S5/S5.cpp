@@ -48,6 +48,7 @@
 #include "Vehicles/VehicleAutoRenewal.h"
 #include "Vehicles/VehicleHead.h"
 #include "Vehicles/VehicleManager.h"
+#include "Vehicles/VehicleReplacement.h"
 #include "World/CompanyManager.h"
 #include "World/IndustryManager.h"
 #include "World/StationManager.h"
@@ -596,19 +597,26 @@ namespace OpenLoco::S5
                     throw Exception::RuntimeError("Invalid vehicle auto-renewal state");
                 }
                 const auto hasVehicleAutoRenewal = !Vehicles::VehicleAutoRenewal::isDefault(vehicleAutoRenewalState);
+                const auto vehicleReplacementState = Vehicles::VehicleReplacement::captureState();
+                if (!Vehicles::VehicleReplacement::validateState(vehicleReplacementState))
+                {
+                    throw Exception::RuntimeError("Invalid vehicle replacement state");
+                }
+                const auto hasVehicleReplacement = !vehicleReplacementState.requests.empty();
                 const auto railTrafficState = Vehicles::RailTraffic::captureState();
                 if (!Vehicles::RailTraffic::validateState(railTrafficState, getGameState()))
                 {
                     throw Exception::RuntimeError("Invalid rail traffic state");
                 }
                 const auto hasRailTraffic = !Vehicles::RailTraffic::isDefault(railTrafficState);
-                extensionData = sharedOrderState.groups.empty() && !hasPathReservations && !hasVehicleAutoRenewal && !hasRailTraffic
+                extensionData = sharedOrderState.groups.empty() && !hasPathReservations && !hasVehicleAutoRenewal && !hasVehicleReplacement && !hasRailTraffic
                     ? CargoDist::encodeState(CargoDist::getStateConst())
                     : SaveExtension::encode({
                           .cargoDistState = &CargoDist::getStateConst(),
                           .sharedOrderState = sharedOrderState.groups.empty() ? nullptr : &sharedOrderState,
                           .pathReservationState = hasPathReservations ? &pathReservationState : nullptr,
                           .vehicleAutoRenewalState = hasVehicleAutoRenewal ? &vehicleAutoRenewalState : nullptr,
+                          .vehicleReplacementState = hasVehicleReplacement ? &vehicleReplacementState : nullptr,
                           .railTrafficState = hasRailTraffic ? &railTrafficState : nullptr,
                       });
             }
@@ -785,6 +793,7 @@ namespace OpenLoco::S5
                 file->pathReservationState = std::move(extensionState.pathReservationState);
                 file->discardPathReservationsOnLoad = extensionState.discardPathReservationsOnLoad;
                 file->vehicleAutoRenewalState = std::move(extensionState.vehicleAutoRenewalState);
+                file->vehicleReplacementState = std::move(extensionState.vehicleReplacementState);
                 file->railTrafficState = std::move(extensionState.railTrafficState);
             }
             if (stream.getPosition() != checksumPosition)
@@ -991,6 +1000,11 @@ namespace OpenLoco::S5
             {
                 throw LoadException("Invalid vehicle auto-renewal state", StringIds::error_file_contains_invalid_data);
             }
+            if (file->vehicleReplacementState.has_value() && !hasLoadFlags(flags, LoadFlags::titleSequence)
+                && !Vehicles::VehicleReplacement::validateState(*file->vehicleReplacementState, *importedGameState))
+            {
+                throw LoadException("Invalid vehicle replacement state", StringIds::error_file_contains_invalid_data);
+            }
             if (file->railTrafficState.has_value() && !hasLoadFlags(flags, LoadFlags::titleSequence)
                 && !Vehicles::RailTraffic::validateState(*file->railTrafficState, *importedGameState))
             {
@@ -1034,6 +1048,7 @@ namespace OpenLoco::S5
             Vehicles::SharedOrderManager::reset();
             Vehicles::RoutingManager::resetPathReservationState();
             Vehicles::VehicleAutoRenewal::reset();
+            Vehicles::VehicleReplacement::reset();
             Vehicles::RailTraffic::reset();
 
             // Copy scenario options
@@ -1169,6 +1184,11 @@ namespace OpenLoco::S5
                     && !Vehicles::VehicleAutoRenewal::restoreState(*file->vehicleAutoRenewalState))
                 {
                     throw Exception::RuntimeError("Invalid vehicle auto-renewal state");
+                }
+                if (file->vehicleReplacementState.has_value()
+                    && !Vehicles::VehicleReplacement::restoreState(*file->vehicleReplacementState))
+                {
+                    throw Exception::RuntimeError("Invalid vehicle replacement state");
                 }
                 if (file->railTrafficState.has_value()
                     && !Vehicles::RailTraffic::restoreState(*file->railTrafficState))

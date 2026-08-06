@@ -6,6 +6,7 @@
 #include <OpenLoco/Vehicles/RoutingManager.h>
 #include <OpenLoco/Vehicles/SharedOrderManager.h>
 #include <OpenLoco/Vehicles/VehicleAutoRenewal.h>
+#include <OpenLoco/Vehicles/VehicleReplacement.h>
 #include <cstddef>
 #include <optional>
 #include <span>
@@ -22,6 +23,7 @@ namespace OpenLoco::S5::SaveExtension
         std::optional<Vehicles::RoutingManager::State> pathReservationState;
         bool discardPathReservationsOnLoad{};
         std::optional<Vehicles::VehicleAutoRenewal::State> vehicleAutoRenewalState;
+        std::optional<Vehicles::VehicleReplacement::State> vehicleReplacementState;
         std::optional<Vehicles::RailTraffic::State> railTrafficState;
     };
 
@@ -31,6 +33,7 @@ namespace OpenLoco::S5::SaveExtension
         const Vehicles::SharedOrderManager::State* sharedOrderState{};
         const Vehicles::RoutingManager::State* pathReservationState{};
         const Vehicles::VehicleAutoRenewal::State* vehicleAutoRenewalState{};
+        const Vehicles::VehicleReplacement::State* vehicleReplacementState{};
         bool discardPathReservationsOnLoad{};
         const Vehicles::RailTraffic::State* railTrafficState{};
     };

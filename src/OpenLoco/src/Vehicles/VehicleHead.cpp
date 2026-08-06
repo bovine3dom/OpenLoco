@@ -48,6 +48,7 @@
 #include "Vehicles/VehicleBody.h"
 #include "Vehicles/VehicleBogie.h"
 #include "Vehicles/VehicleManager.h"
+#include "Vehicles/VehicleReplacement.h"
 #include "Vehicles/VehicleTail.h"
 #include "Vehicles/WaterPathfinding.h"
 #include "ViewportManager.h"
@@ -1486,7 +1487,10 @@ namespace OpenLoco::Vehicles
         }
         stationId = foundStationId;
         setStationVisitedTypes();
-        checkIfAtOrderStation();
+        if (!checkIfAtOrderStation())
+        {
+            return false;
+        }
         updateLastJourneyAverageSpeed();
         beginUnloading();
 
@@ -1510,7 +1514,10 @@ namespace OpenLoco::Vehicles
         }
 
         setStationVisitedTypes();
-        checkIfAtOrderStation();
+        if (!checkIfAtOrderStation())
+        {
+            return false;
+        }
         updateLastJourneyAverageSpeed();
         beginUnloading();
 
@@ -1801,7 +1808,10 @@ namespace OpenLoco::Vehicles
             if (!hasVehicleFlags(VehicleFlags::commandStop))
             {
                 setStationVisitedTypes();
-                checkIfAtOrderStation();
+                if (!checkIfAtOrderStation())
+                {
+                    return false;
+                }
                 beginUnloading();
             }
             return true;
@@ -2104,7 +2114,10 @@ namespace OpenLoco::Vehicles
         else
         {
             setStationVisitedTypes();
-            checkIfAtOrderStation();
+            if (!checkIfAtOrderStation())
+            {
+                return false;
+            }
             beginUnloading();
         }
         return true;
@@ -2347,7 +2360,10 @@ namespace OpenLoco::Vehicles
             {
                 vehType2->currentSpeed = 0.0_mph;
                 setStationVisitedTypes();
-                checkIfAtOrderStation();
+                if (!checkIfAtOrderStation())
+                {
+                    return false;
+                }
                 updateLastJourneyAverageSpeed();
                 beginUnloading();
                 return true;
@@ -2423,7 +2439,10 @@ namespace OpenLoco::Vehicles
 
             vehType2->currentSpeed = 0.0_mph;
             setStationVisitedTypes();
-            checkIfAtOrderStation();
+            if (!checkIfAtOrderStation())
+            {
+                return false;
+            }
             updateLastJourneyAverageSpeed();
             beginUnloading();
             return true;
@@ -2695,24 +2714,28 @@ namespace OpenLoco::Vehicles
     }
 
     // 0x004B9987
-    void VehicleHead::checkIfAtOrderStation()
+    bool VehicleHead::checkIfAtOrderStation()
     {
         OrderRingView orders(orderTableOffset, currentOrder);
         auto curOrder = orders.begin();
         auto* orderStation = curOrder->as<OrderStation>();
         if (orderStation == nullptr)
         {
-            return;
+            return true;
         }
 
         if (orderStation->getStation() != stationId)
         {
-            return;
+            return true;
         }
 
         auto* stopOrder = curOrder->as<OrderStopAt>();
         if (stopOrder != nullptr)
         {
+            if (VehicleReplacement::tryReplace(*this))
+            {
+                return false;
+            }
             VehicleAutoRenewal::tryRenew(*this);
             if (stopOrder->isUnbunching())
             {
@@ -2723,6 +2746,7 @@ namespace OpenLoco::Vehicles
         curOrder++;
         currentOrder = curOrder->getOffset() - orderTableOffset;
         Ui::WindowManager::invalidateOrderPageByVehicleNumber(enumValue(id));
+        return true;
     }
 
     // 0x004BACAF

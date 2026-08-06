@@ -2,8 +2,8 @@
 #include <OpenLoco/S5/SaveExtension.h>
 
 #include <OpenLoco/CargoDist/Save.h>
-#include <OpenLoco/Vehicles/VehicleAutoRenewal.h>
 #include <OpenLoco/Vehicles/RailTraffic.h>
+#include <OpenLoco/Vehicles/VehicleAutoRenewal.h>
 #include <algorithm>
 #include <cstdint>
 #include <gtest/gtest.h>
@@ -59,6 +59,22 @@ namespace
         Vehicles::RailTraffic::State state;
         state.history.push_back({ { 320, 352, 32, 4, 0 }, 12 * Vehicles::RailTraffic::kOneTick, 123, 7 });
         state.active.push_back({ entity(9), entity(3), { 288, 352, 32, 0, 0 }, 100 * Vehicles::RailTraffic::kOneTick, true });
+        return state;
+    }
+
+    Vehicles::VehicleReplacement::State vehicleReplacementState()
+    {
+        Vehicles::VehicleReplacement::State::PendingPlacement placement;
+        placement.args.pos = World::Pos3(512, 384, 32);
+        placement.args.trackAndDirection = 3;
+        placement.args.trackProgress = 5;
+        placement.args.head = entity(42);
+        placement.start = true;
+
+        Vehicles::VehicleReplacement::State state;
+        state.requests.push_back({ entity(5), entity(11) });
+        state.requests.push_back({ entity(7), entity(11) });
+        state.pendingPlacements.push_back(placement);
         return state;
     }
 
@@ -266,6 +282,80 @@ TEST(SaveExtension, RailTrafficEncodingIsDeterministic)
     EXPECT_EQ(
         S5::SaveExtension::encode({ .railTrafficState = &first }),
         S5::SaveExtension::encode({ .railTrafficState = &second }));
+}
+
+TEST(SaveExtension, RoundTripsVehicleReplacement)
+{
+    const auto replacement = vehicleReplacementState();
+
+    const auto encoded = S5::SaveExtension::encode({ .vehicleReplacementState = &replacement });
+    const auto decoded = S5::SaveExtension::decode(encoded);
+
+    ASSERT_TRUE(decoded.vehicleReplacementState.has_value());
+    EXPECT_EQ(*decoded.vehicleReplacementState, replacement);
+    EXPECT_EQ(S5::SaveExtension::encode(decoded), encoded);
+    expectTag(encoded, 16, "VRPL");
+    EXPECT_EQ(readU16(encoded, 20), 3);
+    EXPECT_EQ(readU16(encoded, 22), 1);
+}
+
+TEST(SaveExtension, DecodesVersionOneVehicleReplacement)
+{
+    Vehicles::VehicleReplacement::State replacement;
+    replacement.requests.push_back({ entity(5), entity(11) });
+
+    auto encoded = S5::SaveExtension::encode({ .vehicleReplacementState = &replacement });
+    // Version 1 omits the trailing pending placement count field.
+    writeU16(encoded, 20, 1);
+    writeU32(encoded, 12, readU32(encoded, 12) - sizeof(uint16_t));
+    writeU32(encoded, 24, readU32(encoded, 24) - sizeof(uint16_t));
+    encoded.resize(encoded.size() - sizeof(uint16_t));
+
+    const auto decoded = S5::SaveExtension::decode(encoded);
+
+    ASSERT_TRUE(decoded.vehicleReplacementState.has_value());
+    EXPECT_EQ(decoded.vehicleReplacementState->requests, replacement.requests);
+    EXPECT_TRUE(decoded.vehicleReplacementState->pendingPlacements.empty());
+}
+
+TEST(SaveExtension, DecodesVersionTwoVehicleReplacement)
+{
+    const auto replacement = vehicleReplacementState();
+    auto encoded = S5::SaveExtension::encode({ .vehicleReplacementState = &replacement });
+    // Version 2 omits the trailing per-pending start byte.
+    writeU16(encoded, 20, 2);
+    writeU32(encoded, 12, readU32(encoded, 12) - 1);
+    writeU32(encoded, 24, readU32(encoded, 24) - 1);
+    encoded.resize(encoded.size() - 1);
+
+    const auto decoded = S5::SaveExtension::decode(encoded);
+
+    ASSERT_TRUE(decoded.vehicleReplacementState.has_value());
+    ASSERT_EQ(decoded.vehicleReplacementState->pendingPlacements.size(), 1);
+    EXPECT_EQ(decoded.vehicleReplacementState->pendingPlacements[0].args, replacement.pendingPlacements[0].args);
+    EXPECT_FALSE(decoded.vehicleReplacementState->pendingPlacements[0].start);
+}
+
+TEST(SaveExtension, RejectsInvalidVehicleReplacementState)
+{
+    auto duplicateHead = vehicleReplacementState();
+    duplicateHead.pendingPlacements.push_back(vehicleReplacementState().pendingPlacements[0]);
+    EXPECT_THROW(S5::SaveExtension::encode({ .vehicleReplacementState = &duplicateHead }), std::runtime_error);
+
+    Vehicles::VehicleReplacement::State::PendingPlacement nullPlacement;
+    nullPlacement.args.head = EntityId::null;
+    auto invalid = vehicleReplacementState();
+    invalid.pendingPlacements.push_back(nullPlacement);
+    EXPECT_THROW(S5::SaveExtension::encode({ .vehicleReplacementState = &invalid }), std::runtime_error);
+
+    const auto replacement = vehicleReplacementState();
+    auto unsupportedVersion = S5::SaveExtension::encode({ .vehicleReplacementState = &replacement });
+    writeU16(unsupportedVersion, 20, 4);
+    EXPECT_THROW(S5::SaveExtension::decode(unsupportedVersion), std::runtime_error);
+
+    auto truncated = S5::SaveExtension::encode({ .vehicleReplacementState = &replacement });
+    writeU16(truncated, 38, 99);
+    EXPECT_THROW(S5::SaveExtension::decode(truncated), std::runtime_error);
 }
 
 TEST(SaveExtension, VehicleAutoRenewalEncodingIsDeterministic)

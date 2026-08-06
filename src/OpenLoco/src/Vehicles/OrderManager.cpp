@@ -22,6 +22,7 @@
 #include "Vehicles/Vehicle1.h"
 #include "Vehicles/VehicleHead.h"
 #include "Vehicles/VehicleManager.h"
+#include "Vehicles/VehicleReplacement.h"
 #include "World/StationManager.h"
 #include <OpenLoco/CargoDist/CargoDist.h>
 #include <OpenLoco/Core/Exception.hpp>
@@ -345,6 +346,7 @@ namespace OpenLoco::Vehicles::OrderManager
         orderTableLength() = 0;
         clearNumDisplayFrames();
         SharedOrderManager::reset();
+        VehicleReplacement::reset();
     }
 
     // 0x00470334

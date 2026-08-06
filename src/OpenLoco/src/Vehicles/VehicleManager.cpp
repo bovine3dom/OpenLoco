@@ -25,6 +25,7 @@
 #include "Vehicles/VehicleBody.h"
 #include "Vehicles/VehicleBogie.h"
 #include "Vehicles/VehicleHead.h"
+#include "Vehicles/VehicleReplacement.h"
 #include "Vehicles/VehicleTail.h"
 #include "World/Company.h"
 #include "World/CompanyManager.h"
@@ -48,6 +49,7 @@ namespace OpenLoco::VehicleManager
             }
             Vehicles::PathSignals::endTick();
             Vehicles::RailTraffic::endTick();
+            Vehicles::VehicleReplacement::tick();
         }
     }
 
@@ -367,6 +369,7 @@ namespace OpenLoco::VehicleManager
     // 0x004AF06E
     void deleteTrain(Vehicles::VehicleHead& head)
     {
+        Vehicles::VehicleReplacement::remove(head.id);
         Vehicles::Vehicle train(head);
         EntityId viewportFollowEntity = train.veh2->id;
         auto main = Ui::WindowManager::getMainWindow();

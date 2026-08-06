@@ -5,10 +5,11 @@
 #include "S5/S5GameState.h"
 #include "S5/S5TileElement.h"
 #include <OpenLoco/CargoDist/CargoDist.h>
-#include <OpenLoco/Vehicles/RoutingManager.h>
 #include <OpenLoco/Vehicles/RailTraffic.h>
+#include <OpenLoco/Vehicles/RoutingManager.h>
 #include <OpenLoco/Vehicles/SharedOrderManager.h>
 #include <OpenLoco/Vehicles/VehicleAutoRenewal.h>
+#include <OpenLoco/Vehicles/VehicleReplacement.h>
 #include <optional>
 
 namespace OpenLoco::S5
@@ -27,6 +28,7 @@ namespace OpenLoco::S5
         std::optional<Vehicles::RoutingManager::State> pathReservationState;
         bool discardPathReservationsOnLoad{};
         std::optional<Vehicles::VehicleAutoRenewal::State> vehicleAutoRenewalState;
+        std::optional<Vehicles::VehicleReplacement::State> vehicleReplacementState;
         std::optional<Vehicles::RailTraffic::State> railTrafficState;
     };
 }

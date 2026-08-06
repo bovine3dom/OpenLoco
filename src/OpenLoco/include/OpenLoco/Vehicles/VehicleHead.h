@@ -158,7 +158,7 @@ namespace OpenLoco::Vehicles
         bool updateWater();
         void tryCreateInitialMovementSound(const Status initialStatus);
         void setStationVisitedTypes();
-        void checkIfAtOrderStation();
+        bool checkIfAtOrderStation();
         void updateLastJourneyAverageSpeed();
         void beginUnloading();
         void beginLoading();

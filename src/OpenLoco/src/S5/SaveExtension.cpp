@@ -3,6 +3,7 @@
 
 #include "S5/Limits.h"
 #include <OpenLoco/CargoDist/Save.h>
+#include <OpenLoco/GameCommands/Vehicles/VehiclePlace.h>
 #include <algorithm>
 #include <array>
 #include <limits>
@@ -66,12 +67,22 @@ namespace OpenLoco::S5::SaveExtension
             std::byte{ 'F' },
             std::byte{ 'C' },
         };
+        constexpr std::array<std::byte, 4> kVehicleReplacementTag = {
+            std::byte{ 'V' },
+            std::byte{ 'R' },
+            std::byte{ 'P' },
+            std::byte{ 'L' },
+        };
         constexpr uint16_t kVersion = 1;
         constexpr uint16_t kHeaderSize = 16;
         constexpr uint16_t kSectionVersion = 1;
         // Version 1 reservations may contain routes that bypass their active waypoint.
         constexpr uint16_t kPathReservationsSectionVersion = 2;
         constexpr uint16_t kPathReservationContinuationsSectionVersion = 3;
+        // Version 2 additionally stores deferred replacement vehicle placements.
+        constexpr uint16_t kVehicleReplacementPendingPlacementsVersion = 2;
+        // Version 3 additionally stores whether a deferred placement should start.
+        constexpr uint16_t kVehicleReplacementSectionVersion = 3;
         constexpr uint16_t kSectionRequired = 1U << 0;
         constexpr uint16_t kKnownSectionFlags = kSectionRequired;
         constexpr size_t kSectionHeaderSize = 12;
@@ -349,6 +360,69 @@ namespace OpenLoco::S5::SaveExtension
             return state;
         }
 
+        std::vector<std::byte> encodeVehicleReplacement(const Vehicles::VehicleReplacement::State& state)
+        {
+            require(Vehicles::VehicleReplacement::validateState(state), "Invalid vehicle replacement state");
+            require(state.requests.size() <= std::numeric_limits<uint16_t>::max() && state.pendingPlacements.size() <= std::numeric_limits<uint16_t>::max(), "Too many vehicle replacements");
+            Writer payload;
+            payload.write(static_cast<uint16_t>(state.requests.size()));
+            for (const auto& request : state.requests)
+            {
+                payload.write(enumValue(request.target));
+                payload.write(enumValue(request.source));
+            }
+            payload.write(static_cast<uint16_t>(state.pendingPlacements.size()));
+            for (const auto& placement : state.pendingPlacements)
+            {
+                payload.write(static_cast<uint16_t>(placement.args.pos.x));
+                payload.write(static_cast<uint16_t>(placement.args.pos.y));
+                payload.write(static_cast<uint16_t>(placement.args.pos.z));
+                payload.write(placement.args.trackAndDirection);
+                payload.write(placement.args.trackProgress);
+                payload.write(enumValue(placement.args.head));
+                payload.write(static_cast<uint8_t>(placement.start));
+            }
+            return payload.take();
+        }
+
+        Vehicles::VehicleReplacement::State decodeVehicleReplacement(const std::span<const std::byte> data, const uint16_t version)
+        {
+            require(version == kSectionVersion || version == kVehicleReplacementPendingPlacementsVersion || version == kVehicleReplacementSectionVersion, "Unsupported vehicle replacement section version");
+            Reader input(data);
+            Vehicles::VehicleReplacement::State state;
+            const auto count = input.read<uint16_t>();
+            state.requests.reserve(count);
+            for (uint16_t i = 0; i < count; ++i)
+            {
+                state.requests.push_back({ EntityId(input.read<uint16_t>()), EntityId(input.read<uint16_t>()) });
+            }
+            if (version == kVehicleReplacementPendingPlacementsVersion || version == kVehicleReplacementSectionVersion)
+            {
+                const auto pendingCount = input.read<uint16_t>();
+                state.pendingPlacements.reserve(pendingCount);
+                for (uint16_t i = 0; i < pendingCount; ++i)
+                {
+                    Vehicles::VehicleReplacement::State::PendingPlacement placement;
+                    const auto x = static_cast<int16_t>(input.read<uint16_t>());
+                    const auto y = static_cast<int16_t>(input.read<uint16_t>());
+                    const auto z = static_cast<int16_t>(input.read<uint16_t>());
+                    placement.args.pos = World::Pos3(x, y, z);
+                    placement.args.trackAndDirection = input.read<uint16_t>();
+                    placement.args.trackProgress = input.read<uint16_t>();
+                    placement.args.head = EntityId(input.read<uint16_t>());
+                    if (version == kVehicleReplacementSectionVersion)
+                    {
+                        const auto start = input.read<uint8_t>();
+                        require(start <= 1, "Invalid pending vehicle placement start value");
+                        placement.start = start != 0;
+                    }
+                    state.pendingPlacements.push_back(placement);
+                }
+            }
+            require(input.empty() && Vehicles::VehicleReplacement::validateState(state), "Invalid vehicle replacement state");
+            return state;
+        }
+
         void writeRailTrafficEdge(Writer& output, const Vehicles::RailTraffic::Edge& edge)
         {
             output.write(static_cast<uint16_t>(edge.x));
@@ -454,6 +528,7 @@ namespace OpenLoco::S5::SaveExtension
             .sharedOrderState = state.sharedOrderState ? &*state.sharedOrderState : nullptr,
             .pathReservationState = state.pathReservationState ? &*state.pathReservationState : nullptr,
             .vehicleAutoRenewalState = state.vehicleAutoRenewalState ? &*state.vehicleAutoRenewalState : nullptr,
+            .vehicleReplacementState = state.vehicleReplacementState ? &*state.vehicleReplacementState : nullptr,
             .discardPathReservationsOnLoad = state.discardPathReservationsOnLoad,
             .railTrafficState = state.railTrafficState ? &*state.railTrafficState : nullptr,
         });
@@ -487,6 +562,10 @@ namespace OpenLoco::S5::SaveExtension
         {
             const auto vehicleAutoRenewal = encodeVehicleAutoRenewal(*state.vehicleAutoRenewalState);
             appendSection(payload, kVehicleAutoRenewalTag, vehicleAutoRenewal, kSectionRequired);
+        }
+        if (state.vehicleReplacementState != nullptr)
+        {
+            appendSection(payload, kVehicleReplacementTag, encodeVehicleReplacement(*state.vehicleReplacementState), kSectionRequired, kVehicleReplacementSectionVersion);
         }
         if (state.railTrafficState != nullptr)
         {
@@ -529,6 +608,7 @@ namespace OpenLoco::S5::SaveExtension
         bool hasPathReservations = false;
         bool hasVehicleAutoRenewal = false;
         bool hasRailTraffic = false;
+        bool hasVehicleReplacement = false;
         while (!sections.empty())
         {
             const auto tag = sections.readBytes(4);
@@ -576,6 +656,13 @@ namespace OpenLoco::S5::SaveExtension
                 hasRailTraffic = true;
                 require(version == kSectionVersion, "Unsupported rail traffic section version");
                 state.railTrafficState = decodeRailTraffic(sectionData);
+            }
+            else if (std::ranges::equal(tag, kVehicleReplacementTag))
+            {
+                require((flags & ~kKnownSectionFlags) == 0 && !hasVehicleReplacement, "Invalid vehicle replacement section");
+                require(version == kSectionVersion || version == kVehicleReplacementPendingPlacementsVersion || version == kVehicleReplacementSectionVersion, "Unsupported vehicle replacement section version");
+                hasVehicleReplacement = true;
+                state.vehicleReplacementState = decodeVehicleReplacement(sectionData, version);
             }
             else
             {
