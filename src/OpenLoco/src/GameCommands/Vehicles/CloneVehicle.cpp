@@ -18,6 +18,8 @@
 #include "Vehicles/VehicleHead.h"
 #include "Vehicles/VehicleManager.h"
 
+#include <vector>
+
 namespace OpenLoco::GameCommands
 {
     static void copyVehicleColours(Vehicles::Vehicle& source, Vehicles::Vehicle& target)
@@ -35,6 +37,29 @@ namespace OpenLoco::GameCommands
                 (*tgtCarIter).body->colourScheme = (*srcCarIter).body->colourScheme;
                 (*tgtCarIter).front->colourScheme = (*srcCarIter).front->colourScheme;
                 (*tgtCarIter).back->colourScheme = (*srcCarIter).back->colourScheme;
+            }
+        }
+    }
+
+    static void copyVehicleReversals(Vehicles::Vehicle& source, Vehicles::Vehicle& target)
+    {
+        std::vector<bool> sourceReversals;
+        std::vector<bool> targetReversals;
+        std::vector<Vehicles::VehicleBogie*> targetFronts;
+        for (auto& car : source.cars)
+        {
+            sourceReversals.push_back(car.body->has38Flags(Vehicles::Flags38::isReversed));
+        }
+        for (auto& car : target.cars)
+        {
+            targetReversals.push_back(car.body->has38Flags(Vehicles::Flags38::isReversed));
+            targetFronts.push_back(car.front);
+        }
+        for (size_t i = 0; i < sourceReversals.size(); ++i)
+        {
+            if (targetReversals[i] != sourceReversals[i])
+            {
+                Vehicles::flipCar(*targetFronts[i]);
             }
         }
     }
@@ -144,6 +169,7 @@ namespace OpenLoco::GameCommands
                 {
                     return kFailure;
                 }
+                newHead->vehicleFlags |= Vehicles::VehicleFlags::shuntCheat;
             }
             else
             {
@@ -172,6 +198,9 @@ namespace OpenLoco::GameCommands
         }
 
         auto newTrain = Vehicles::Vehicle(*newHead);
+        newHead->vehicleFlags &= ~Vehicles::VehicleFlags::shuntCheat;
+        copyVehicleReversals(existingTrain, newTrain);
+        newTrain = Vehicles::Vehicle(*newHead);
         copyVehicleColours(existingTrain, newTrain);
 
         // The new head is unshared, so replacing its table cannot fan out to a group.
