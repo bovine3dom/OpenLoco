@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
 #include <OpenLoco/CargoDist/CargoDist.h>
-#include <OpenLoco/CargoDist/Simulation.h>
 #include <OpenLoco/Graphics/RenderTarget.h>
 #include <OpenLoco/Graphics/SoftwareDrawingContext.h>
 #include <OpenLoco/Ui/Windows/CargoFlowOverlay.h>
@@ -86,8 +85,8 @@ TEST(CargoFlowOverlayTest, AggregatesDirectedPlannedDemandAndCapacity)
     EXPECT_EQ(unused->plannedDemand, 0);
     ASSERT_TRUE(unused->capacity.has_value());
     EXPECT_EQ(*unused->capacity, 30);
-    ASSERT_TRUE(unused->saturationCapacity.has_value());
-    EXPECT_EQ(*unused->saturationCapacity, 30);
+    ASSERT_TRUE(unused->serviceCapacity.has_value());
+    EXPECT_EQ(*unused->serviceCapacity, 30);
 
     const auto* large = findEdge(edges, station(8), station(9));
     ASSERT_NE(large, nullptr);
@@ -147,6 +146,7 @@ TEST(CargoFlowOverlayTest, AggregateLinkUsesBusiestServiceSaturation)
     state.flows[{ 0, station(1), station(1), {}, station(2) }] = {
         { station(2), 20, 0, servicePoint(1, 0), servicePoint(1, 1) },
     };
+    state.stationCargo[{ station(1), 0 }].append({ 20, station(1), station(2), 0, servicePoint(1, 0), servicePoint(1, 1), station(2) });
 
     const auto links = getPlannedServiceEdges(0);
     const auto* link = findEdge(links, station(1), station(2));
@@ -154,11 +154,14 @@ TEST(CargoFlowOverlayTest, AggregateLinkUsesBusiestServiceSaturation)
     ASSERT_NE(link, nullptr);
     EXPECT_EQ(link->plannedDemand, 20);
     EXPECT_EQ(*link->capacity, 140);
-    EXPECT_EQ(link->saturationDemand, 20);
-    EXPECT_EQ(*link->saturationCapacity, 40);
-    EXPECT_EQ(link->saturationDeparture, servicePoint(1, 0));
-    EXPECT_EQ(link->saturationArrival, servicePoint(1, 1));
-    EXPECT_EQ(CargoFlowOverlay::getSaturationBucket(link->saturationDemand, link->saturationCapacity), 2);
+    EXPECT_EQ(link->servicePlannedDemand, 20);
+    EXPECT_EQ(link->committedDemand, 20);
+    EXPECT_EQ(link->waitingDemand, 20);
+    EXPECT_EQ(link->incomingDemand, 0);
+    EXPECT_EQ(*link->serviceCapacity, 40);
+    EXPECT_EQ(link->serviceDeparture, servicePoint(1, 0));
+    EXPECT_EQ(link->serviceArrival, servicePoint(1, 1));
+    EXPECT_EQ(CargoFlowOverlay::getSaturationBucket(link->committedDemand, link->serviceCapacity), 2);
 }
 
 TEST(CargoFlowOverlayTest, SeparatesFutureTransferPlanFromWaitingCargo)
@@ -177,10 +180,12 @@ TEST(CargoFlowOverlayTest, SeparatesFutureTransferPlanFromWaitingCargo)
     const auto* link = findEdge(links, station(78), station(79));
 
     ASSERT_NE(link, nullptr);
-    EXPECT_EQ(link->saturationDemand, 597);
-    EXPECT_EQ(link->saturationDeparture, departure);
-    EXPECT_EQ(link->saturationArrival, arrival);
-    EXPECT_EQ(getLoadableQuantity(station(78), 0, { 0, station(78), station(79), departure, arrival }), 0);
+    EXPECT_EQ(link->servicePlannedDemand, 597);
+    EXPECT_EQ(link->committedDemand, 0);
+    EXPECT_EQ(link->waitingDemand, 0);
+    EXPECT_EQ(link->incomingDemand, 0);
+    EXPECT_EQ(link->serviceDeparture, departure);
+    EXPECT_EQ(link->serviceArrival, arrival);
 }
 
 TEST(CargoFlowOverlayTest, DrawsCompleteLinesInEitherDirection)

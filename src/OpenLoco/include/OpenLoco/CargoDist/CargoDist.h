@@ -111,6 +111,14 @@ namespace OpenLoco::CargoDist
         uint32_t fleetCapacity{}; // Display capacity; routing uses capacity per departure above.
     };
 
+    struct CommittedServiceDemand
+    {
+        uint64_t waiting{};
+        uint64_t incoming{};
+
+        uint64_t total() const { return waiting + incoming; }
+    };
+
     struct VehicleServiceLeg
     {
         uint16_t currentOrder{};
@@ -128,10 +136,13 @@ namespace OpenLoco::CargoDist
         StationId to = StationId::null;
         uint64_t plannedDemand{};
         std::optional<uint32_t> capacity;
-        uint64_t saturationDemand{};
-        std::optional<uint32_t> saturationCapacity;
-        ServicePoint saturationDeparture{};
-        ServicePoint saturationArrival{};
+        uint64_t servicePlannedDemand{};
+        uint64_t committedDemand{};
+        uint64_t waitingDemand{};
+        uint64_t incomingDemand{};
+        std::optional<uint32_t> serviceCapacity;
+        ServicePoint serviceDeparture{};
+        ServicePoint serviceArrival{};
 
         auto operator<=>(const PlannedServiceEdge&) const = default;
     };
@@ -203,6 +214,7 @@ namespace OpenLoco::CargoDist
         std::map<FlowKey, std::vector<FlowOption>> flows;
         std::map<DestinationFlowKey, std::vector<DestinationOption>> destinationFlows;
         uint64_t routingRevision{};
+        uint64_t cargoRevision{};
         uint32_t nextRecalculationDay{};
         bool graphDirty{};
         bool servicesDirty{};
@@ -231,6 +243,7 @@ namespace OpenLoco::CargoDist
     void setFlows(uint8_t cargo, std::span<const FlowShare> shares);
     void rebuildDestinationFlows(uint8_t cargo);
     std::vector<ViaShare> allocateVia(uint8_t cargo, StationId station, StationId origin, StationId destination, uint32_t quantity, ServicePoint incoming = {}, StationId excluded = StationId::null, StationId excluded2 = StationId::null);
+    std::vector<ViaShare> previewVia(uint8_t cargo, StationId station, StationId origin, StationId destination, uint32_t quantity, ServicePoint incoming = {}, StationId excluded = StationId::null, StationId excluded2 = StationId::null);
 
     inline std::vector<ViaShare> allocateVia(uint8_t cargo, StationId station, StationId origin, uint32_t quantity, ServicePoint incoming = {}, StationId excluded = StationId::null, StationId excluded2 = StationId::null)
     {

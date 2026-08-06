@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-#include <OpenLoco/CargoDist/CargoDist.h>
+#include <OpenLoco/CargoDist/Simulation.h>
 
 #include <algorithm>
 #include <limits>
@@ -464,8 +464,10 @@ namespace OpenLoco::CargoDist
     void reset()
     {
         const auto routingRevision = _state.routingRevision + 1;
+        const auto cargoRevision = _state.cargoRevision + 1;
         _state = {};
         _state.routingRevision = routingRevision;
+        _state.cargoRevision = cargoRevision;
     }
 
     DistributionMode getMode(uint8_t cargo)
@@ -589,7 +591,7 @@ namespace OpenLoco::CargoDist
         }
     }
 
-    std::vector<ViaShare> allocateVia(uint8_t cargo, StationId station, StationId origin, StationId destination, uint32_t quantity, ServicePoint incoming, StationId excluded, StationId excluded2)
+    static std::vector<ViaShare> allocateViaImpl(uint8_t cargo, StationId station, StationId origin, StationId destination, uint32_t quantity, ServicePoint incoming, StationId excluded, StationId excluded2, bool updateCursors)
     {
         if (quantity == 0)
         {
@@ -613,7 +615,9 @@ namespace OpenLoco::CargoDist
             }
             else
             {
-                const auto allocated = allocateWeighted(choices->second, quantity, [&](const auto& option) {
+                auto optionsCopy = updateCursors ? std::vector<DestinationOption>{} : choices->second;
+                auto& options = updateCursors ? choices->second : optionsCopy;
+                const auto allocated = allocateWeighted(options, quantity, [&](const auto& option) {
                     const auto flow = _state.flows.find({ cargo, station, origin, incoming, option.destination });
                     return option.destination != excluded && option.destination != excluded2
                         && flow != _state.flows.end() && std::any_of(flow->second.begin(), flow->second.end(), [&](const auto& route) {
@@ -641,7 +645,9 @@ namespace OpenLoco::CargoDist
             {
                 continue;
             }
-            const auto allocated = allocateWeighted(flow->second, amount, [&](const auto& option) { return option.via != excluded && option.via != excluded2; }, [](const auto& option) { return std::tie(option.via, option.departure, option.arrival); });
+            auto optionsCopy = updateCursors ? std::vector<FlowOption>{} : flow->second;
+            auto& options = updateCursors ? flow->second : optionsCopy;
+            const auto allocated = allocateWeighted(options, amount, [&](const auto& option) { return option.via != excluded && option.via != excluded2; }, [](const auto& option) { return std::tie(option.via, option.departure, option.arrival); });
             for (const auto& candidate : allocated)
             {
                 if (candidate.amount != 0)
@@ -651,6 +657,16 @@ namespace OpenLoco::CargoDist
             }
         }
         return result;
+    }
+
+    std::vector<ViaShare> allocateVia(uint8_t cargo, StationId station, StationId origin, StationId destination, uint32_t quantity, ServicePoint incoming, StationId excluded, StationId excluded2)
+    {
+        return allocateViaImpl(cargo, station, origin, destination, quantity, incoming, excluded, excluded2, true);
+    }
+
+    std::vector<ViaShare> previewVia(uint8_t cargo, StationId station, StationId origin, StationId destination, uint32_t quantity, ServicePoint incoming, StationId excluded, StationId excluded2)
+    {
+        return allocateViaImpl(cargo, station, origin, destination, quantity, incoming, excluded, excluded2, false);
     }
 
     void markGraphDirty()
@@ -669,10 +685,14 @@ namespace OpenLoco::CargoDist
         struct EdgeStats
         {
             uint64_t plannedDemand{};
+            uint64_t waitingDemand{};
+            uint64_t incomingDemand{};
             uint64_t capacity{};
             bool hasCapacity{};
             ServicePoint departure{};
             ServicePoint arrival{};
+
+            uint64_t committedDemand() const { return waitingDemand + incomingDemand; }
         };
 
         std::map<std::pair<StationId, StationId>, EdgeStats> edges;
@@ -714,24 +734,39 @@ namespace OpenLoco::CargoDist
             }
         }
 
-        const auto saturationScore = [](const EdgeStats& stats) {
-            if (stats.plannedDemand == 0)
+        for (const auto& [key, demand] : getCommittedServiceDemands(cargo))
+        {
+            auto& edge = edges[{ key.from, key.to }];
+            edge.waitingDemand += demand.waiting;
+            edge.incomingDemand += demand.incoming;
+            auto& service = serviceEdges[key];
+            service.waitingDemand += demand.waiting;
+            service.incomingDemand += demand.incoming;
+            service.departure = key.departure;
+            service.arrival = key.arrival;
+        }
+
+        const auto saturationScore = [](const EdgeStats& stats, uint64_t demand) {
+            if (demand == 0)
             {
                 return uint64_t{ 0 };
             }
-            if (!stats.hasCapacity || stats.capacity == 0 || stats.plannedDemand >= stats.capacity * 2)
+            if (!stats.hasCapacity || stats.capacity == 0 || demand >= stats.capacity * 2)
             {
                 return uint64_t{ 12 * 20'001 };
             }
             const auto doubledCapacity = stats.capacity * 2;
-            const auto bucket = (stats.plannedDemand * 12 - 1) / doubledCapacity;
-            return bucket * 20'001 + stats.plannedDemand * 10'000 / stats.capacity;
+            const auto bucket = (demand * 12 - 1) / doubledCapacity;
+            return bucket * 20'001 + demand * 10'000 / stats.capacity;
+        };
+        const auto serviceScore = [&](const EdgeStats& stats) {
+            return std::pair{ saturationScore(stats, stats.committedDemand()), saturationScore(stats, stats.plannedDemand) };
         };
         std::map<std::pair<StationId, StationId>, EdgeStats> busiestServices;
         for (const auto& [key, stats] : serviceEdges)
         {
             const auto [it, inserted] = busiestServices.try_emplace({ key.from, key.to });
-            if (inserted || saturationScore(stats) > saturationScore(it->second))
+            if (inserted || serviceScore(stats) > serviceScore(it->second))
             {
                 it->second = stats;
             }
@@ -745,10 +780,10 @@ namespace OpenLoco::CargoDist
                 ? std::optional<uint32_t>{ static_cast<uint32_t>(std::min<uint64_t>(stats.capacity, std::numeric_limits<uint32_t>::max())) }
                 : std::nullopt;
             const auto& busiest = busiestServices.at(key);
-            const auto busiestCapacity = busiest.hasCapacity
+            const auto serviceCapacity = busiest.hasCapacity
                 ? std::optional<uint32_t>{ static_cast<uint32_t>(std::min<uint64_t>(busiest.capacity, std::numeric_limits<uint32_t>::max())) }
                 : std::nullopt;
-            result.push_back({ key.first, key.second, stats.plannedDemand, capacity, busiest.plannedDemand, busiestCapacity, busiest.departure, busiest.arrival });
+            result.push_back({ key.first, key.second, stats.plannedDemand, capacity, busiest.plannedDemand, busiest.committedDemand(), busiest.waitingDemand, busiest.incomingDemand, serviceCapacity, busiest.departure, busiest.arrival });
         }
         return result;
     }

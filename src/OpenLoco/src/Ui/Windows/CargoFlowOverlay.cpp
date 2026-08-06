@@ -2,7 +2,6 @@
 #include "Ui/Windows/CargoFlowOverlay.h"
 
 #include "CargoDist/CargoDist.h"
-#include "CargoDist/Simulation.h"
 #include "GameState.h"
 #include "Graphics/DrawingContext.h"
 #include "Graphics/ImageIds.h"
@@ -60,6 +59,7 @@ namespace OpenLoco::Ui::Windows::CargoFlowOverlay
         {
             uint8_t cargo = kNoCargo;
             uint64_t routingRevision{};
+            uint64_t cargoRevision{};
             std::vector<CargoDist::PlannedServiceEdge> links;
         };
 
@@ -142,15 +142,17 @@ namespace OpenLoco::Ui::Windows::CargoFlowOverlay
                 return changed;
             }
 
-            const auto revision = CargoDist::getStateConst().routingRevision;
-            if (_snapshot.has_value() && _snapshot->cargo == _selectedCargo && _snapshot->routingRevision == revision)
+            const auto& state = CargoDist::getStateConst();
+            if (_snapshot.has_value() && _snapshot->cargo == _selectedCargo
+                && _snapshot->routingRevision == state.routingRevision && _snapshot->cargoRevision == state.cargoRevision)
             {
                 return false;
             }
 
             _snapshot = Snapshot{
                 _selectedCargo,
-                revision,
+                state.routingRevision,
+                state.cargoRevision,
                 CargoDist::getPlannedServiceEdges(_selectedCargo),
             };
             return true;
@@ -503,7 +505,7 @@ namespace OpenLoco::Ui::Windows::CargoFlowOverlay
             projectedLinks.push_back({
                 fromPoint,
                 toPoint,
-                kSaturationColours[getSaturationBucket(link.saturationDemand, link.saturationCapacity)],
+                kSaturationColours[getSaturationBucket(link.committedDemand, link.serviceCapacity)],
             });
         }
         return projectedLinks;
@@ -583,10 +585,11 @@ namespace OpenLoco::Ui::Windows::CargoFlowOverlay
             return false;
         }
 
-        const auto plannedDemand = toDisplayValue(hit->saturationDemand);
-        const CargoDist::VehicleServiceLeg serviceLeg{ 0, hit->from, hit->to, hit->saturationDeparture, hit->saturationArrival };
-        const auto waitingDemand = toDisplayValue(CargoDist::getLoadableQuantity(hit->from, snapshot.cargo, serviceLeg));
-        if (hit->saturationCapacity.has_value() && *hit->saturationCapacity != 0)
+        const auto plannedDemand = toDisplayValue(hit->servicePlannedDemand);
+        const auto committedDemand = toDisplayValue(hit->committedDemand);
+        const auto waitingDemand = toDisplayValue(hit->waitingDemand);
+        const auto incomingDemand = toDisplayValue(hit->incomingDemand);
+        if (hit->serviceCapacity.has_value() && *hit->serviceCapacity != 0)
         {
             auto args = FormatArguments::mapToolTip(StringIds::cargo_flow_tooltip);
             args.push(cargo->name);
@@ -595,9 +598,11 @@ namespace OpenLoco::Ui::Windows::CargoFlowOverlay
             args.push(hitTo->name);
             args.push(hitTo->town);
             args.push(plannedDemand);
+            args.push(committedDemand);
             args.push(waitingDemand);
-            args.push(toDisplayValue(*hit->saturationCapacity));
-            args.push(calculatePercentage(hit->saturationDemand, *hit->saturationCapacity));
+            args.push(incomingDemand);
+            args.push(toDisplayValue(*hit->serviceCapacity));
+            args.push(calculatePercentage(hit->committedDemand, *hit->serviceCapacity));
         }
         else
         {
@@ -608,7 +613,9 @@ namespace OpenLoco::Ui::Windows::CargoFlowOverlay
             args.push(hitTo->name);
             args.push(hitTo->town);
             args.push(plannedDemand);
+            args.push(committedDemand);
             args.push(waitingDemand);
+            args.push(incomingDemand);
         }
         return true;
     }

@@ -194,6 +194,32 @@ TEST_F(CargoDistServiceSimulationTest, MixedVehicleCapacityUsesAverageDeparture)
     EXPECT_EQ(getStateConst().serviceEdges.begin()->second.fleetCapacity, 30);
 }
 
+TEST_F(CargoDistServiceSimulationTest, CommittedDemandIncludesOnlyWaitingAndNextTransfer)
+{
+    auto* head = createVehicle();
+    Vehicles::Vehicle train(*head);
+    auto* body = (*train.cars.begin()).body;
+    constexpr auto feederArrival = servicePoint(7, 1);
+    constexpr auto departure = servicePoint(8, 0);
+    constexpr auto arrival = servicePoint(8, 1);
+    auto& state = getState();
+    state.flows[{ 0, station(2), station(1), feederArrival, station(4) }] = {
+        { station(3), 3, 0, departure, arrival },
+        { station(4), 1, 0, servicePoint(9, 0), servicePoint(9, 1) },
+    };
+    state.vehicleCargo[{ body->id, VehicleCargoSlot::primary }].append({ 20, station(1), station(2), 0, servicePoint(7, 0), feederArrival, station(4) });
+    state.stationCargo[{ station(2), 0 }].append({ 7, station(1), station(3), 0, departure, arrival, station(4) });
+
+    const auto demand = getCommittedServiceDemands(0);
+
+    const auto selected = demand.at({ 0, station(2), station(3), departure, arrival });
+    EXPECT_EQ(selected.waiting, 7);
+    EXPECT_EQ(selected.incoming, 15);
+    const auto alternative = demand.at({ 0, station(2), station(4), servicePoint(9, 0), servicePoint(9, 1) });
+    EXPECT_EQ(alternative.waiting, 0);
+    EXPECT_EQ(alternative.incoming, 5);
+}
+
 TEST_F(CargoDistServiceSimulationTest, FullLoadOrdersRestrictOnlyFlexibleCompartments)
 {
     getState().settings.modes[1] = DistributionMode::asymmetric;
@@ -311,6 +337,21 @@ TEST_F(CargoDistServiceSimulationTest, ExactCapacityDoesNotAddAnotherRuntimeHead
         { station(2), 10, 0, planned.departure, planned.arrival },
     };
     state.stationCargo[{ station(1), 0 }].append({ 10, station(1), station(2), 0, planned.departure, planned.arrival, station(2) });
+
+    EXPECT_EQ(getLoadableQuantity(station(1), 0, present), 0);
+}
+
+TEST_F(CargoDistServiceSimulationTest, FutureTransferPlanDoesNotCreateImmediateRuntimeQueue)
+{
+    constexpr auto planned = serviceLeg(1, 2, 7, 0, 1);
+    constexpr auto present = serviceLeg(1, 2, 8, 0, 1);
+    auto& state = getState();
+    state.serviceEdges[{ 0, station(1), station(2), planned.departure, planned.arrival }] = { 10, 1, 1, 10 };
+    state.serviceEdges[{ 0, station(1), station(2), present.departure, present.arrival }] = { 10, 5, 100, 200 };
+    state.flows[{ 0, station(1), station(1), {}, station(2) }] = {
+        { station(2), 20, 0, planned.departure, planned.arrival },
+    };
+    state.stationCargo[{ station(1), 0 }].append({ 1, station(1), station(2), 0, planned.departure, planned.arrival, station(2) });
 
     EXPECT_EQ(getLoadableQuantity(station(1), 0, present), 0);
 }
@@ -461,6 +502,7 @@ TEST(CargoDistSimulation, AddsProducedCargoUsingCurrentFlow)
     const std::array flows = { FlowShare{ station(1), station(1), station(2), 20, {}, {}, {}, station(2) } };
     setFlows(0, flows);
     StationCargoStats cargo{};
+    const auto cargoRevision = getStateConst().cargoRevision;
 
     addProducedCargo(station(1), 0, cargo, 20);
 
@@ -470,6 +512,27 @@ TEST(CargoDistSimulation, AddsProducedCargoUsingCurrentFlow)
     EXPECT_EQ(cargo.origin, station(1));
     EXPECT_EQ(getStationCargoConst(station(1), 0)->packets().front().destination, station(2));
     EXPECT_EQ(getStateConst().supply.at({ 0, station(1) }), 20);
+    EXPECT_EQ(getStateConst().cargoRevision, cargoRevision + 1);
+}
+
+TEST(CargoDistSimulation, PreviewUsesFlowCursorWithoutAdvancingIt)
+{
+    reset();
+    auto& options = getState().flows[{ 0, station(1), station(1), {}, station(4) }];
+    options = {
+        { station(2), 1, -kFlowCursorScale },
+        { station(3), 1, kFlowCursorScale },
+    };
+
+    const auto preview = previewVia(0, station(1), station(1), station(4), 1);
+
+    ASSERT_EQ(preview.size(), 1);
+    EXPECT_EQ(preview.front().via, station(3));
+    EXPECT_EQ(options[0].current, -kFlowCursorScale);
+    EXPECT_EQ(options[1].current, kFlowCursorScale);
+    const auto allocated = allocateVia(0, station(1), station(1), station(4), 1);
+    ASSERT_EQ(allocated.size(), 1);
+    EXPECT_EQ(allocated.front().via, preview.front().via);
 }
 
 TEST(CargoDistSimulation, SplitsProducedCargoByFlowQuantity)
