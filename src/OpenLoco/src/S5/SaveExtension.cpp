@@ -2,8 +2,10 @@
 #include <OpenLoco/S5/SaveExtension.h>
 
 #include "S5/Limits.h"
+#include "S5/S5Station.h"
 #include <OpenLoco/CargoDist/Save.h>
 #include <OpenLoco/GameCommands/Vehicles/VehiclePlace.h>
+#include <OpenLoco/World/Station.h>
 #include <algorithm>
 #include <array>
 #include <limits>
@@ -72,6 +74,12 @@ namespace OpenLoco::S5::SaveExtension
             std::byte{ 'R' },
             std::byte{ 'P' },
             std::byte{ 'L' },
+        };
+        constexpr std::array<std::byte, 4> kStationTileOverflowTag = {
+            std::byte{ 'S' },
+            std::byte{ 'T' },
+            std::byte{ 'N' },
+            std::byte{ 'S' },
         };
         constexpr uint16_t kVersion = 1;
         constexpr uint16_t kHeaderSize = 16;
@@ -515,6 +523,79 @@ namespace OpenLoco::S5::SaveExtension
             return state;
         }
 
+        std::vector<std::byte> encodeStationTileOverflow(const std::vector<StationTileOverflow>& stations)
+        {
+            require(!stations.empty(), "Station tile overflow must not be empty");
+
+            std::vector<StationTileOverflow> sorted = stations;
+            std::ranges::sort(sorted, {}, &StationTileOverflow::station);
+            Writer payload;
+            payload.write(static_cast<uint32_t>(sorted.size()));
+            uint16_t previousStation{};
+            bool hasPreviousStation = false;
+            for (const auto& entry : sorted)
+            {
+                const auto station = static_cast<uint16_t>(entry.station);
+                require(station < Limits::kMaxStations, "Invalid station tile overflow ID");
+                require(!hasPreviousStation || previousStation < station, "Duplicate station tile overflow ID");
+                previousStation = station;
+                hasPreviousStation = true;
+                require(entry.stationTileSize > kMaxStationTilesInSave && entry.stationTileSize <= kMaxStationTiles, "Invalid station tile overflow size");
+                require(entry.stationTiles.size() == entry.stationTileSize, "Invalid station tile overflow tile count");
+                payload.write(station);
+                payload.write(entry.stationTileSize);
+                for (const auto& pos : entry.stationTiles)
+                {
+                    require(World::validCoords(World::Pos2{ pos.x, pos.y }), "Invalid station tile overflow coordinates");
+                    require(pos.z >= 0, "Invalid station tile overflow height");
+                    payload.write(static_cast<uint16_t>(pos.x));
+                    payload.write(static_cast<uint16_t>(pos.y));
+                    payload.write(static_cast<uint16_t>(pos.z));
+                }
+            }
+            return payload.take();
+        }
+
+        std::vector<StationTileOverflow> decodeStationTileOverflow(std::span<const std::byte> data)
+        {
+            Reader input(data);
+            const auto stationCount = input.read<uint32_t>();
+            require(stationCount != 0 && stationCount <= Limits::kMaxStations, "Invalid station tile overflow count");
+
+            std::vector<StationTileOverflow> stations;
+            stations.reserve(stationCount);
+            uint16_t previousStation{};
+            bool hasPreviousStation = false;
+            for (uint32_t i = 0; i < stationCount; ++i)
+            {
+                const auto station = input.read<uint16_t>();
+                require(station < Limits::kMaxStations, "Invalid station tile overflow ID");
+                require(!hasPreviousStation || previousStation < station, "Non-canonical station tile overflow order");
+                previousStation = station;
+                hasPreviousStation = true;
+
+                const auto stationTileSize = input.read<uint16_t>();
+                require(stationTileSize > kMaxStationTilesInSave && stationTileSize <= kMaxStationTiles, "Invalid station tile overflow size");
+                require(stationTileSize <= input.remaining() / (sizeof(uint16_t) * 3), "Truncated station tile overflow");
+
+                auto& entry = stations.emplace_back();
+                entry.station = static_cast<StationId>(station);
+                entry.stationTileSize = stationTileSize;
+                entry.stationTiles.reserve(stationTileSize);
+                for (uint16_t j = 0; j < stationTileSize; ++j)
+                {
+                    const auto x = static_cast<int16_t>(input.read<uint16_t>());
+                    const auto y = static_cast<int16_t>(input.read<uint16_t>());
+                    const auto z = static_cast<int16_t>(input.read<uint16_t>());
+                    require(World::validCoords(World::Pos2{ x, y }), "Invalid station tile overflow coordinates");
+                    require(z >= 0, "Invalid station tile overflow height");
+                    entry.stationTiles.emplace_back(x, y, z);
+                }
+            }
+            require(input.empty(), "Trailing station tile overflow data");
+            return stations;
+        }
+
         bool hasMagic(std::span<const std::byte> data, std::span<const std::byte, 8> magic)
         {
             return data.size() >= magic.size() && std::ranges::equal(data.first(magic.size()), magic);
@@ -531,6 +612,7 @@ namespace OpenLoco::S5::SaveExtension
             .vehicleReplacementState = state.vehicleReplacementState ? &*state.vehicleReplacementState : nullptr,
             .discardPathReservationsOnLoad = state.discardPathReservationsOnLoad,
             .railTrafficState = state.railTrafficState ? &*state.railTrafficState : nullptr,
+            .stationTileOverflowState = state.stationTileOverflowState ? &*state.stationTileOverflowState : nullptr,
         });
     }
 
@@ -572,6 +654,11 @@ namespace OpenLoco::S5::SaveExtension
             const auto railTraffic = encodeRailTraffic(*state.railTrafficState);
             appendSection(payload, kRailTrafficTag, railTraffic, kSectionRequired);
         }
+        if (state.stationTileOverflowState != nullptr)
+        {
+            const auto stationTileOverflow = encodeStationTileOverflow(*state.stationTileOverflowState);
+            appendSection(payload, kStationTileOverflowTag, stationTileOverflow, kSectionRequired);
+        }
 
         require(payload.size() <= std::numeric_limits<uint32_t>::max(), "Save extension is too large");
         Writer output;
@@ -609,6 +696,7 @@ namespace OpenLoco::S5::SaveExtension
         bool hasVehicleAutoRenewal = false;
         bool hasRailTraffic = false;
         bool hasVehicleReplacement = false;
+        bool hasStationTileOverflow = false;
         while (!sections.empty())
         {
             const auto tag = sections.readBytes(4);
@@ -663,6 +751,14 @@ namespace OpenLoco::S5::SaveExtension
                 require(version == kSectionVersion || version == kVehicleReplacementPendingPlacementsVersion || version == kVehicleReplacementSectionVersion, "Unsupported vehicle replacement section version");
                 hasVehicleReplacement = true;
                 state.vehicleReplacementState = decodeVehicleReplacement(sectionData, version);
+            }
+            else if (std::ranges::equal(tag, kStationTileOverflowTag))
+            {
+                require((flags & ~kKnownSectionFlags) == 0, "Invalid station tile overflow section flags");
+                require(!hasStationTileOverflow, "Duplicate station tile overflow save extension section");
+                hasStationTileOverflow = true;
+                require(version == kSectionVersion, "Unsupported station tile overflow section version");
+                state.stationTileOverflowState = decodeStationTileOverflow(sectionData);
             }
             else
             {

@@ -2,6 +2,8 @@
 #pragma once
 
 #include <OpenLoco/CargoDist/Save.h>
+#include <OpenLoco/Engine/World.hpp>
+#include <OpenLoco/Types.hpp>
 #include <OpenLoco/Vehicles/RailTraffic.h>
 #include <OpenLoco/Vehicles/RoutingManager.h>
 #include <OpenLoco/Vehicles/SharedOrderManager.h>
@@ -16,6 +18,13 @@ namespace OpenLoco::S5::SaveExtension
 {
     constexpr size_t kMaxDataSize = CargoDist::kMaxSaveDataSize + Vehicles::RailTraffic::kMaxSaveDataSize + Vehicles::RoutingManager::kMaxSaveDataSize + 64 * 1024;
 
+    struct StationTileOverflow
+    {
+        StationId station = StationId::null;
+        uint16_t stationTileSize = 0;
+        std::vector<World::Pos3> stationTiles;
+    };
+
     struct State
     {
         std::optional<CargoDist::State> cargoDistState;
@@ -25,6 +34,7 @@ namespace OpenLoco::S5::SaveExtension
         std::optional<Vehicles::VehicleAutoRenewal::State> vehicleAutoRenewalState;
         std::optional<Vehicles::VehicleReplacement::State> vehicleReplacementState;
         std::optional<Vehicles::RailTraffic::State> railTrafficState;
+        std::optional<std::vector<StationTileOverflow>> stationTileOverflowState;
     };
 
     struct StateView
@@ -36,6 +46,7 @@ namespace OpenLoco::S5::SaveExtension
         const Vehicles::VehicleReplacement::State* vehicleReplacementState{};
         bool discardPathReservationsOnLoad{};
         const Vehicles::RailTraffic::State* railTrafficState{};
+        const std::vector<StationTileOverflow>* stationTileOverflowState{};
     };
 
     std::vector<std::byte> encode(const State& state);

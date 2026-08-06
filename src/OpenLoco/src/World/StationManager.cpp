@@ -34,7 +34,7 @@ using namespace OpenLoco::World;
 
 namespace OpenLoco::StationManager
 {
-    constexpr auto kStationDistanceLimit = 8 * World::kTileSize;
+    constexpr int32_t kStationDistanceLimit = (kMaxStationTiles / 2) * World::kTileSize;
 
     static auto& rawStations() { return getGameState().stations; }
 

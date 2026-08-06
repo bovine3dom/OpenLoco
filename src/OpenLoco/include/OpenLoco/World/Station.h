@@ -68,6 +68,8 @@ namespace OpenLoco
 
     constexpr size_t kMaxCargoStats = 32;
 
+    constexpr size_t kMaxStationTiles = 256;
+
     enum class StationType : uint8_t
     {
         trainStation = 0,
@@ -136,7 +138,7 @@ namespace OpenLoco
         TownId town{};                                // 0x2C
         StationCargoStats cargoStats[kMaxCargoStats]; // 0x2E
         uint16_t stationTileSize{};                   // 0x1CE
-        World::Pos3 stationTiles[80];                 // 0x1D0 Note: z coordinate also contains rotation so always floor
+        World::Pos3 stationTiles[kMaxStationTiles];       // 0x1D0 Note: z coordinate also contains rotation so always floor
         uint8_t var_3B0{};
         uint8_t var_3B1{};
         uint8_t var_3B2{};

@@ -4,6 +4,7 @@
 #include "S5/S5.h"
 #include "S5/S5GameState.h"
 #include "S5/S5TileElement.h"
+#include "S5/SaveExtension.h"
 #include <OpenLoco/CargoDist/CargoDist.h>
 #include <OpenLoco/Vehicles/RailTraffic.h>
 #include <OpenLoco/Vehicles/RoutingManager.h>
@@ -30,5 +31,6 @@ namespace OpenLoco::S5
         std::optional<Vehicles::VehicleAutoRenewal::State> vehicleAutoRenewalState;
         std::optional<Vehicles::VehicleReplacement::State> vehicleReplacementState;
         std::optional<Vehicles::RailTraffic::State> railTrafficState;
+        std::optional<std::vector<SaveExtension::StationTileOverflow>> stationTileOverflowState;
     };
 }

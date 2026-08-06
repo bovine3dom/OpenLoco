@@ -78,11 +78,24 @@ namespace
         return state;
     }
 
-    uint16_t readU16(const std::span<const std::byte> data, size_t offset)
+    std::vector<S5::SaveExtension::StationTileOverflow> stationTileOverflow(uint16_t station, uint16_t stationTileSize)
     {
-        return std::to_integer<uint8_t>(data[offset])
-            | (static_cast<uint16_t>(std::to_integer<uint8_t>(data[offset + 1])) << 8);
+        std::vector<S5::SaveExtension::StationTileOverflow> result;
+        auto& entry = result.emplace_back();
+        entry.station = static_cast<StationId>(station);
+        entry.stationTileSize = stationTileSize;
+        for (uint16_t i = 0; i < stationTileSize; ++i)
+        {
+            entry.stationTiles.emplace_back(64, 64 + i, 0);
+        }
+        return result;
     }
+
+    uint16_t readU16(const std::span<const std::byte> data, size_t offset)
+{
+    return std::to_integer<uint8_t>(data[offset])
+        | (static_cast<uint16_t>(std::to_integer<uint8_t>(data[offset + 1])) << 8);
+}
 
     uint32_t readU32(const std::span<const std::byte> data, size_t offset)
     {
@@ -493,4 +506,82 @@ TEST(SaveExtension, RejectsInvalidSharedOrderGroupStructure)
     auto invalidEntity = S5::SaveExtension::encode({ nullptr, &shared });
     writeU16(invalidEntity, 38, 20000);
     EXPECT_THROW(S5::SaveExtension::decode(invalidEntity), std::runtime_error);
+}
+
+TEST(SaveExtension, RoundTripsStationTileOverflow)
+{
+    const auto overflow = stationTileOverflow(3, 120);
+    const auto encoded = S5::SaveExtension::encode({ .stationTileOverflowState = &overflow });
+    const auto decoded = S5::SaveExtension::decode(encoded);
+
+    ASSERT_TRUE(decoded.stationTileOverflowState.has_value());
+    ASSERT_EQ(decoded.stationTileOverflowState->size(), 1);
+    EXPECT_EQ((*decoded.stationTileOverflowState)[0].station, static_cast<StationId>(3));
+    EXPECT_EQ((*decoded.stationTileOverflowState)[0].stationTileSize, 120);
+    EXPECT_EQ((*decoded.stationTileOverflowState)[0].stationTiles, overflow[0].stationTiles);
+    EXPECT_EQ(S5::SaveExtension::encode(decoded), encoded);
+    expectTag(encoded, 16, "STNS");
+    EXPECT_EQ(readU16(encoded, 20), 1);
+    EXPECT_EQ(readU16(encoded, 22), 1);
+}
+
+TEST(SaveExtension, StationTileOverflowEncodingIsDeterministic)
+{
+    auto first = stationTileOverflow(3, 90);
+    first.push_back(stationTileOverflow(1, 120)[0]);
+    auto second = first;
+    std::swap(second[0], second[1]);
+
+    EXPECT_EQ(
+        S5::SaveExtension::encode({ .stationTileOverflowState = &first }),
+        S5::SaveExtension::encode({ .stationTileOverflowState = &second }));
+}
+
+TEST(SaveExtension, RejectsInvalidStationTileOverflowSize)
+{
+    auto tooSmall = stationTileOverflow(3, 90);
+    tooSmall[0].stationTileSize = 80;
+    EXPECT_THROW(S5::SaveExtension::encode({ .stationTileOverflowState = &tooSmall }), std::runtime_error);
+
+    auto tooLarge = stationTileOverflow(3, 90);
+    tooLarge[0].stationTileSize = 257;
+    EXPECT_THROW(S5::SaveExtension::encode({ .stationTileOverflowState = &tooLarge }), std::runtime_error);
+}
+
+TEST(SaveExtension, RejectsStationTileOverflowWithMismatchedCount)
+{
+    auto missingTile = stationTileOverflow(3, 90);
+    missingTile[0].stationTiles.pop_back();
+    EXPECT_THROW(S5::SaveExtension::encode({ .stationTileOverflowState = &missingTile }), std::runtime_error);
+}
+
+TEST(SaveExtension, RejectsStationTileOverflowWithInvalidTile)
+{
+    auto invalidX = stationTileOverflow(3, 90);
+    invalidX[0].stationTiles[10] = { 20000, 64, 0 };
+    EXPECT_THROW(S5::SaveExtension::encode({ .stationTileOverflowState = &invalidX }), std::runtime_error);
+
+    auto invalidZ = stationTileOverflow(3, 90);
+    invalidZ[0].stationTiles[10] = { 64, 64, -1 };
+    EXPECT_THROW(S5::SaveExtension::encode({ .stationTileOverflowState = &invalidZ }), std::runtime_error);
+}
+
+TEST(SaveExtension, RejectsNonCanonicalStationTileOverflow)
+{
+    auto overflow = stationTileOverflow(1, 90);
+    overflow.push_back(stationTileOverflow(3, 90)[0]);
+    auto encoded = S5::SaveExtension::encode({ .stationTileOverflowState = &overflow });
+    const auto secondEntryOffset = 28 + 4 + 2 + 2 + 90 * 6;
+    writeU16(encoded, secondEntryOffset, 0);
+
+    EXPECT_THROW(S5::SaveExtension::decode(encoded), std::runtime_error);
+}
+
+TEST(SaveExtension, RejectsTruncatedStationTileOverflow)
+{
+    const auto overflow = stationTileOverflow(3, 90);
+    auto encoded = S5::SaveExtension::encode({ .stationTileOverflowState = &overflow });
+    writeU32(encoded, 24, readU32(encoded, 24) - 1);
+
+    EXPECT_THROW(S5::SaveExtension::decode(encoded), std::runtime_error);
 }

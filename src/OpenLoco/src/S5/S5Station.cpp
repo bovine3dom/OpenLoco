@@ -36,7 +36,7 @@ namespace OpenLoco::S5
         {
             dst.cargoStats[i] = exportCargoStats(src.cargoStats[i]);
         }
-        dst.stationTileSize = src.stationTileSize;
+        dst.stationTileSize = std::min<uint16_t>(src.stationTileSize, static_cast<uint16_t>(std::size(dst.stationTiles)));
         std::ranges::copy(src.stationTiles, dst.stationTiles);
         dst.var_3B0 = src.var_3B0;
         dst.var_3B1 = src.var_3B1;

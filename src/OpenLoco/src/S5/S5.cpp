@@ -609,7 +609,21 @@ namespace OpenLoco::S5
                     throw Exception::RuntimeError("Invalid rail traffic state");
                 }
                 const auto hasRailTraffic = !Vehicles::RailTraffic::isDefault(railTrafficState);
-                extensionData = sharedOrderState.groups.empty() && !hasPathReservations && !hasVehicleAutoRenewal && !hasVehicleReplacement && !hasRailTraffic
+                std::vector<SaveExtension::StationTileOverflow> stationTileOverflow;
+                for (size_t i = 0; i < Limits::kMaxStations; ++i)
+                {
+                    const auto& station = getGameState().stations[i];
+                    if (station.stationTileSize <= S5::kMaxStationTilesInSave)
+                    {
+                        continue;
+                    }
+                    auto& entry = stationTileOverflow.emplace_back();
+                    entry.station = static_cast<StationId>(i);
+                    entry.stationTileSize = station.stationTileSize;
+                    entry.stationTiles.assign(std::begin(station.stationTiles), std::begin(station.stationTiles) + station.stationTileSize);
+                }
+                const auto hasStationTileOverflow = !stationTileOverflow.empty();
+                extensionData = sharedOrderState.groups.empty() && !hasPathReservations && !hasVehicleAutoRenewal && !hasVehicleReplacement && !hasRailTraffic && !hasStationTileOverflow
                     ? CargoDist::encodeState(CargoDist::getStateConst())
                     : SaveExtension::encode({
                           .cargoDistState = &CargoDist::getStateConst(),
@@ -618,6 +632,7 @@ namespace OpenLoco::S5
                           .vehicleAutoRenewalState = hasVehicleAutoRenewal ? &vehicleAutoRenewalState : nullptr,
                           .vehicleReplacementState = hasVehicleReplacement ? &vehicleReplacementState : nullptr,
                           .railTrafficState = hasRailTraffic ? &railTrafficState : nullptr,
+                          .stationTileOverflowState = hasStationTileOverflow ? &stationTileOverflow : nullptr,
                       });
             }
 
@@ -795,6 +810,7 @@ namespace OpenLoco::S5
                 file->vehicleAutoRenewalState = std::move(extensionState.vehicleAutoRenewalState);
                 file->vehicleReplacementState = std::move(extensionState.vehicleReplacementState);
                 file->railTrafficState = std::move(extensionState.railTrafficState);
+                file->stationTileOverflowState = std::move(extensionState.stationTileOverflowState);
             }
             if (stream.getPosition() != checksumPosition)
             {
@@ -980,6 +996,15 @@ namespace OpenLoco::S5
             }
 
             auto importedGameState = importGameState(file->gameState);
+            if (file->stationTileOverflowState.has_value())
+            {
+                for (const auto& overflow : *file->stationTileOverflowState)
+                {
+                    auto& station = importedGameState->stations[enumValue(overflow.station)];
+                    station.stationTileSize = overflow.stationTileSize;
+                    std::copy(std::begin(overflow.stationTiles), std::end(overflow.stationTiles), std::begin(station.stationTiles));
+                }
+            }
             if (file->cargoDistState.has_value() && !hasLoadFlags(flags, LoadFlags::titleSequence))
             {
                 validateCargoDistObjects(*file->cargoDistState, file->requiredObjects);

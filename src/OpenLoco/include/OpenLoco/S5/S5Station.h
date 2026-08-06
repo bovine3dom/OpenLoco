@@ -2,7 +2,9 @@
 
 #include "S5LabelFrame.h"
 #include <OpenLoco/Engine/World.hpp>
+#include <cstddef>
 #include <cstdint>
+#include <iterator>
 
 namespace OpenLoco
 {
@@ -51,6 +53,8 @@ namespace OpenLoco::S5
     };
     static_assert(sizeof(Station) == 0x3D2);
 #pragma pack(pop)
+
+    inline constexpr size_t kMaxStationTilesInSave = std::size(Station{}.stationTiles);
 
     S5::Station exportStation(const OpenLoco::Station& src);
     OpenLoco::Station importStation(const S5::Station& src);
