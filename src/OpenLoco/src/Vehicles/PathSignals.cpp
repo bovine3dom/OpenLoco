@@ -1,5 +1,6 @@
 #include "Vehicles/PathSignals.h"
 
+#include "Entities/EntityManager.h"
 #include "Map/QuarterTile.h"
 #include "Map/StationElement.h"
 #include "Map/TileManager.h"
@@ -16,7 +17,10 @@
 #include "Vehicles/VehicleTail.h"
 #include "World/Station.h"
 #include "World/StationManager.h"
+#include <OpenLoco/Engine/Limits.h>
 #include <algorithm>
+#include <array>
+#include <bit>
 #include <limits>
 #include <optional>
 #include <queue>
@@ -43,6 +47,35 @@ namespace OpenLoco::Vehicles::PathSignals
     };
 
     using ResourceMasks = std::unordered_map<uint64_t, uint32_t>;
+
+    using ResourceClaimCounts = std::array<uint32_t, 32>;
+
+    struct ReservationClaim
+    {
+        EntityId vehicle;
+        uint32_t mask;
+    };
+
+    struct VehicleClaim
+    {
+        Resource resource;
+        bool pathReserved;
+    };
+
+    struct ClaimedResourceCache
+    {
+        bool active{};
+        ResourceMasks masks;
+        std::unordered_map<uint64_t, ResourceClaimCounts> counts;
+        std::unordered_map<EntityId, std::vector<VehicleClaim>> byVehicle;
+        std::unordered_map<uint64_t, std::vector<ReservationClaim>> reservations;
+        ResourceMasks fallback;
+        std::array<bool, Limits::kMaxVehicles> dirty{};
+        std::array<EntityId, Limits::kMaxVehicles> owners{};
+        std::vector<uint16_t> dirtyVehicles;
+    };
+
+    static ClaimedResourceCache _claimedResourceCache;
 
     struct SearchNode
     {
@@ -183,54 +216,283 @@ namespace OpenLoco::Vehicles::PathSignals
     }
 
     template<typename TFunc>
+    static void forEachClaimedResource(const VehicleHead& head, TFunc&& func)
+    {
+        if (head.mode != TransportMode::rail || head.tileX == -1)
+        {
+            return;
+        }
+
+        const Vehicle train(head);
+        auto pos = Pos3{ train.tail->tileX, train.tail->tileY, train.tail->tileBaseZ * kSmallZStep };
+        auto occupied = true;
+        for (const auto handle : RoutingManager::RingView(train.tail->routingHandle))
+        {
+            const auto routing = RoutingManager::getRouting(handle);
+            forEachResource(pos, routing, [&](const auto& resource) {
+                func(head, resource, occupied, RoutingManager::isPathReserved(handle));
+                return true;
+            });
+            pos += TrackData::getUnkTrack(routing & Track::AdditionalTaDFlags::basicTaDMask).pos;
+            if (handle == head.routingHandle)
+            {
+                occupied = false;
+            }
+        }
+        for (const auto routing : RoutingManager::getReservedContinuation(head.routingHandle))
+        {
+            forEachResource(pos, routing, [&](const auto& resource) {
+                func(head, resource, false, true);
+                return true;
+            });
+            pos += TrackData::getUnkTrack(routing & Track::AdditionalTaDFlags::basicTaDMask).pos;
+        }
+    }
+
+    template<typename TFunc>
     static void forEachClaimedResource(TFunc&& func)
     {
-        std::vector<Resource> resources;
         for (const auto* head : VehicleManager::VehicleList())
         {
-            if (head->mode != TransportMode::rail || head->tileX == -1)
-            {
-                continue;
-            }
+            forEachClaimedResource(*head, func);
+        }
+    }
 
-            const Vehicle train(*head);
-            auto pos = Pos3{ train.tail->tileX, train.tail->tileY, train.tail->tileBaseZ * kSmallZStep };
-            auto occupied = true;
-            for (const auto handle : RoutingManager::RingView(train.tail->routingHandle))
+    static void addCachedResource(const Resource& resource)
+    {
+        const auto key = getResourceKey(resource.pos);
+        auto& counts = _claimedResourceCache.counts[key];
+        auto bits = resource.conflictMask;
+        while (bits != 0)
+        {
+            const auto bit = std::countr_zero(bits);
+            if (++counts[bit] == 1)
             {
-                const auto routing = RoutingManager::getRouting(handle);
-                resources.clear();
-                appendResources(resources, pos, routing);
-                for (const auto& resource : resources)
+                _claimedResourceCache.masks[key] |= 1U << bit;
+            }
+            bits &= bits - 1;
+        }
+    }
+
+    static void removeCachedResource(const Resource& resource)
+    {
+        const auto key = getResourceKey(resource.pos);
+        auto counts = _claimedResourceCache.counts.find(key);
+        auto mask = _claimedResourceCache.masks.find(key);
+        if (counts == _claimedResourceCache.counts.end() || mask == _claimedResourceCache.masks.end())
+        {
+            return;
+        }
+        auto bits = resource.conflictMask;
+        while (bits != 0)
+        {
+            const auto bit = std::countr_zero(bits);
+            if (--counts->second[bit] == 0)
+            {
+                mask->second &= ~(1U << bit);
+            }
+            bits &= bits - 1;
+        }
+        if (mask->second == 0)
+        {
+            _claimedResourceCache.masks.erase(mask);
+            _claimedResourceCache.counts.erase(counts);
+        }
+    }
+
+    static void addCachedReservation(const EntityId vehicle, const Resource& resource)
+    {
+        auto& claims = _claimedResourceCache.reservations[getResourceKey(resource.pos)];
+        const auto existing = std::ranges::find(claims, vehicle, &ReservationClaim::vehicle);
+        if (existing != claims.end())
+        {
+            existing->mask |= resource.conflictMask;
+        }
+        else
+        {
+            claims.push_back({ vehicle, resource.conflictMask });
+        }
+    }
+
+    static void removeCachedReservation(const EntityId vehicle, const Resource& resource)
+    {
+        const auto key = getResourceKey(resource.pos);
+        const auto claims = _claimedResourceCache.reservations.find(key);
+        if (claims == _claimedResourceCache.reservations.end())
+        {
+            return;
+        }
+        std::erase_if(claims->second, [vehicle](const auto& claim) { return claim.vehicle == vehicle; });
+        if (claims->second.empty())
+        {
+            _claimedResourceCache.reservations.erase(claims);
+        }
+    }
+
+    static void refreshVehicleClaims(const VehicleHead& head, bool force = false)
+    {
+        if (!_claimedResourceCache.active)
+        {
+            return;
+        }
+        const auto vehicleRef = head.routingHandle.getVehicleRef();
+        if (!force && !_claimedResourceCache.dirty[vehicleRef])
+        {
+            return;
+        }
+        auto existing = _claimedResourceCache.byVehicle.find(head.id);
+        std::vector<VehicleClaim> claims;
+        if (existing != _claimedResourceCache.byVehicle.end())
+        {
+            for (const auto& claim : existing->second)
+            {
+                removeCachedResource(claim.resource);
+                if (claim.pathReserved)
                 {
-                    func(*head, resource, occupied, RoutingManager::isPathReserved(handle));
-                }
-                pos += TrackData::getUnkTrack(routing & Track::AdditionalTaDFlags::basicTaDMask).pos;
-                if (handle == head->routingHandle)
-                {
-                    occupied = false;
+                    removeCachedReservation(head.id, claim.resource);
                 }
             }
-            for (const auto routing : RoutingManager::getReservedContinuation(head->routingHandle))
+            claims = std::move(existing->second);
+            claims.clear();
+        }
+        else
+        {
+            claims.reserve(32);
+        }
+
+        forEachClaimedResource(head, [&claims](const auto&, const auto& resource, const bool, const bool pathReserved) {
+            claims.push_back({ resource, pathReserved });
+        });
+        for (const auto& claim : claims)
+        {
+            addCachedResource(claim.resource);
+            if (claim.pathReserved)
             {
-                resources.clear();
-                appendResources(resources, pos, routing);
-                for (const auto& resource : resources)
+                addCachedReservation(head.id, claim.resource);
+            }
+        }
+        if (existing != _claimedResourceCache.byVehicle.end())
+        {
+            existing->second = std::move(claims);
+        }
+        else if (!claims.empty())
+        {
+            _claimedResourceCache.byVehicle.emplace(head.id, std::move(claims));
+        }
+        _claimedResourceCache.dirty[vehicleRef] = false;
+    }
+
+    static void refreshDirtyVehicleClaims()
+    {
+        for (const auto vehicleRef : _claimedResourceCache.dirtyVehicles)
+        {
+            if (_claimedResourceCache.dirty[vehicleRef])
+            {
+                refreshVehicleClaims(_claimedResourceCache.owners[vehicleRef], vehicleRef);
+            }
+        }
+        _claimedResourceCache.dirtyVehicles.clear();
+    }
+
+    static const ResourceMasks& getClaimedResourceMask()
+    {
+        if (_claimedResourceCache.active)
+        {
+            refreshDirtyVehicleClaims();
+            return _claimedResourceCache.masks;
+        }
+        auto& claimed = _claimedResourceCache.fallback;
+        claimed.clear();
+        forEachClaimedResource([&](const auto&, const auto& resource, const bool, const bool) {
+            claimed[getResourceKey(resource.pos)] |= resource.conflictMask;
+        });
+        return claimed;
+    }
+
+    void beginTick()
+    {
+        _claimedResourceCache.active = true;
+        _claimedResourceCache.masks.clear();
+        _claimedResourceCache.counts.clear();
+        _claimedResourceCache.reservations.clear();
+        _claimedResourceCache.masks.reserve(4096);
+        _claimedResourceCache.counts.reserve(4096);
+        _claimedResourceCache.byVehicle.reserve(256);
+        _claimedResourceCache.reservations.reserve(4096);
+        for (auto& [vehicle, claims] : _claimedResourceCache.byVehicle)
+        {
+            claims.clear();
+        }
+        _claimedResourceCache.dirty.fill(false);
+        _claimedResourceCache.owners.fill(EntityId::null);
+        _claimedResourceCache.dirtyVehicles.clear();
+        _claimedResourceCache.dirtyVehicles.reserve(256);
+        for (const auto* head : VehicleManager::VehicleList())
+        {
+            _claimedResourceCache.owners[head->routingHandle.getVehicleRef()] = head->id;
+            auto& claims = _claimedResourceCache.byVehicle[head->id];
+            claims.reserve(32);
+            forEachClaimedResource(*head, [&claims](const auto&, const auto& resource, const bool, const bool pathReserved) {
+                claims.push_back({ resource, pathReserved });
+            });
+            for (const auto& claim : claims)
+            {
+                addCachedResource(claim.resource);
+                if (claim.pathReserved)
                 {
-                    func(*head, resource, false, true);
+                    addCachedReservation(head->id, claim.resource);
                 }
-                pos += TrackData::getUnkTrack(routing & Track::AdditionalTaDFlags::basicTaDMask).pos;
+            }
+        }
+        std::erase_if(_claimedResourceCache.byVehicle, [](const auto& item) { return item.second.empty(); });
+    }
+
+    void markVehicleClaimsDirty(const uint16_t vehicleRef)
+    {
+        if (_claimedResourceCache.active && vehicleRef < _claimedResourceCache.dirty.size())
+        {
+            if (!_claimedResourceCache.dirty[vehicleRef])
+            {
+                _claimedResourceCache.dirty[vehicleRef] = true;
+                _claimedResourceCache.dirtyVehicles.push_back(vehicleRef);
             }
         }
     }
 
-    static ResourceMasks getClaimedResourceMask()
+    void refreshVehicleClaims(const EntityId vehicle, const uint16_t vehicleRef)
     {
-        ResourceMasks claimed;
-        forEachClaimedResource([&claimed](const auto&, const auto& resource, const bool, const bool) {
-            claimed[getResourceKey(resource.pos)] |= resource.conflictMask;
-        });
-        return claimed;
+        if (!_claimedResourceCache.active || vehicleRef >= _claimedResourceCache.dirty.size() || !_claimedResourceCache.dirty[vehicleRef])
+        {
+            return;
+        }
+        const auto* head = EntityManager::get<VehicleHead>(vehicle);
+        if (head != nullptr)
+        {
+            const auto currentVehicleRef = head->routingHandle.getVehicleRef();
+            _claimedResourceCache.owners[currentVehicleRef] = vehicle;
+            refreshVehicleClaims(*head, currentVehicleRef != vehicleRef);
+            _claimedResourceCache.dirty[vehicleRef] = false;
+            return;
+        }
+        const auto existing = _claimedResourceCache.byVehicle.find(vehicle);
+        if (existing != _claimedResourceCache.byVehicle.end())
+        {
+            for (const auto& claim : existing->second)
+            {
+                removeCachedResource(claim.resource);
+                if (claim.pathReserved)
+                {
+                    removeCachedReservation(vehicle, claim.resource);
+                }
+            }
+            _claimedResourceCache.byVehicle.erase(existing);
+        }
+        _claimedResourceCache.dirty[vehicleRef] = false;
+    }
+
+    void endTick()
+    {
+        _claimedResourceCache.active = false;
     }
 
     std::vector<ClaimedResource> getClaimedResources()
@@ -353,6 +615,7 @@ namespace OpenLoco::Vehicles::PathSignals
     static std::vector<uint16_t> getPath(const std::vector<SearchNode>& nodes, uint16_t index)
     {
         std::vector<uint16_t> path;
+        path.reserve(nodes[index].depth);
         while (index != kNoParent)
         {
             path.push_back(nodes[index].routing);
@@ -365,7 +628,9 @@ namespace OpenLoco::Vehicles::PathSignals
     static bool hasConflict(const std::vector<uint16_t>& path, const Pos3& firstPos, const ResourceMasks& claimed)
     {
         ResourceMasks pathResources;
+        pathResources.reserve(path.size() * 2);
         std::vector<Resource> resources;
+        resources.reserve(4);
         auto pos = firstPos;
         for (const auto routing : path)
         {
@@ -475,6 +740,20 @@ namespace OpenLoco::Vehicles::PathSignals
 
     bool hasPathReservationConflict(const EntityId vehicle, const Pos3& pos, const uint16_t routing)
     {
+        if (_claimedResourceCache.active)
+        {
+            refreshDirtyVehicleClaims();
+            auto hasConflict = false;
+            forEachResource(pos, routing, [&](const auto& resource) {
+                const auto claims = _claimedResourceCache.reservations.find(getResourceKey(resource.pos));
+                hasConflict = claims != _claimedResourceCache.reservations.end()
+                    && std::ranges::any_of(claims->second, [&](const auto& claim) {
+                                  return claim.vehicle != vehicle && (claim.mask & resource.conflictMask) != 0;
+                              });
+                return !hasConflict;
+            });
+            return hasConflict;
+        }
         if (!RoutingManager::hasPathReservations())
         {
             return false;
@@ -582,10 +861,13 @@ namespace OpenLoco::Vehicles::PathSignals
         std::vector<LookaheadNode> nodes;
         nodes.reserve(kMaxLookaheadNodes);
         nodes.push_back({ firstPos, firstRouting, 1, seedWeighting, seedProgress });
-        std::priority_queue<PendingNode, std::vector<PendingNode>, decltype(comparePending)> pending(comparePending);
+        std::vector<PendingNode> pendingStorage;
+        pendingStorage.reserve(kMaxLookaheadNodes);
+        std::priority_queue<PendingNode, std::vector<PendingNode>, decltype(comparePending)> pending(comparePending, std::move(pendingStorage));
         pending.push({ addWeighting(seedWeighting, seedDistance), 0 });
 
         std::unordered_map<uint64_t, RailTraffic::TravelTime> bestWeightingByRoute;
+        bestWeightingByRoute.reserve(kMaxLookaheadNodes);
         const auto getRouteKey = [](const Pos3& pos, const uint16_t routing, const uint8_t numTargetsReached) {
             return getResourceKey(pos)
                 | (static_cast<uint64_t>(routing & Track::AdditionalTaDFlags::basicTaDMask) << 48)
@@ -729,22 +1011,25 @@ namespace OpenLoco::Vehicles::PathSignals
             return std::nullopt;
         }
 
+        refreshVehicleClaims(head);
         const Vehicle train(head);
         const auto requiredMods = head.var_53;
         const auto queryMods = train.veh1->var_49;
         const auto [target, nextTarget] = getTargets(head);
         const auto* nextTargetPtr = nextTarget.has_value() ? &*nextTarget : nullptr;
         const auto speedProfile = RailTraffic::getSpeedProfile(head);
-        const auto claimed = getClaimedResourceMask();
+        const auto& claimed = getClaimedResourceMask();
         const ResourceMasks noClaims;
 
         std::vector<Candidate> candidates;
+        candidates.reserve(kMaxReservationCandidates);
         const auto appendCandidates = [&](const uint16_t firstRouting) {
             auto searchTruncated = false;
             std::vector<SearchNode> nodes;
             nodes.reserve(kMaxSearchNodes);
             nodes.push_back({ firstPos, firstRouting, kNoParent, 1, 0, 0 });
             std::vector<uint16_t> pending{ 0 };
+            pending.reserve(kMaxSearchNodes);
             const auto firstCandidate = candidates.size();
 
             const auto considerCandidate = [&](const uint16_t tailIndex, const Pos3& endpoint, const uint8_t numTargetsReached, const RailTraffic::TravelTime weighting, std::optional<std::pair<Pos3, uint16_t>> continuation) {
@@ -1011,6 +1296,7 @@ namespace OpenLoco::Vehicles::PathSignals
             RoutingManager::setRouting(handle, best->routings[i]);
             RoutingManager::markPathReserved(handle);
         }
+        refreshVehicleClaims(head);
         return best->routings.front();
     }
 

@@ -1167,6 +1167,42 @@ TEST_F(PathSignalsTest, ReportsOnlyFutureRoutingEntriesAsReserved)
     EXPECT_FALSE(OpenLoco::Vehicles::PathSignals::isPathReserved({ currentPos.x - kTileSize, currentPos.y, currentPos.z }, straightWest));
 }
 
+TEST_F(PathSignalsTest, CachedReservationsRefreshAfterRoutingMutation)
+{
+    auto* reservingTrain = createTrain(kFirstPos, kStraightWest);
+    ASSERT_NE(reservingTrain, nullptr);
+    auto* queryingTrain = createTrain({ 640, 320, 32 }, kStraightWest);
+    ASSERT_NE(queryingTrain, nullptr);
+    OpenLoco::Vehicles::RoutingManager::markPathReserved(reservingTrain->routingHandle);
+    OpenLoco::Vehicles::PathSignals::beginTick();
+
+    EXPECT_TRUE(OpenLoco::Vehicles::PathSignals::hasPathReservationConflict(queryingTrain->id, kFirstPos, kStraightWest));
+    EXPECT_FALSE(OpenLoco::Vehicles::PathSignals::hasPathReservationConflict(reservingTrain->id, kFirstPos, kStraightWest));
+
+    OpenLoco::Vehicles::RoutingManager::clearPathReservations(reservingTrain->routingHandle);
+    EXPECT_FALSE(OpenLoco::Vehicles::PathSignals::hasPathReservationConflict(queryingTrain->id, kFirstPos, kStraightWest));
+
+    OpenLoco::Vehicles::RoutingManager::markPathReserved(reservingTrain->routingHandle);
+    EXPECT_TRUE(OpenLoco::Vehicles::PathSignals::hasPathReservationConflict(queryingTrain->id, kFirstPos, kStraightWest));
+
+    OpenLoco::Vehicles::PathSignals::endTick();
+}
+
+TEST_F(PathSignalsTest, CachedReservationsRemoveDeletedVehicle)
+{
+    auto* train = createTrain(kFirstPos, kStraightWest);
+    ASSERT_NE(train, nullptr);
+    OpenLoco::Vehicles::RoutingManager::markPathReserved(train->routingHandle);
+    OpenLoco::Vehicles::PathSignals::beginTick();
+    EXPECT_TRUE(OpenLoco::Vehicles::PathSignals::hasPathReservationConflict(OpenLoco::EntityId::null, kFirstPos, kStraightWest));
+
+    OpenLoco::Vehicles::RoutingManager::freeRoutingHandle(train->routingHandle);
+    OpenLoco::EntityManager::freeEntity(train);
+    EXPECT_FALSE(OpenLoco::Vehicles::PathSignals::hasPathReservationConflict(OpenLoco::EntityId::null, kFirstPos, kStraightWest));
+
+    OpenLoco::Vehicles::PathSignals::endTick();
+}
+
 TEST_F(PathSignalsTest, GhostInfrastructureRemovalIgnoresFutureRouting)
 {
     constexpr Pos3 currentPos{ 320, 160, 32 };

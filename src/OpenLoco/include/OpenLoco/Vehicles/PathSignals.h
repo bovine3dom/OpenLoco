@@ -26,6 +26,10 @@ namespace OpenLoco::Vehicles::PathSignals
 
     bool tryReservePath(VehicleHead& head, const World::Pos3& firstPos, uint16_t firstRouting);
     std::optional<uint16_t> tryReservePath(VehicleHead& head, const World::Pos3& firstPos, uint16_t preferredRouting, std::span<const uint16_t> firstRoutings);
+    void beginTick();
+    void markVehicleClaimsDirty(uint16_t vehicleRef);
+    void refreshVehicleClaims(EntityId vehicle, uint16_t vehicleRef);
+    void endTick();
     bool isPathReserved(const World::Pos3& pos, uint16_t routing);
     bool hasPathReservationConflict(EntityId vehicle, const World::Pos3& pos, uint16_t routing);
     std::vector<ClaimedResource> getClaimedResources();

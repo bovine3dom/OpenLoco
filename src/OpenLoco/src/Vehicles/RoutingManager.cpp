@@ -2,6 +2,7 @@
 #include "GameState.h"
 #include "Map/Track/Track.h"
 #include "Map/Track/TrackData.h"
+#include "Vehicles/PathSignals.h"
 #include "Vehicles/Vehicle.h"
 #include "Vehicles/VehicleHead.h"
 #include <algorithm>
@@ -120,6 +121,7 @@ namespace OpenLoco::Vehicles::RoutingManager
     {
         auto& vehRoutingArr = routings()[handle.getVehicleRef()];
         std::fill(std::begin(vehRoutingArr), std::end(vehRoutingArr), kAllocatedButFreeRouting);
+        PathSignals::markVehicleClaimsDirty(handle.getVehicleRef());
         clearPathReservations(handle);
     }
 
@@ -150,10 +152,19 @@ namespace OpenLoco::Vehicles::RoutingManager
 
     void setRouting(const RoutingHandle handle, uint16_t routing)
     {
-        routings()[handle.getVehicleRef()][handle.getIndex()] = routing;
+        auto& currentRouting = routings()[handle.getVehicleRef()][handle.getIndex()];
+        auto claimsChanged = currentRouting != routing;
+        currentRouting = routing;
         if (routing == kAllocatedButFreeRouting || routing == kRoutingNull)
         {
-            pathReservedRoutings()[handle.getVehicleRef()] &= ~getRoutingMask(handle);
+            auto& reservations = pathReservedRoutings()[handle.getVehicleRef()];
+            const auto routingMask = getRoutingMask(handle);
+            claimsChanged |= (reservations & routingMask) != 0;
+            reservations &= ~routingMask;
+        }
+        if (claimsChanged)
+        {
+            PathSignals::markVehicleClaimsDirty(handle.getVehicleRef());
         }
     }
 
@@ -233,7 +244,13 @@ namespace OpenLoco::Vehicles::RoutingManager
 
     void markPathReserved(const RoutingHandle handle)
     {
-        pathReservedRoutings()[handle.getVehicleRef()] |= getRoutingMask(handle);
+        auto& reservations = pathReservedRoutings()[handle.getVehicleRef()];
+        const auto previous = reservations;
+        reservations |= getRoutingMask(handle);
+        if (reservations != previous)
+        {
+            PathSignals::markVehicleClaimsDirty(handle.getVehicleRef());
+        }
     }
 
     bool isPathReserved(const RoutingHandle handle)
@@ -260,7 +277,12 @@ namespace OpenLoco::Vehicles::RoutingManager
 
     void clearPathReservations(const RoutingHandle handle)
     {
-        pathReservedRoutings()[handle.getVehicleRef()] = 0;
+        auto& reservations = pathReservedRoutings()[handle.getVehicleRef()];
+        if (reservations != 0)
+        {
+            reservations = 0;
+            PathSignals::markVehicleClaimsDirty(handle.getVehicleRef());
+        }
         clearReservedContinuation(handle);
     }
 
@@ -273,11 +295,17 @@ namespace OpenLoco::Vehicles::RoutingManager
     {
         auto& continuation = _continuations[handle.getVehicleRef()];
         continuation.assign(entries.begin(), entries.end());
+        PathSignals::markVehicleClaimsDirty(handle.getVehicleRef());
     }
 
     void clearReservedContinuation(const RoutingHandle handle)
     {
-        _continuations[handle.getVehicleRef()].clear();
+        auto& continuation = _continuations[handle.getVehicleRef()];
+        if (!continuation.empty())
+        {
+            continuation.clear();
+            PathSignals::markVehicleClaimsDirty(handle.getVehicleRef());
+        }
     }
 
     // 0x004B1E77
@@ -285,6 +313,7 @@ namespace OpenLoco::Vehicles::RoutingManager
     {
         auto& vehRoutingArr = routings()[handle.getVehicleRef()];
         std::fill(std::begin(vehRoutingArr), std::end(vehRoutingArr), kRoutingNull);
+        PathSignals::markVehicleClaimsDirty(handle.getVehicleRef());
         clearPathReservations(handle);
     }
 

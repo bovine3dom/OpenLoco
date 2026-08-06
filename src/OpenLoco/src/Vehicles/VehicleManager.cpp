@@ -38,10 +38,15 @@ namespace OpenLoco::VehicleManager
         if (Game::hasFlags(GameStateFlags::tileManagerLoaded) && !SceneManager::isEditorMode())
         {
             Vehicles::RailTraffic::beginTick();
+            Vehicles::PathSignals::beginTick();
             for (auto* v : VehicleList())
             {
+                const auto id = v->id;
+                const auto vehicleRef = v->routingHandle.getVehicleRef();
                 v->updateVehicle();
+                Vehicles::PathSignals::refreshVehicleClaims(id, vehicleRef);
             }
+            Vehicles::PathSignals::endTick();
             Vehicles::RailTraffic::endTick();
         }
     }

@@ -6954,6 +6954,7 @@ namespace OpenLoco::Vehicles
             veh.tileX = -1;
             veh.moveTo(World::Pos3(static_cast<int16_t>(0x8000), 0, 0));
         });
+        PathSignals::markVehicleClaimsDirty(routingHandle.getVehicleRef());
 
         if (!Config::get().keepCargoModifyPickup)
         {

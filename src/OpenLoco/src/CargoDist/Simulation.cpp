@@ -86,6 +86,8 @@ namespace OpenLoco::CargoDist
             uint64_t revision = std::numeric_limits<uint64_t>::max();
             std::map<uint8_t, RoutingGraph> graphs;
             std::map<std::tuple<uint8_t, StationId, ServicePoint>, std::vector<StationJourneyCost>> costs;
+            std::array<bool, 32> baseDemandReady{};
+            std::array<std::map<ServiceEdgeKey, uint64_t>, 32> baseDemand;
             std::map<ServiceEdgeKey, uint64_t> plannedDemand;
             std::map<ServiceEdgeKey, uint64_t> boardedDemand;
         };
@@ -831,12 +833,11 @@ namespace OpenLoco::CargoDist
             return demands;
         }
 
-        RoutingGraph buildGraph(uint8_t cargo)
+        RoutingGraph buildGraph(uint8_t cargo, bool includeDemands = true)
         {
             RoutingGraph graph;
             graph.timeSensitive = true;
             const auto& state = getStateConst();
-            const auto demands = getRoutingDemands(cargo);
             const auto* cargoObject = ObjectManager::get<CargoObject>(cargo);
             auto useCatchmentAttraction = cargoObject != nullptr && cargoObject->cargoCategory == CargoCategory::passengers;
             if (useCatchmentAttraction)
@@ -869,10 +870,13 @@ namespace OpenLoco::CargoDist
                     attraction,
                 });
             }
-            for (const auto& [key, amount] : demands)
+            if (includeDemands)
             {
-                const auto& [source, origin, incoming, destination] = key;
-                graph.demands.push_back({ source, origin, amount, incoming, destination });
+                for (const auto& [key, amount] : getRoutingDemands(cargo))
+                {
+                    const auto& [source, origin, incoming, destination] = key;
+                    graph.demands.push_back({ source, origin, amount, incoming, destination });
+                }
             }
             for (const auto& [key, edge] : state.serviceEdges)
             {
@@ -894,22 +898,30 @@ namespace OpenLoco::CargoDist
                 return cached->second;
             }
 
-            std::erase_if(_journeyCache.plannedDemand, [cargo](const auto& item) { return item.first.cargo == cargo; });
-            for (const auto& [key, options] : state.flows)
+            if (!_journeyCache.baseDemandReady[cargo])
             {
-                if (key.cargo != cargo)
+                for (const auto& [key, options] : state.flows)
                 {
-                    continue;
-                }
-                for (const auto& option : options)
-                {
-                    if (option.via == key.station || option.via == StationId::null)
+                    if (key.cargo != cargo)
                     {
                         continue;
                     }
-                    auto& demand = _journeyCache.plannedDemand[{ cargo, key.station, option.via, option.departure, option.arrival }];
-                    demand = std::min<uint64_t>(std::numeric_limits<uint64_t>::max() - option.weight, demand) + option.weight;
+                    for (const auto& option : options)
+                    {
+                        if (option.via == key.station || option.via == StationId::null)
+                        {
+                            continue;
+                        }
+                        auto& demand = _journeyCache.baseDemand[cargo][{ cargo, key.station, option.via, option.departure, option.arrival }];
+                        demand = std::min<uint64_t>(std::numeric_limits<uint64_t>::max() - option.weight, demand) + option.weight;
+                    }
                 }
+                _journeyCache.baseDemandReady[cargo] = true;
+            }
+            std::erase_if(_journeyCache.plannedDemand, [cargo](const auto& item) { return item.first.cargo == cargo; });
+            for (const auto& [key, demand] : _journeyCache.baseDemand[cargo])
+            {
+                _journeyCache.plannedDemand.emplace(key, demand);
             }
             for (auto& [key, demand] : _journeyCache.plannedDemand)
             {
@@ -943,8 +955,7 @@ namespace OpenLoco::CargoDist
                 planned = std::max(planned, demand);
             }
 
-            auto graph = buildGraph(cargo);
-            graph.demands.clear();
+            auto graph = buildGraph(cargo, false);
             for (auto& edge : graph.edges)
             {
                 const auto demand = _journeyCache.plannedDemand[{ cargo, edge.from, edge.to, edge.departure, edge.arrival }];
