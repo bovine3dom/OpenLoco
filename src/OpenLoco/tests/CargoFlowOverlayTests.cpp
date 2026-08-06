@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include <OpenLoco/CargoDist/CargoDist.h>
+#include <OpenLoco/CargoDist/Simulation.h>
 #include <OpenLoco/Graphics/RenderTarget.h>
 #include <OpenLoco/Graphics/SoftwareDrawingContext.h>
 #include <OpenLoco/Ui/Windows/CargoFlowOverlay.h>
@@ -38,11 +39,11 @@ TEST(CargoFlowOverlayTest, AggregatesDirectedPlannedDemandAndCapacity)
 {
     reset();
     auto& state = getState();
-    state.serviceEdges[{ 0, station(1), station(2), servicePoint(1, 0), servicePoint(1, 1) }] = { 20, 10, 2 };
-    state.serviceEdges[{ 0, station(1), station(2), servicePoint(2, 0), servicePoint(2, 1) }] = { 30, 12, 3 };
-    state.serviceEdges[{ 0, station(2), station(1) }] = { 75, 10 };
-    state.serviceEdges[{ 0, station(4), station(5) }] = { 30, 10 };
-    state.serviceEdges[{ 1, station(1), station(2) }] = { 200, 10 };
+    state.serviceEdges[{ 0, station(1), station(2), servicePoint(1, 0), servicePoint(1, 1) }] = { 20, 10, 2, 0, 20 };
+    state.serviceEdges[{ 0, station(1), station(2), servicePoint(2, 0), servicePoint(2, 1) }] = { 30, 12, 3, 0, 30 };
+    state.serviceEdges[{ 0, station(2), station(1) }] = { 75, 10, 0, 0, 75 };
+    state.serviceEdges[{ 0, station(4), station(5) }] = { 30, 10, 0, 0, 30 };
+    state.serviceEdges[{ 1, station(1), station(2) }] = { 200, 10, 0, 0, 200 };
     state.flows[{ 0, station(1), station(6) }] = {
         { station(1), 30, 0 },
         { station(2), 12, 0, servicePoint(1, 0), servicePoint(1, 1) },
@@ -111,9 +112,9 @@ TEST(CargoFlowOverlayTest, SeparatesStoppingAndLimitedStopLinks)
 {
     reset();
     auto& state = getState();
-    state.serviceEdges[{ 0, station(1), station(2), servicePoint(1, 0), servicePoint(1, 1) }] = { 40, 10, 2, 4 };
-    state.serviceEdges[{ 0, station(2), station(3), servicePoint(1, 1), servicePoint(1, 2) }] = { 40, 10, 2, 4 };
-    state.serviceEdges[{ 0, station(1), station(3), servicePoint(2, 0), servicePoint(2, 1) }] = { 20, 12, 5, 10 };
+    state.serviceEdges[{ 0, station(1), station(2), servicePoint(1, 0), servicePoint(1, 1) }] = { 40, 10, 2, 4, 40 };
+    state.serviceEdges[{ 0, station(2), station(3), servicePoint(1, 1), servicePoint(1, 2) }] = { 40, 10, 2, 4, 40 };
+    state.serviceEdges[{ 0, station(1), station(3), servicePoint(2, 0), servicePoint(2, 1) }] = { 20, 12, 5, 10, 20 };
     state.flows[{ 0, station(1), station(1), {}, station(3) }] = {
         { station(2), 120, 0, servicePoint(1, 0), servicePoint(1, 1) },
         { station(3), 80, 0, servicePoint(2, 0), servicePoint(2, 1) },
@@ -141,8 +142,8 @@ TEST(CargoFlowOverlayTest, AggregateLinkUsesBusiestServiceSaturation)
 {
     reset();
     auto& state = getState();
-    state.serviceEdges[{ 0, station(1), station(2), servicePoint(1, 0), servicePoint(1, 1) }] = { 10, 5, 2, 4 };
-    state.serviceEdges[{ 0, station(1), station(2), servicePoint(2, 0), servicePoint(2, 1) }] = { 100, 10, 2, 4 };
+    state.serviceEdges[{ 0, station(1), station(2), servicePoint(1, 0), servicePoint(1, 1) }] = { 10, 5, 2, 4, 40 };
+    state.serviceEdges[{ 0, station(1), station(2), servicePoint(2, 0), servicePoint(2, 1) }] = { 100, 10, 2, 4, 100 };
     state.flows[{ 0, station(1), station(1), {}, station(2) }] = {
         { station(2), 20, 0, servicePoint(1, 0), servicePoint(1, 1) },
     };
@@ -152,10 +153,34 @@ TEST(CargoFlowOverlayTest, AggregateLinkUsesBusiestServiceSaturation)
 
     ASSERT_NE(link, nullptr);
     EXPECT_EQ(link->plannedDemand, 20);
-    EXPECT_EQ(*link->capacity, 110);
+    EXPECT_EQ(*link->capacity, 140);
     EXPECT_EQ(link->saturationDemand, 20);
-    EXPECT_EQ(*link->saturationCapacity, 10);
-    EXPECT_EQ(CargoFlowOverlay::getSaturationBucket(link->saturationDemand, link->saturationCapacity), 11);
+    EXPECT_EQ(*link->saturationCapacity, 40);
+    EXPECT_EQ(link->saturationDeparture, servicePoint(1, 0));
+    EXPECT_EQ(link->saturationArrival, servicePoint(1, 1));
+    EXPECT_EQ(CargoFlowOverlay::getSaturationBucket(link->saturationDemand, link->saturationCapacity), 2);
+}
+
+TEST(CargoFlowOverlayTest, SeparatesFutureTransferPlanFromWaitingCargo)
+{
+    reset();
+    constexpr auto departure = servicePoint(2369, 0);
+    constexpr auto arrival = servicePoint(2369, 1);
+    auto& state = getState();
+    state.serviceEdges[{ 0, station(78), station(79), departure, arrival }] = { 200, 10, 2, 4, 200 };
+    state.flows[{ 0, station(78), station(46), servicePoint(2362, 5), station(80) }] = {
+        { station(79), 597, 0, departure, arrival },
+    };
+    state.stationCargo[{ station(78), 0 }].append({ 1477, station(46), station(77), 0, servicePoint(2362, 5), servicePoint(2362, 6) });
+
+    const auto links = getPlannedServiceEdges(0);
+    const auto* link = findEdge(links, station(78), station(79));
+
+    ASSERT_NE(link, nullptr);
+    EXPECT_EQ(link->saturationDemand, 597);
+    EXPECT_EQ(link->saturationDeparture, departure);
+    EXPECT_EQ(link->saturationArrival, arrival);
+    EXPECT_EQ(getLoadableQuantity(station(78), 0, { 0, station(78), station(79), departure, arrival }), 0);
 }
 
 TEST(CargoFlowOverlayTest, DrawsCompleteLinesInEitherDirection)

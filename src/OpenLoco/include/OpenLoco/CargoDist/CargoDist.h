@@ -108,6 +108,7 @@ namespace OpenLoco::CargoDist
         uint32_t travelTime{};
         uint32_t waitTime{};
         uint32_t headway{};
+        uint32_t fleetCapacity{}; // Display capacity; routing uses capacity per departure above.
     };
 
     struct VehicleServiceLeg
@@ -129,6 +130,8 @@ namespace OpenLoco::CargoDist
         std::optional<uint32_t> capacity;
         uint64_t saturationDemand{};
         std::optional<uint32_t> saturationCapacity;
+        ServicePoint saturationDeparture{};
+        ServicePoint saturationArrival{};
 
         auto operator<=>(const PlannedServiceEdge&) const = default;
     };

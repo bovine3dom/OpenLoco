@@ -179,6 +179,7 @@ TEST_F(CargoDistServiceSimulationTest, AdditionalVehicleReducesExpectedWait)
     EXPECT_EQ(firstEdge.waitTime, 3);
     EXPECT_EQ(firstEdge.capacity, 10);
     EXPECT_EQ(firstEdge.headway, 6);
+    EXPECT_EQ(firstEdge.fleetCapacity, 20);
 }
 
 TEST_F(CargoDistServiceSimulationTest, MixedVehicleCapacityUsesAverageDeparture)
@@ -190,6 +191,7 @@ TEST_F(CargoDistServiceSimulationTest, MixedVehicleCapacityUsesAverageDeparture)
 
     ASSERT_EQ(getStateConst().serviceEdges.size(), 2);
     EXPECT_EQ(getStateConst().serviceEdges.begin()->second.capacity, 15);
+    EXPECT_EQ(getStateConst().serviceEdges.begin()->second.fleetCapacity, 30);
 }
 
 TEST_F(CargoDistServiceSimulationTest, FullLoadOrdersRestrictOnlyFlexibleCompartments)

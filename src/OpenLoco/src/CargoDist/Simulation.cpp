@@ -46,6 +46,7 @@ namespace OpenLoco::CargoDist
             uint64_t capacityFrequency{};
             uint64_t weightedTravelTime{};
             uint64_t departureFrequency{};
+            uint64_t fleetCapacity{};
         };
 
         struct MemberEdgeAccumulator
@@ -648,6 +649,7 @@ namespace OpenLoco::CargoDist
                             edge.departureFrequency = saturatedAdd(edge.departureFrequency, frequency);
                             edge.capacityFrequency = saturatedAdd(edge.capacityFrequency, saturatedMultiply(capacity, frequency));
                             edge.weightedTravelTime = saturatedAdd(edge.weightedTravelTime, saturatedMultiply(travelTime, frequency));
+                            edge.fleetCapacity = saturatedAdd(edge.fleetCapacity, capacity);
                         }
                     }
                 }
@@ -665,6 +667,7 @@ namespace OpenLoco::CargoDist
                     static_cast<uint32_t>(std::min<uint64_t>(edge.weightedTravelTime / edge.departureFrequency + (edge.weightedTravelTime % edge.departureFrequency >= edge.departureFrequency / 2 + edge.departureFrequency % 2), std::numeric_limits<uint32_t>::max())),
                     static_cast<uint32_t>(std::min<uint64_t>(waitTime, std::numeric_limits<uint32_t>::max())),
                     static_cast<uint32_t>(std::min<uint64_t>(headway, std::numeric_limits<uint32_t>::max())),
+                    static_cast<uint32_t>(std::min<uint64_t>(edge.fleetCapacity, std::numeric_limits<uint32_t>::max())),
                 };
             }
             retagVehiclePackets();

@@ -671,6 +671,8 @@ namespace OpenLoco::CargoDist
             uint64_t plannedDemand{};
             uint64_t capacity{};
             bool hasCapacity{};
+            ServicePoint departure{};
+            ServicePoint arrival{};
         };
 
         std::map<std::pair<StationId, StationId>, EdgeStats> edges;
@@ -680,11 +682,13 @@ namespace OpenLoco::CargoDist
             if (key.cargo == cargo && key.from != StationId::null && key.to != StationId::null && key.from != key.to)
             {
                 auto& edge = edges[{ key.from, key.to }];
-                edge.capacity += stats.capacity;
+                edge.capacity += stats.fleetCapacity;
                 edge.hasCapacity = true;
                 auto& service = serviceEdges[key];
-                service.capacity += stats.capacity;
+                service.capacity += stats.fleetCapacity;
                 service.hasCapacity = true;
+                service.departure = key.departure;
+                service.arrival = key.arrival;
             }
         }
 
@@ -703,8 +707,10 @@ namespace OpenLoco::CargoDist
 
                 auto& plannedDemand = edges[{ key.station, option.via }].plannedDemand;
                 plannedDemand += std::min<uint64_t>(option.weight, std::numeric_limits<uint64_t>::max() - plannedDemand);
-                auto& serviceDemand = serviceEdges[{ cargo, key.station, option.via, option.departure, option.arrival }].plannedDemand;
-                serviceDemand += std::min<uint64_t>(option.weight, std::numeric_limits<uint64_t>::max() - serviceDemand);
+                auto& service = serviceEdges[{ cargo, key.station, option.via, option.departure, option.arrival }];
+                service.departure = option.departure;
+                service.arrival = option.arrival;
+                service.plannedDemand += std::min<uint64_t>(option.weight, std::numeric_limits<uint64_t>::max() - service.plannedDemand);
             }
         }
 
@@ -742,7 +748,7 @@ namespace OpenLoco::CargoDist
             const auto busiestCapacity = busiest.hasCapacity
                 ? std::optional<uint32_t>{ static_cast<uint32_t>(std::min<uint64_t>(busiest.capacity, std::numeric_limits<uint32_t>::max())) }
                 : std::nullopt;
-            result.push_back({ key.first, key.second, stats.plannedDemand, capacity, busiest.plannedDemand, busiestCapacity });
+            result.push_back({ key.first, key.second, stats.plannedDemand, capacity, busiest.plannedDemand, busiestCapacity, busiest.departure, busiest.arrival });
         }
         return result;
     }

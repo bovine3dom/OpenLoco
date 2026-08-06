@@ -2,6 +2,7 @@
 #include "Ui/Windows/CargoFlowOverlay.h"
 
 #include "CargoDist/CargoDist.h"
+#include "CargoDist/Simulation.h"
 #include "GameState.h"
 #include "Graphics/DrawingContext.h"
 #include "Graphics/ImageIds.h"
@@ -583,6 +584,8 @@ namespace OpenLoco::Ui::Windows::CargoFlowOverlay
         }
 
         const auto plannedDemand = toDisplayValue(hit->saturationDemand);
+        const CargoDist::VehicleServiceLeg serviceLeg{ 0, hit->from, hit->to, hit->saturationDeparture, hit->saturationArrival };
+        const auto waitingDemand = toDisplayValue(CargoDist::getLoadableQuantity(hit->from, snapshot.cargo, serviceLeg));
         if (hit->saturationCapacity.has_value() && *hit->saturationCapacity != 0)
         {
             auto args = FormatArguments::mapToolTip(StringIds::cargo_flow_tooltip);
@@ -592,6 +595,7 @@ namespace OpenLoco::Ui::Windows::CargoFlowOverlay
             args.push(hitTo->name);
             args.push(hitTo->town);
             args.push(plannedDemand);
+            args.push(waitingDemand);
             args.push(toDisplayValue(*hit->saturationCapacity));
             args.push(calculatePercentage(hit->saturationDemand, *hit->saturationCapacity));
         }
@@ -604,6 +608,7 @@ namespace OpenLoco::Ui::Windows::CargoFlowOverlay
             args.push(hitTo->name);
             args.push(hitTo->town);
             args.push(plannedDemand);
+            args.push(waitingDemand);
         }
         return true;
     }
