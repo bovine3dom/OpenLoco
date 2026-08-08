@@ -1,7 +1,5 @@
 #include "Map/BuildingElement.h"
 #include "Game.h"
-#include "GameCommands/Buildings/RemoveBuilding.h"
-#include "GameCommands/GameCommands.h"
 #include "GameStateFlags.h"
 #include "Map/Animation.h"
 #include "Map/AnimationManager.h"
@@ -155,13 +153,8 @@ namespace OpenLoco::World
 
         if (isConstructed() && age() >= 40)
         {
-            if (town->prng.randNext(0xFFFF) <= 16)
-            {
-                GameCommands::BuildingRemovalArgs args;
-                args.pos = World::Pos3(loc.x, loc.y, baseHeight());
-                GameCommands::doCommand(args, GameCommands::Flags::apply);
-                return false;
-            }
+            // Preserve the town PRNG sequence now that old buildings no longer self-demolish.
+            static_cast<void>(town->prng.randNext(0xFFFF));
         }
 
         if (isConstructed())
