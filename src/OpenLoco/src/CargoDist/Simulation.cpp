@@ -1222,6 +1222,15 @@ namespace OpenLoco::CargoDist
                     const auto shares = allocateVia(cargo, key.station, packet.origin, packet.destination, packet.quantity, ServicePoint{}, key.station);
                     if (shares.empty())
                     {
+                        const auto existingRoute = ServiceEdgeKey{ cargo, key.station, packet.nextHop, packet.departure, packet.arrival };
+                        if (packet.destination != StationId::null
+                            && packet.nextHop != StationId::null
+                            && state.serviceEdges.contains(existingRoute)
+                            && getJourneyCost(cargo, key.station, packet.destination, packet.departure) != kUnreachableJourneyCost)
+                        {
+                            rerouted.push_back(packet);
+                            continue;
+                        }
                         packet.nextHop = StationId::null;
                         packet.departure = {};
                         packet.arrival = {};

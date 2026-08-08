@@ -156,6 +156,44 @@ namespace
             return head;
         }
 
+        static Vehicles::VehicleHead* createVehicleWithStops(const std::vector<StationId>& stops)
+        {
+            auto* head = createComponent<Vehicles::VehicleHead>();
+            auto* veh1 = createComponent<Vehicles::Vehicle1>();
+            auto* veh2 = createComponent<Vehicles::Vehicle2>();
+            auto* front = createComponent<Vehicles::VehicleBogie>();
+            auto* back = createComponent<Vehicles::VehicleBogie>();
+            auto* body = createComponent<Vehicles::VehicleBody>();
+            auto* tail = createComponent<Vehicles::VehicleTail>();
+            body->setSubType(Vehicles::VehicleEntityType::body_start);
+
+            const std::array<Vehicles::VehicleBase*, 7> components = { head, veh1, veh2, front, back, body, tail };
+            for (size_t i = 0; i < components.size(); ++i)
+            {
+                components[i]->head = head->id;
+                components[i]->owner = CompanyId(0);
+                components[i]->mode = TransportMode::road;
+                components[i]->tileX = 0;
+                components[i]->setNextCar(i + 1 < components.size() ? components[i + 1]->id : EntityId::null);
+            }
+            head->vehicleType = VehicleType::bus;
+            head->status = Vehicles::Status::travelling;
+            head->stationId = StationId::null;
+            head->vehicleFlags = Vehicles::VehicleFlags::none;
+            veh1->var_48 = Vehicles::Flags48::none;
+            veh2->maxSpeed = Speed16(21);
+            body->primaryCargo = { 1, 0, 10, StationId::null, 0, 0 };
+            EntityManager::moveEntityToList(head, EntityManager::EntityListType::vehicleHead);
+
+            Vehicles::OrderManager::allocateOrders(*head);
+            for (const auto& stop : stops)
+            {
+                const Vehicles::OrderStopAt order{ stop };
+                Vehicles::OrderManager::insertOrder(head, head->sizeOfOrderTable - sizeof(Vehicles::OrderEnd), &order);
+            }
+            return head;
+        }
+
         Station _station1{};
         Station _station2{};
         Station _station3{};
@@ -386,6 +424,167 @@ TEST_F(CargoDistServiceSimulationTest, RecalculationReleasesRejectedDestination)
     ASSERT_EQ(packets->packets().size(), 1);
     EXPECT_EQ(packets->packets().front().destination, StationId::null);
     EXPECT_EQ(packets->packets().front().nextHop, StationId::null);
+}
+
+TEST_F(CargoDistServiceSimulationTest, RecalculationRoutesUnroutedWaitingCargo)
+{
+    createVehicle();
+    auto& waiting = getState().stationCargo[{ station(1), 0 }];
+    waiting.append({ 10, station(1), StationId::null, 0 });
+    StationCargoStats cargo{};
+    synchroniseStationCargo(station(1), 0, cargo);
+
+    recalculateNow();
+
+    const auto* packets = getStationCargoConst(station(1), 0);
+    ASSERT_NE(packets, nullptr);
+    ASSERT_FALSE(packets->packets().empty());
+    EXPECT_EQ(packets->packets().front().destination, station(2));
+    EXPECT_EQ(packets->packets().front().nextHop, station(2));
+}
+
+TEST_F(CargoDistServiceSimulationTest, RecalculationKeepsWaitingCargoRoute)
+{
+    createVehicle();
+    constexpr auto leg = serviceLeg(1, 2, 7, 0, 1);
+    auto& waiting = getState().stationCargo[{ station(1), 0 }];
+    waiting.append({ 10, station(1), station(2), 0, leg.departure, leg.arrival, station(2) });
+    StationCargoStats cargo{};
+    synchroniseStationCargo(station(1), 0, cargo);
+
+    recalculateNow();
+
+    const auto* packets = getStationCargoConst(station(1), 0);
+    ASSERT_NE(packets, nullptr);
+    ASSERT_EQ(packets->packets().size(), 1);
+    EXPECT_EQ(packets->packets().front().destination, station(2));
+    EXPECT_EQ(packets->packets().front().nextHop, station(2));
+}
+
+TEST_F(CargoDistServiceSimulationTest, RecalculationKeepsThroughCargoOnwardDestination)
+{
+    getGameState().stations[4].cargoStats[0].isAccepted(true);
+    createVehicle();
+    constexpr auto leg = serviceLeg(1, 2, 7, 0, 1);
+    auto& waiting = getState().stationCargo[{ station(2), 0 }];
+    waiting.append({ 10, station(1), station(2), 0, leg.departure, leg.arrival, station(4) });
+    StationCargoStats cargo{};
+    synchroniseStationCargo(station(2), 0, cargo);
+
+    recalculateNow();
+
+    const auto* packets = getStationCargoConst(station(2), 0);
+    ASSERT_NE(packets, nullptr);
+    ASSERT_EQ(packets->packets().size(), 1);
+    EXPECT_EQ(packets->packets().front().destination, station(4));
+}
+
+TEST_F(CargoDistServiceSimulationTest, MultiHopThroughCargoSurvivesRecalculation)
+{
+    getGameState().stations[2].cargoStats[0].isAccepted(false);
+    getGameState().stations[3].cargoStats[0].isAccepted(true);
+    auto* head = createVehicleWithStops({ station(1), station(2), station(3) });
+    auto& state = getState();
+    const VehicleCargoKey key{ entity(10), VehicleCargoSlot::primary };
+    StationCargoStats sourceCargo{};
+
+    addProducedCargo(station(1), 0, sourceCargo, 20);
+    EXPECT_EQ(getStationCargoConst(station(1), 0)->packets().front().nextHop, StationId::null);
+
+    recalculateNow();
+
+    const auto* routed = getStationCargoConst(station(1), 0);
+    ASSERT_NE(routed, nullptr);
+    ASSERT_EQ(routed->packets().size(), 1);
+    EXPECT_EQ(routed->packets().front().destination, station(3));
+    EXPECT_EQ(routed->packets().front().nextHop, station(2));
+
+    const auto& legs = state.vehicleServiceLegs.at(head->id);
+    ASSERT_GE(legs.size(), 2U);
+    const auto firstLeg = legs.front();
+    ASSERT_EQ(firstLeg.from, station(1));
+    ASSERT_EQ(firstLeg.to, station(2));
+    Vehicles::VehicleCargo vehicleCargo{ 1, 0, 30, StationId::null, 0, 0 };
+    ASSERT_EQ(loadVehicleCargo(key, vehicleCargo, station(1), sourceCargo, firstLeg), 20);
+
+    StationCargoStats intermediateCargo{};
+    const auto unloaded = unloadVehicleCargo(key, vehicleCargo, station(2), intermediateCargo, {}, false, std::nullopt);
+    ASSERT_EQ(unloaded.transferred, 20);
+    const auto* waiting = getStationCargoConst(station(2), 0);
+    ASSERT_NE(waiting, nullptr);
+    ASSERT_EQ(waiting->packets().size(), 1);
+    EXPECT_EQ(waiting->packets().front().destination, station(3));
+    EXPECT_EQ(waiting->packets().front().nextHop, station(3));
+
+    recalculateNow();
+
+    const auto* after = getStationCargoConst(station(2), 0);
+    ASSERT_NE(after, nullptr);
+    ASSERT_EQ(after->packets().size(), 1);
+    EXPECT_EQ(after->packets().front().destination, station(3));
+    EXPECT_EQ(after->packets().front().nextHop, station(3));
+}
+
+TEST_F(CargoDistServiceSimulationTest, AsyncRecalculationRoutesProducedCargo)
+{
+    createVehicle();
+    StationCargoStats cargo{};
+    addProducedCargo(station(1), 0, cargo, 20);
+    getGameState().scenarioTicks = 0;
+
+    update();
+
+    EXPECT_TRUE(isServiceRecalculationPending());
+    EXPECT_EQ(getStationCargoConst(station(1), 0)->packets().front().nextHop, StationId::null);
+
+    getGameState().scenarioTicks += 48;
+    update();
+
+    EXPECT_FALSE(isServiceRecalculationPending());
+    const auto* packets = getStationCargoConst(station(1), 0);
+    ASSERT_NE(packets, nullptr);
+    ASSERT_FALSE(packets->packets().empty());
+    EXPECT_EQ(packets->packets().front().destination, station(2));
+    EXPECT_EQ(packets->packets().front().nextHop, station(2));
+}
+
+TEST_F(CargoDistServiceSimulationTest, AsyncCommitKeepsCargoTransferredAfterCaptureRoutable)
+{
+    getGameState().stations[2].cargoStats[0].isAccepted(false);
+    getGameState().stations[3].cargoStats[0].isAccepted(true);
+    auto* head = createVehicleWithStops({ station(1), station(2), station(3) });
+    StationCargoStats sourceCargo{};
+    addProducedCargo(station(1), 0, sourceCargo, 20);
+    recalculateNow();
+
+    const auto& legs = getStateConst().vehicleServiceLegs.at(head->id);
+    ASSERT_GE(legs.size(), 2U);
+    const auto firstLeg = legs.front();
+    const VehicleCargoKey key{ entity(10), VehicleCargoSlot::primary };
+    Vehicles::VehicleCargo vehicleCargo{ 1, 0, 30, StationId::null, 0, 0 };
+    ASSERT_EQ(loadVehicleCargo(key, vehicleCargo, station(1), sourceCargo, firstLeg), 20);
+
+    markServicesDirty();
+    getGameState().scenarioTicks = 0;
+    update();
+    ASSERT_TRUE(isServiceRecalculationPending());
+
+    StationCargoStats intermediateCargo{};
+    const auto unloaded = unloadVehicleCargo(key, vehicleCargo, station(2), intermediateCargo, {}, false, std::nullopt);
+    ASSERT_EQ(unloaded.transferred, 20);
+    ASSERT_EQ(getStationCargoConst(station(2), 0)->packets().front().nextHop, station(3));
+
+    getGameState().scenarioTicks += 48;
+    update();
+
+    const auto* packets = getStationCargoConst(station(2), 0);
+    ASSERT_NE(packets, nullptr);
+    ASSERT_EQ(packets->packets().size(), 1);
+    EXPECT_EQ(packets->packets().front().destination, station(3));
+    EXPECT_EQ(packets->packets().front().nextHop, station(3));
+    EXPECT_EQ(packets->packets().front().departure, legs[1].departure);
+    EXPECT_EQ(packets->packets().front().arrival, legs[1].arrival);
+    EXPECT_EQ(getLoadableQuantity(station(2), 0, legs[1]), 20U);
 }
 
 TEST_F(CargoDistServiceSimulationTest, PresentServiceTakesCargoWhenCompleteJourneyIsBetter)
