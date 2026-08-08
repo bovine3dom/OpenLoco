@@ -1705,7 +1705,7 @@ namespace OpenLoco::Ui::Windows::CompanyWindow
 
     namespace Finances
     {
-        static constexpr Ui::Size kWindowSize = { 636, 319 };
+        static constexpr Ui::Size kWindowSize = { 636, 329 };
 
         enum widx
         {
@@ -1734,14 +1734,15 @@ namespace OpenLoco::Ui::Windows::CompanyWindow
         }
 
         constexpr uint16_t expenditureColumnWidth = 128;
+        constexpr uint8_t expenditureRowCount = ExpenditureType::Count + 1;
 
         static constexpr auto kWidgets = makeWidgets(
-            Common::makeCommonWidgets(636, 319, StringIds::title_company_finances),
-            Widgets::ScrollView(Widx::kScrollview, { 133, 45 }, { 499, 215 }, WindowColour::secondary, Scrollbars::horizontal),
-            Widgets::stepperWidgets(Widx::kCurrentLoan, Widx::kLoanDecrease, Widx::kLoanIncrease, { 87, 264 }, { 100, 12 }, WindowColour::secondary, StringIds::company_current_loan_value),
-            Widgets::Checkbox(Widx::kLoanAutopay, { 320, 264 }, { 204, 12 }, WindowColour::secondary, StringIds::loan_autopay, StringIds::tooltip_loan_autopay),
-            Widgets::Checkbox(Widx::kVehicleAutoRenewal, { 320, 280 }, { 250, 12 }, WindowColour::secondary, StringIds::vehicle_auto_renewal, StringIds::tooltip_vehicle_auto_renewal),
-            Widgets::stepperWidgets(Widx::kRenewalThreshold, Widx::kRenewalThresholdDecrease, Widx::kRenewalThresholdIncrease, { 500, 295 }, { 100, 12 }, WindowColour::secondary, StringIds::vehicle_auto_renewal_threshold_value, StringIds::tooltip_vehicle_auto_renewal)
+            Common::makeCommonWidgets(636, 329, StringIds::title_company_finances),
+            Widgets::ScrollView(Widx::kScrollview, { 133, 45 }, { 499, 225 }, WindowColour::secondary, Scrollbars::horizontal),
+            Widgets::stepperWidgets(Widx::kCurrentLoan, Widx::kLoanDecrease, Widx::kLoanIncrease, { 87, 274 }, { 100, 12 }, WindowColour::secondary, StringIds::company_current_loan_value),
+            Widgets::Checkbox(Widx::kLoanAutopay, { 320, 274 }, { 204, 12 }, WindowColour::secondary, StringIds::loan_autopay, StringIds::tooltip_loan_autopay),
+            Widgets::Checkbox(Widx::kVehicleAutoRenewal, { 320, 290 }, { 250, 12 }, WindowColour::secondary, StringIds::vehicle_auto_renewal, StringIds::tooltip_vehicle_auto_renewal),
+            Widgets::stepperWidgets(Widx::kRenewalThreshold, Widx::kRenewalThresholdDecrease, Widx::kRenewalThresholdIncrease, { 500, 305 }, { 100, 12 }, WindowColour::secondary, StringIds::vehicle_auto_renewal_threshold_value, StringIds::tooltip_vehicle_auto_renewal)
 
         );
 
@@ -1844,6 +1845,7 @@ namespace OpenLoco::Ui::Windows::CompanyWindow
                 StringIds::vehicle_disposals,
                 StringIds::loan_interest,
                 StringIds::miscellaneous,
+                StringIds::net_profit_loss,
             };
 
             uint16_t y = 62;
@@ -1994,6 +1996,21 @@ namespace OpenLoco::Ui::Windows::CompanyWindow
                 }
                 y += 10;
             }
+
+            const currency48_t netProfitLoss = sum
+                - company.expenditures[columnIndex][ExpenditureType::Construction]
+                - company.expenditures[columnIndex][ExpenditureType::VehiclePurchases]
+                - company.expenditures[columnIndex][ExpenditureType::VehicleDisposals];
+            if (netProfitLoss != 0)
+            {
+                FormatArguments args{};
+                args.push(StringIds::currency48);
+                args.push(netProfitLoss);
+
+                auto point = Point(x, y);
+                tr.drawStringRight(point, Colour::black, StringIds::black_stringid, args);
+            }
+            y += 10;
             return sum;
         }
 
@@ -2026,7 +2043,7 @@ namespace OpenLoco::Ui::Windows::CompanyWindow
         {
             int16_t y = 47 - self.widgets[widx::scrollview].top + 14;
 
-            for (uint8_t i = 0; i < static_cast<uint8_t>(ExpenditureType::Count); i++)
+            for (uint8_t i = 0; i < expenditureRowCount; i++)
             {
                 // Add zebra stripes to even labels.
                 if (i % 2 == 0)
