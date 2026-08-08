@@ -1795,6 +1795,20 @@ namespace OpenLoco::CargoDist
             {
                 shares = allocateVia(nativeCargo.type, station, packet.origin, packet.destination, packet.quantity, ServicePoint{}, excluded);
             }
+            const auto returnsToPreviousOccurrence = !forceUnload && onwardLeg.has_value()
+                && onwardLeg->from == station
+                && packet.arrival == onwardLeg->departure
+                && !packet.departure.empty()
+                && onwardLeg->arrival == packet.departure
+                && onwardLeg->to != packet.destination;
+            if (returnsToPreviousOccurrence)
+            {
+                std::erase_if(shares, [&](const auto& share) {
+                    return share.via == onwardLeg->to
+                        && share.departure == onwardLeg->departure
+                        && share.arrival == onwardLeg->arrival;
+                });
+            }
             if (shares.empty())
             {
                 shares.push_back({ StationId::null, packet.quantity, {}, {}, packet.destination });
@@ -1806,7 +1820,7 @@ namespace OpenLoco::CargoDist
                                                         && share.departure == onwardLeg->departure
                                                         && share.arrival == onwardLeg->arrival;
                                                 });
-            if (!forceUnload && onwardLeg.has_value() && !hasPlannedContinuation
+            if (!forceUnload && onwardLeg.has_value() && !returnsToPreviousOccurrence && !hasPlannedContinuation
                 && onwardLeg->from == station
                 && packet.destination != StationId::null
                 && packet.arrival == onwardLeg->departure

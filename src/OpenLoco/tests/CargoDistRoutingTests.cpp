@@ -570,6 +570,23 @@ TEST(CargoDistRouting, PresentServiceUsesCompleteJourneyCost)
     EXPECT_EQ(calculateJourneyCost(graph, station(1), station(4), servicePoint(2, 0)), 20U);
 }
 
+TEST(CargoDistRouting, PresentServiceJourneyTakesItsFirstLeg)
+{
+    const RoutingGraph graph{
+        { node(1, 0, 0), node(2, 10, 0), node(3, 20, 0, 0, true) },
+        {
+            serviceEdge(1, 2, 1, 1, 0, 1, 1),
+            serviceEdge(2, 1, 1, 0, 1, 1, 1),
+            serviceEdge(1, 3, 2, 0, 1, 1, 1),
+        },
+        true,
+        {},
+    };
+
+    EXPECT_EQ(calculateJourneyCost(graph, station(1), station(3)), 2U);
+    EXPECT_EQ(calculateJourneyCost(graph, station(1), station(3), servicePoint(1, 1)), kUnreachableJourneyCost);
+}
+
 TEST(CargoDistRouting, ThroughPassengersReserveOnwardCapacityFirst)
 {
     RoutingGraph graph{
@@ -624,6 +641,28 @@ TEST(CargoDistRouting, IncomingServiceDemandContinuesWithoutAnotherWait)
     EXPECT_EQ(amountAt(flows, 2, 1, 3, servicePoint(1, 1), servicePoint(1, 1), servicePoint(1, 2)), 1U);
     EXPECT_EQ(amountAt(flows, 2, 1, 3, servicePoint(1, 1), servicePoint(2, 0), servicePoint(2, 1)), 0U);
     EXPECT_EQ(amountAt(flows, 3, 1, 3, servicePoint(1, 2)), 1U);
+}
+
+TEST(CargoDistRouting, IncomingServiceDemandReturnsOnlyToItsDestination)
+{
+    RoutingGraph graph{
+        { node(1, 0, 0, 0, true), node(2, 10, 0), node(3, 20, 0, 0, true), node(4, -10, 0) },
+        {
+            serviceEdge(1, 2, 1, 1, 0, 1, 1),
+            serviceEdge(2, 1, 1, 0, 1, 1, 1),
+            serviceEdge(1, 3, 2, 0, 1, 1, 1),
+            serviceEdge(2, 3, 3, 0, 1, 5, 1),
+        },
+        true,
+        {},
+    };
+    graph.demands.push_back({ station(2), station(4), 10, servicePoint(1, 0), station(3) });
+    graph.demands.push_back({ station(2), station(4), 10, servicePoint(1, 0), station(1) });
+
+    const auto flows = calculateAsymmetricFlows(graph);
+
+    EXPECT_EQ(amountAt(flows, 2, 4, 3, servicePoint(1, 0), servicePoint(3, 0), servicePoint(3, 1)), 10U);
+    EXPECT_EQ(amountAt(flows, 2, 4, 1, servicePoint(1, 0), servicePoint(1, 0), servicePoint(1, 1)), 10U);
 }
 
 TEST(CargoDistRouting, DepartureOnlyIncomingServiceStillPaysBoardingWait)

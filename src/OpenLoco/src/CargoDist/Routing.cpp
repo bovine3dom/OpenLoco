@@ -64,6 +64,7 @@ namespace OpenLoco::CargoDist
             std::vector<PlannedEdge> edges;
             std::vector<Occurrence> occurrences;
             std::vector<Occurrence> arrivals;
+            std::vector<std::vector<size_t>> ridePredecessors;
         };
 
         using ShortestPathQueueEntry = std::tuple<uint64_t, size_t, size_t>;
@@ -328,12 +329,14 @@ namespace OpenLoco::CargoDist
                     < std::make_tuple(rhs.from, rhs.to, rhs.kind, rhs.travelTime, rhs.capacity, serviceValue(rhs.departure.service), rhs.departure.occurrence, serviceValue(rhs.arrival.service), rhs.arrival.occurrence);
             });
             std::map<size_t, size_t> ridesByDeparture;
+            std::vector<std::vector<size_t>> ridePredecessors(nodeStations.size());
             for (size_t edgeIndex = 0; edgeIndex < edges.size(); ++edgeIndex)
             {
                 const auto& edge = edges[edgeIndex];
                 if (edge.kind == PlannedEdgeKind::ride && !edge.departure.empty())
                 {
                     ridesByDeparture.emplace(edge.from, edgeIndex);
+                    ridePredecessors[edge.to].push_back(edge.from);
                 }
             }
             for (auto& edge : edges)
@@ -344,7 +347,7 @@ namespace OpenLoco::CargoDist
                 }
                 edge.pairedRide = ridesByDeparture.at(edge.to);
             }
-            return { std::move(nodeStations), std::move(edges), std::move(occurrences), std::move(arrivals) };
+            return { std::move(nodeStations), std::move(edges), std::move(occurrences), std::move(arrivals), std::move(ridePredecessors) };
         }
 
         std::vector<std::vector<size_t>> makeAdjacency(size_t nodeCount, const std::vector<PlannedEdge>& edges)
@@ -357,7 +360,7 @@ namespace OpenLoco::CargoDist
             return adjacency;
         }
 
-        std::vector<bool> reachableNodes(size_t source, const std::vector<PlannedEdge>& edges, const std::vector<std::vector<size_t>>& adjacency)
+        std::vector<bool> reachableNodes(size_t source, const std::vector<PlannedEdge>& edges, const std::vector<std::vector<size_t>>& adjacency, size_t visitedNode)
         {
             std::vector<bool> reachable(adjacency.size());
             std::vector<size_t> pending{ source };
@@ -367,7 +370,7 @@ namespace OpenLoco::CargoDist
                 for (const auto edge : adjacency[pending[current]])
                 {
                     const auto next = edges[edge].to;
-                    if (!reachable[next])
+                    if (!reachable[next] && next != visitedNode)
                     {
                         reachable[next] = true;
                         pending.push_back(next);
@@ -452,6 +455,7 @@ namespace OpenLoco::CargoDist
             const std::vector<std::vector<size_t>>& adjacency,
             bool timeSensitive,
             uint8_t saturation,
+            size_t visitedNode,
             ShortestPathScratch& scratch)
         {
             scratch.reset(nodeStations.size());
@@ -460,6 +464,10 @@ namespace OpenLoco::CargoDist
             auto& previous = scratch.previous;
             auto& settled = scratch.settled;
             auto& queue = scratch.queue;
+            if (visitedNode != kNoIndex)
+            {
+                settled[visitedNode] = true;
+            }
             distance[source] = 0;
             boardings[source] = 0;
             queue.emplace(0, 0, source);
@@ -585,7 +593,21 @@ namespace OpenLoco::CargoDist
                 }
             }
 
-            const auto reachable = reachableNodes(sourceNode, edges, adjacency);
+            auto visitedNode = kNoIndex;
+            if (sourceNode != sourceIndex)
+            {
+                const auto& predecessors = planned.ridePredecessors[sourceNode];
+                if (predecessors.size() != 1)
+                {
+                    sourceNode = sourceIndex;
+                }
+                else if (fixedDestination == StationId::null || nodes[planned.nodeStations[predecessors.front()]].station != fixedDestination)
+                {
+                    // The packet has already traversed this occurrence; revisiting it would join two acyclic plans into a cycle.
+                    visitedNode = predecessors.front();
+                }
+            }
+            const auto reachable = reachableNodes(sourceNode, edges, adjacency, visitedNode);
             const uint32_t accuracy = std::max<uint32_t>(1, settings.accuracy);
             const uint32_t chunkSize = supply / accuracy + (supply % accuracy != 0);
             const auto routeAmount = [&](size_t destinationNode, uint32_t amount, uint32_t boundaryIterations, bool reuseCurrentTree) {
@@ -601,7 +623,7 @@ namespace OpenLoco::CargoDist
                 {
                     const auto& path = reuseCurrentTree
                         ? reconstructPath(sourceNode, destinationNode, planned.nodeStations, edges, shortestPathScratch)
-                        : shortestPath(sourceNode, destinationNode, nodes, planned.nodeStations, edges, adjacency, graph.timeSensitive, settings.saturation, shortestPathScratch);
+                        : shortestPath(sourceNode, destinationNode, nodes, planned.nodeStations, edges, adjacency, graph.timeSensitive, settings.saturation, visitedNode, shortestPathScratch);
                     reuseCurrentTree = false;
                     if (path.empty())
                     {
@@ -665,7 +687,7 @@ namespace OpenLoco::CargoDist
             std::vector<int64_t> credits(sinks.size());
             for (uint32_t remaining = supply; remaining != 0;)
             {
-                shortestPath(sourceNode, kNoIndex, nodes, planned.nodeStations, edges, adjacency, graph.timeSensitive, settings.saturation, shortestPathScratch);
+                shortestPath(sourceNode, kNoIndex, nodes, planned.nodeStations, edges, adjacency, graph.timeSensitive, settings.saturation, visitedNode, shortestPathScratch);
                 const auto weights = destinationWeights(sinks, nodes, shortestPathScratch.distance, settings.distanceEffect);
                 uint64_t totalWeight = 0;
                 size_t chosen = 0;
@@ -736,6 +758,8 @@ namespace OpenLoco::CargoDist
 
         auto planned = makePlannedGraph(graph, nodes);
         auto sourceNode = sourceStation;
+        uint64_t initialCost = 0;
+        auto visitedNode = kNoIndex;
         if (!departure.empty())
         {
             const auto occurrence = findOccurrence(planned.occurrences, { sourceStation, departure });
@@ -743,17 +767,30 @@ namespace OpenLoco::CargoDist
             {
                 return {};
             }
-            sourceNode = nodes.size() + occurrence;
+            const auto departureNode = nodes.size() + occurrence;
+            const auto ride = std::find_if(planned.edges.begin(), planned.edges.end(), [&](const auto& edge) {
+                return edge.kind == PlannedEdgeKind::ride && edge.from == departureNode && edge.departure == departure;
+            });
+            if (ride == planned.edges.end())
+            {
+                return {};
+            }
+            initialCost = edgeCost(static_cast<size_t>(ride - planned.edges.begin()), planned.edges, nodes, planned.nodeStations, graph.timeSensitive, 100);
+            visitedNode = departureNode;
+            sourceNode = ride->to;
         }
 
         const auto adjacency = makeAdjacency(planned.nodeStations.size(), planned.edges);
         ShortestPathScratch scratch;
-        shortestPath(sourceNode, kNoIndex, nodes, planned.nodeStations, planned.edges, adjacency, graph.timeSensitive, 100, scratch);
+        shortestPath(sourceNode, kNoIndex, nodes, planned.nodeStations, planned.edges, adjacency, graph.timeSensitive, 100, visitedNode, scratch);
         std::vector<StationJourneyCost> result;
         result.reserve(nodes.size());
         for (size_t node = 0; node < nodes.size(); ++node)
         {
-            result.push_back({ nodes[node].station, scratch.distance[node] });
+            const auto cost = scratch.distance[node] == kUnreachableJourneyCost
+                ? kUnreachableJourneyCost
+                : saturatedAdd(initialCost, scratch.distance[node]);
+            result.push_back({ nodes[node].station, cost });
         }
         return result;
     }
