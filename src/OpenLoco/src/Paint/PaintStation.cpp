@@ -16,6 +16,7 @@
 #include "World/CompanyManager.h"
 #include "World/Station.h"
 #include "World/StationManager.h"
+#include <algorithm>
 
 namespace OpenLoco::Paint
 {
@@ -72,9 +73,9 @@ namespace OpenLoco::Paint
                     break;
                 }
 
+                // The station painters divide the first and remaining positions between calls.
                 if (hasDrawn)
                 {
-                    hasDrawn = true;
                     if (!(flags & (1 << 1)))
                     {
                         continue;
@@ -112,7 +113,11 @@ namespace OpenLoco::Paint
                     }
                 }
                 const auto imageId = ImageId{ cargoObj->unitInlineSprite + Cargo::ImageIds::kStationPlatformBegin + curVariation };
-                session.addToPlotListAsChild(imageId, offset + World::Pos3{ 0, 0, offsetZ }, boundBoxOffset, boundBoxSize);
+                const auto cargoPosition = offset + World::Pos3{ 0, 0, offsetZ };
+                // Retain the platform's Z overlap while sorting each sprite at its own X/Y position.
+                const auto boundBoxTop = static_cast<coord_t>(boundBoxOffset.z + boundBoxSize.z);
+                const auto cargoBoundsHeight = std::max<coord_t>(1, boundBoxTop - cargoPosition.z);
+                session.addToPlotListAsParent(imageId, cargoPosition, cargoPosition, { 1, 1, cargoBoundsHeight });
             }
         }
     }

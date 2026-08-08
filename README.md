@@ -23,6 +23,7 @@ so far:
 - conflicting signal placement paints track red in build mode
 - disconnected track ends are painted red in build mode
 - with order window open, click or ctrl+click another vehicle to copy or share its orders
+- cargo should not paint on top of trains at stations
 
 
 
