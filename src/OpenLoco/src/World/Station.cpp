@@ -230,10 +230,56 @@ namespace OpenLoco
         }
     };
 
+    static bool updateCargoIndustries(Station& station, const CargoSearchState& cargoSearchState)
+    {
+        bool routingChanged = false;
+        for (uint32_t cargoId = 0; cargoId < kMaxCargoStats; ++cargoId)
+        {
+            auto& stats = station.cargoStats[cargoId];
+            const auto industryId = cargoSearchState.getIndustry(cargoId);
+            routingChanged |= (stats.industryId == IndustryId::null) != (industryId == IndustryId::null);
+            stats.industryId = industryId;
+        }
+        return routingChanged;
+    }
+
+    static uint32_t applyCargoAcceptance(Station& station, const CargoSearchState& cargoSearchState, const uint32_t acceptedCargo)
+    {
+        uint32_t previouslyAcceptedCargo = 0;
+        bool routingChanged = updateCargoIndustries(station, cargoSearchState);
+        for (uint32_t cargoId = 0; cargoId < kMaxCargoStats; ++cargoId)
+        {
+            auto& stats = station.cargoStats[cargoId];
+            const bool wasAccepted = stats.isAccepted();
+            const bool isAccepted = (acceptedCargo & (1U << cargoId)) != 0;
+            if (wasAccepted)
+            {
+                previouslyAcceptedCargo |= 1U << cargoId;
+            }
+            routingChanged |= wasAccepted != isAccepted;
+            stats.isAccepted(isAccepted);
+        }
+        if (routingChanged)
+        {
+            CargoDist::markGraphDirty();
+        }
+        return previouslyAcceptedCargo;
+    }
+
     // 0x0048B23E
     void Station::tick()
     {
         updateCargoAcceptance();
+    }
+
+    void Station::refreshCargoRoutingMetadata()
+    {
+        CargoSearchState cargoSearchState;
+        calcAcceptedCargo(cargoSearchState);
+        if (updateCargoIndustries(*this, cargoSearchState))
+        {
+            CargoDist::markGraphDirty();
+        }
     }
 
     // 0x00492640
@@ -241,23 +287,10 @@ namespace OpenLoco
     {
         CargoSearchState cargoSearchState;
         uint32_t currentAcceptedCargo = calcAcceptedCargo(cargoSearchState);
-        uint32_t originallyAcceptedCargo = 0;
-        for (uint32_t cargoId = 0; cargoId < kMaxCargoStats; cargoId++)
-        {
-            auto& stationCargoStats = cargoStats[cargoId];
-            stationCargoStats.industryId = cargoSearchState.getIndustry(cargoId);
-            if (stationCargoStats.isAccepted())
-            {
-                originallyAcceptedCargo |= (1 << cargoId);
-            }
-
-            bool isNowAccepted = (currentAcceptedCargo & (1 << cargoId)) != 0;
-            stationCargoStats.isAccepted(isNowAccepted);
-        }
+        const auto originallyAcceptedCargo = applyCargoAcceptance(*this, cargoSearchState, currentAcceptedCargo);
 
         if (originallyAcceptedCargo != currentAcceptedCargo)
         {
-            CargoDist::markGraphDirty();
             if (owner == CompanyManager::getControllingId())
             {
                 alertCargoAcceptanceChange(originallyAcceptedCargo, currentAcceptedCargo);
@@ -499,11 +532,7 @@ namespace OpenLoco
         const auto acceptedCargo = doCalcAcceptedCargo(this, cargoSearchState);
         for (uint8_t cargo = 0; cargo < kMaxCargoStats; ++cargo)
         {
-            const auto* cargoObject = ObjectManager::get<CargoObject>(cargo);
-            if (cargoObject != nullptr && cargoObject->cargoCategory == CargoCategory::passengers)
-            {
-                CargoDist::setStationAttraction(id(), cargo, cargoSearchState.score(cargo));
-            }
+            CargoDist::setStationAttraction(id(), cargo, cargoSearchState.score(cargo));
         }
         return acceptedCargo;
     }
@@ -1344,13 +1373,7 @@ namespace OpenLoco
                 }
             }
         }
-        for (auto cargoId = 0U; cargoId < ObjectManager::getMaxObjects(ObjectType::cargo); ++cargoId)
-        {
-            auto& stats = station->cargoStats[cargoId];
-            stats.industryId = cargoSearchState.getIndustry(cargoId);
-            bool isAccepted = (acceptedCargos & (1 << cargoId)) != 0;
-            stats.isAccepted(isAccepted);
-        }
+        applyCargoAcceptance(*station, cargoSearchState, acceptedCargos);
     }
 
     // 0x0048F43A
@@ -1387,14 +1410,7 @@ namespace OpenLoco
         const auto acceptedCargos = station->calcAcceptedCargo(cargoSearchState);
 
         // Reset cargo acceptance stats for this station
-        for (auto cargoId = 0U; cargoId < ObjectManager::getMaxObjects(ObjectType::cargo); ++cargoId)
-        {
-            auto& stats = station->cargoStats[cargoId];
-            stats.industryId = cargoSearchState.getIndustry(cargoId);
-
-            bool isAccepted = (acceptedCargos & (1 << cargoId)) != 0;
-            stats.isAccepted(isAccepted);
-        }
+        applyCargoAcceptance(*station, cargoSearchState, acceptedCargos);
     }
 
     // 0x00491C6F

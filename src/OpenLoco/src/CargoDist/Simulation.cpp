@@ -951,19 +951,6 @@ namespace OpenLoco::CargoDist
             RoutingGraph graph;
             graph.timeSensitive = true;
             const auto& state = getStateConst();
-            const auto* cargoObject = ObjectManager::get<CargoObject>(cargo);
-            auto useCatchmentAttraction = cargoObject != nullptr && cargoObject->cargoCategory == CargoCategory::passengers;
-            if (useCatchmentAttraction)
-            {
-                for (const auto& station : StationManager::stations())
-                {
-                    if (!station.empty() && station.cargoStats[cargo].isAccepted() && !state.stationAttraction.contains({ station.id(), cargo }))
-                    {
-                        useCatchmentAttraction = false;
-                        break;
-                    }
-                }
-            }
             for (const auto& station : StationManager::stations())
             {
                 if (station.empty())
@@ -971,9 +958,19 @@ namespace OpenLoco::CargoDist
                     continue;
                 }
                 const auto accepts = station.cargoStats[cargo].isAccepted();
-                const auto attraction = useCatchmentAttraction && accepts
-                    ? state.stationAttraction.at({ station.id(), cargo })
-                    : 1;
+                uint32_t attraction = 1;
+                if (accepts)
+                {
+                    attraction = 8;
+                    if (station.cargoStats[cargo].industryId == IndustryId::null)
+                    {
+                        const auto found = state.stationAttraction.find({ station.id(), cargo });
+                        if (found != state.stationAttraction.end() && found->second != 0)
+                        {
+                            attraction = found->second;
+                        }
+                    }
+                }
                 graph.nodes.push_back({
                     station.id(),
                     station.x,

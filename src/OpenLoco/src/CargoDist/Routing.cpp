@@ -2,6 +2,7 @@
 #include <OpenLoco/CargoDist/Routing.h>
 
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -106,6 +107,244 @@ namespace OpenLoco::CargoDist
             std::vector<size_t> path;
         };
 
+        struct PreparedDemand
+        {
+            uint32_t amount;
+            std::vector<size_t> sinks;
+            std::vector<uint64_t> costs;
+            size_t sourceNode;
+            size_t visitedNode;
+            StationId origin;
+            ServicePoint incoming;
+        };
+
+        class CapacityNetwork
+        {
+        public:
+            struct Edge
+            {
+                size_t to;
+                size_t reverse;
+                uint64_t capacity;
+            };
+
+            explicit CapacityNetwork(size_t size)
+                : _edges(size)
+            {
+            }
+
+            void addEdge(size_t from, size_t to, uint64_t capacity)
+            {
+                const auto forward = _edges[from].size();
+                const auto reverse = _edges[to].size();
+                _edges[from].push_back({ to, reverse, capacity });
+                _edges[to].push_back({ from, forward, 0 });
+            }
+
+            uint64_t maximumFlow(size_t source, size_t destination)
+            {
+                uint64_t total = 0;
+                while (buildLevels(source, destination))
+                {
+                    _next.assign(_edges.size(), 0);
+                    while (const auto amount = send(source, destination, std::numeric_limits<uint64_t>::max()))
+                    {
+                        total += amount;
+                    }
+                }
+                return total;
+            }
+
+            std::vector<bool> residualReachable(size_t source) const
+            {
+                std::vector<bool> reachable(_edges.size());
+                std::vector<size_t> pending{ source };
+                reachable[source] = true;
+                for (size_t i = 0; i < pending.size(); ++i)
+                {
+                    for (const auto& edge : _edges[pending[i]])
+                    {
+                        if (edge.capacity != 0 && !reachable[edge.to])
+                        {
+                            reachable[edge.to] = true;
+                            pending.push_back(edge.to);
+                        }
+                    }
+                }
+                return reachable;
+            }
+
+        private:
+            bool buildLevels(size_t source, size_t destination)
+            {
+                _level.assign(_edges.size(), -1);
+                std::queue<size_t> pending;
+                pending.push(source);
+                _level[source] = 0;
+                while (!pending.empty())
+                {
+                    const auto current = pending.front();
+                    pending.pop();
+                    for (const auto& edge : _edges[current])
+                    {
+                        if (edge.capacity != 0 && _level[edge.to] == -1)
+                        {
+                            _level[edge.to] = _level[current] + 1;
+                            pending.push(edge.to);
+                        }
+                    }
+                }
+                return _level[destination] != -1;
+            }
+
+            uint64_t send(size_t current, size_t destination, uint64_t available)
+            {
+                if (current == destination)
+                {
+                    return available;
+                }
+                for (auto& next = _next[current]; next < _edges[current].size(); ++next)
+                {
+                    auto& edge = _edges[current][next];
+                    if (edge.capacity == 0 || _level[edge.to] != _level[current] + 1)
+                    {
+                        continue;
+                    }
+                    const auto amount = send(edge.to, destination, std::min(available, edge.capacity));
+                    if (amount != 0)
+                    {
+                        edge.capacity -= amount;
+                        _edges[edge.to][edge.reverse].capacity += amount;
+                        return amount;
+                    }
+                }
+                return 0;
+            }
+
+            std::vector<std::vector<Edge>> _edges;
+            std::vector<int32_t> _level;
+            std::vector<size_t> _next;
+        };
+
+        class CostNetwork
+        {
+        public:
+            struct Edge
+            {
+                size_t to;
+                size_t reverse;
+                uint64_t capacity;
+                int64_t cost;
+            };
+
+            struct EdgeReference
+            {
+                size_t from;
+                size_t edge;
+            };
+
+            explicit CostNetwork(size_t size)
+                : _edges(size)
+            {
+            }
+
+            EdgeReference addEdge(size_t from, size_t to, uint64_t capacity, int64_t cost)
+            {
+                const auto forward = _edges[from].size();
+                const auto reverse = _edges[to].size();
+                _edges[from].push_back({ to, reverse, capacity, cost });
+                _edges[to].push_back({ from, forward, 0, -cost });
+                return { from, forward };
+            }
+
+            uint64_t minimumCostFlow(size_t source, size_t destination, uint64_t required)
+            {
+                constexpr auto kInfinity = std::numeric_limits<int64_t>::max();
+                uint64_t total = 0;
+                std::vector<int64_t> distance(_edges.size());
+                std::vector<size_t> previousNode(_edges.size());
+                std::vector<size_t> previousEdge(_edges.size());
+                std::vector<bool> queued(_edges.size());
+                while (total != required)
+                {
+                    std::fill(distance.begin(), distance.end(), kInfinity);
+                    std::fill(previousNode.begin(), previousNode.end(), kNoIndex);
+                    std::fill(previousEdge.begin(), previousEdge.end(), kNoIndex);
+                    std::fill(queued.begin(), queued.end(), false);
+                    std::queue<size_t> pending;
+                    pending.push(source);
+                    queued[source] = true;
+                    distance[source] = 0;
+                    while (!pending.empty())
+                    {
+                        const auto current = pending.front();
+                        pending.pop();
+                        queued[current] = false;
+                        for (size_t edgeIndex = 0; edgeIndex < _edges[current].size(); ++edgeIndex)
+                        {
+                            const auto& edge = _edges[current][edgeIndex];
+                            if (edge.capacity == 0)
+                            {
+                                continue;
+                            }
+                            const auto candidate = addCost(distance[current], edge.cost);
+                            if (candidate < distance[edge.to])
+                            {
+                                distance[edge.to] = candidate;
+                                previousNode[edge.to] = current;
+                                previousEdge[edge.to] = edgeIndex;
+                                if (!queued[edge.to])
+                                {
+                                    pending.push(edge.to);
+                                    queued[edge.to] = true;
+                                }
+                            }
+                        }
+                    }
+                    if (previousNode[destination] == kNoIndex)
+                    {
+                        break;
+                    }
+
+                    auto amount = required - total;
+                    for (auto current = destination; current != source; current = previousNode[current])
+                    {
+                        amount = std::min(amount, _edges[previousNode[current]][previousEdge[current]].capacity);
+                    }
+                    for (auto current = destination; current != source; current = previousNode[current])
+                    {
+                        auto& edge = _edges[previousNode[current]][previousEdge[current]];
+                        edge.capacity -= amount;
+                        _edges[edge.to][edge.reverse].capacity += amount;
+                    }
+                    total += amount;
+                }
+                return total;
+            }
+
+            uint64_t flow(EdgeReference reference) const
+            {
+                const auto& edge = _edges[reference.from][reference.edge];
+                return _edges[edge.to][edge.reverse].capacity;
+            }
+
+        private:
+            static int64_t addCost(int64_t lhs, int64_t rhs)
+            {
+                if (rhs > 0 && lhs > std::numeric_limits<int64_t>::max() - rhs)
+                {
+                    return std::numeric_limits<int64_t>::max();
+                }
+                if (rhs < 0 && lhs < std::numeric_limits<int64_t>::min() - rhs)
+                {
+                    return std::numeric_limits<int64_t>::min();
+                }
+                return lhs + rhs;
+            }
+
+            std::vector<std::vector<Edge>> _edges;
+        };
+
         constexpr uint16_t stationValue(StationId station)
         {
             return static_cast<uint16_t>(station);
@@ -141,33 +380,6 @@ namespace OpenLoco::CargoDist
         uint64_t scalePercent(uint64_t value, uint8_t percent)
         {
             return saturatedAdd(saturatedMultiply(value / 100, percent), (value % 100) * percent / 100);
-        }
-
-        uint64_t ratioQ16(uint64_t numerator, uint64_t denominator)
-        {
-            constexpr uint64_t kScale = uint64_t{ 1 } << 16;
-            if (numerator >= denominator)
-            {
-                return kScale;
-            }
-
-            uint64_t result = 0;
-            auto remainder = numerator;
-            // Generate the fractional bits without overflowing numerator * kScale.
-            for (uint8_t bit = 0; bit < 16; ++bit)
-            {
-                result *= 2;
-                if (remainder >= denominator - remainder)
-                {
-                    remainder -= denominator - remainder;
-                    ++result;
-                }
-                else
-                {
-                    remainder *= 2;
-                }
-            }
-            return result;
         }
 
         uint64_t geometricDistance(const RoutingNode& lhs, const RoutingNode& rhs)
@@ -511,37 +723,251 @@ namespace OpenLoco::CargoDist
             return reconstructPath(source, destination, nodeStations, edges, scratch);
         }
 
-        std::vector<uint64_t> destinationWeights(
-            const std::vector<size_t>& sinks,
+        struct MultiplyDivideResult
+        {
+            uint64_t quotient;
+            uint64_t remainder;
+        };
+
+        MultiplyDivideResult proportionalShare(uint64_t lhs, uint64_t rhs, uint64_t divisor)
+        {
+            assert(lhs < divisor && rhs <= divisor);
+            uint64_t quotient = 0;
+            uint64_t remainder = 0;
+            for (int8_t bit = 63; bit >= 0; --bit)
+            {
+                uint8_t digit = 0;
+                if (remainder >= divisor - remainder)
+                {
+                    remainder -= divisor - remainder;
+                    ++digit;
+                }
+                else
+                {
+                    remainder *= 2;
+                }
+                if ((rhs & (uint64_t{ 1 } << bit)) != 0)
+                {
+                    if (remainder >= divisor - lhs)
+                    {
+                        remainder -= divisor - lhs;
+                        ++digit;
+                    }
+                    else
+                    {
+                        remainder += lhs;
+                    }
+                }
+                quotient = quotient * 2 + digit;
+            }
+            return { quotient, remainder };
+        }
+
+        std::vector<uint64_t> weightedTargets(uint64_t total, const std::vector<size_t>& sinks, const std::vector<RoutingNode>& nodes)
+        {
+            uint64_t weightTotal = 0;
+            for (const auto sink : sinks)
+            {
+                weightTotal += std::max<uint64_t>(1, nodes[sink].attraction);
+            }
+
+            struct Remainder
+            {
+                size_t index;
+                uint64_t value;
+            };
+            std::vector<uint64_t> targets(sinks.size());
+            std::vector<Remainder> remainders;
+            remainders.reserve(sinks.size());
+            uint64_t allocated = 0;
+            const auto whole = total / weightTotal;
+            const auto partial = total % weightTotal;
+            for (size_t i = 0; i < sinks.size(); ++i)
+            {
+                const auto weight = std::max<uint64_t>(1, nodes[sinks[i]].attraction);
+                const auto product = proportionalShare(partial, weight, weightTotal);
+                targets[i] = whole * weight + product.quotient;
+                allocated += targets[i];
+                remainders.push_back({ i, product.remainder });
+            }
+            std::sort(remainders.begin(), remainders.end(), [&](const auto& lhs, const auto& rhs) {
+                return lhs.value != rhs.value
+                    ? lhs.value > rhs.value
+                    : stationValue(nodes[sinks[lhs.index]].station) < stationValue(nodes[sinks[rhs.index]].station);
+            });
+            for (uint64_t remaining = total - allocated; remaining != 0; --remaining)
+            {
+                ++targets[remainders[total - allocated - remaining].index];
+            }
+            return targets;
+        }
+
+        std::vector<uint64_t> calculateFairSinkTargets(const std::vector<PreparedDemand>& demands, const std::vector<RoutingNode>& nodes)
+        {
+            struct Subproblem
+            {
+                std::vector<size_t> demands;
+                std::vector<size_t> sinks;
+            };
+
+            std::vector<uint64_t> result(nodes.size());
+            if (demands.empty())
+            {
+                return result;
+            }
+
+            Subproblem initial;
+            initial.demands.resize(demands.size());
+            for (size_t i = 0; i < demands.size(); ++i)
+            {
+                initial.demands[i] = i;
+                initial.sinks.insert(initial.sinks.end(), demands[i].sinks.begin(), demands[i].sinks.end());
+            }
+            std::sort(initial.sinks.begin(), initial.sinks.end());
+            initial.sinks.erase(std::unique(initial.sinks.begin(), initial.sinks.end()), initial.sinks.end());
+
+            std::vector<Subproblem> pending;
+            pending.push_back(std::move(initial));
+            while (!pending.empty())
+            {
+                auto problem = std::move(pending.back());
+                pending.pop_back();
+                uint64_t total = 0;
+                for (const auto demand : problem.demands)
+                {
+                    total += demands[demand].amount;
+                }
+                const auto targets = weightedTargets(total, problem.sinks, nodes);
+                const auto source = size_t{ 0 };
+                const auto demandBegin = size_t{ 1 };
+                const auto sinkBegin = demandBegin + problem.demands.size();
+                const auto destination = sinkBegin + problem.sinks.size();
+                CapacityNetwork network(destination + 1);
+                std::vector<size_t> sinkPositions(nodes.size(), kNoIndex);
+                for (size_t i = 0; i < problem.sinks.size(); ++i)
+                {
+                    sinkPositions[problem.sinks[i]] = i;
+                    network.addEdge(sinkBegin + i, destination, targets[i]);
+                }
+                for (size_t i = 0; i < problem.demands.size(); ++i)
+                {
+                    const auto demand = problem.demands[i];
+                    network.addEdge(source, demandBegin + i, demands[demand].amount);
+                    for (const auto sink : demands[demand].sinks)
+                    {
+                        if (sinkPositions[sink] != kNoIndex)
+                        {
+                            network.addEdge(demandBegin + i, sinkBegin + sinkPositions[sink], demands[demand].amount);
+                        }
+                    }
+                }
+
+                if (network.maximumFlow(source, destination) == total)
+                {
+                    for (size_t i = 0; i < problem.sinks.size(); ++i)
+                    {
+                        result[problem.sinks[i]] = targets[i];
+                    }
+                    continue;
+                }
+
+                const auto reachable = network.residualReachable(source);
+                Subproblem constrained;
+                Subproblem remainder;
+                for (size_t i = 0; i < problem.demands.size(); ++i)
+                {
+                    (reachable[demandBegin + i] ? constrained.demands : remainder.demands).push_back(problem.demands[i]);
+                }
+                for (size_t i = 0; i < problem.sinks.size(); ++i)
+                {
+                    (reachable[sinkBegin + i] ? constrained.sinks : remainder.sinks).push_back(problem.sinks[i]);
+                }
+
+                const bool validPartition = !constrained.demands.empty() && !constrained.sinks.empty()
+                    && constrained.demands.size() != problem.demands.size() && constrained.sinks.size() != problem.sinks.size();
+                assert(validPartition);
+                if (!validPartition)
+                {
+                    return {};
+                }
+                pending.push_back(std::move(remainder));
+                pending.push_back(std::move(constrained));
+            }
+            return result;
+        }
+
+        std::vector<std::vector<std::pair<size_t, uint32_t>>> assignDemandTargets(
+            const std::vector<PreparedDemand>& demands,
             const std::vector<RoutingNode>& nodes,
-            const std::vector<uint64_t>& journeyCosts,
+            const std::vector<uint64_t>& targets,
             uint8_t distanceEffect)
         {
-            constexpr uint64_t kMaximumWeight = uint64_t{ 1 } << 32;
-            std::vector<uint64_t> weights;
-            weights.reserve(sinks.size());
-            uint64_t minimumCost = kMaximumCost;
-            for (const auto sink : sinks)
+            std::vector<std::vector<std::pair<size_t, uint32_t>>> result(demands.size());
+            std::vector<size_t> sinks;
+            for (size_t sink = 0; sink < targets.size(); ++sink)
             {
-                minimumCost = std::min(minimumCost, std::max<uint64_t>(1, journeyCosts[sink]));
+                if (targets[sink] != 0)
+                {
+                    sinks.push_back(sink);
+                }
             }
-            uint64_t maximumScore = 1;
-            for (const auto sink : sinks)
+            if (demands.empty() || sinks.empty())
             {
-                const auto cost = std::max<uint64_t>(1, journeyCosts[sink]);
-                const auto effectiveCost = saturatedAdd(minimumCost, scalePercent(cost - minimumCost, distanceEffect));
-                const auto proximity = ratioQ16(minimumCost, effectiveCost);
-                const auto attraction = std::max<uint64_t>(1, nodes[sink].attraction);
-                const auto score = saturatedMultiply(proximity * proximity, attraction);
-                weights.push_back(score);
-                maximumScore = std::max(maximumScore, score);
+                return result;
             }
-            const auto divisor = maximumScore / kMaximumWeight + (maximumScore % kMaximumWeight != 0);
-            for (auto& weight : weights)
+
+            const auto source = size_t{ 0 };
+            const auto demandBegin = size_t{ 1 };
+            const auto sinkBegin = demandBegin + demands.size();
+            const auto destination = sinkBegin + sinks.size();
+            CostNetwork network(destination + 1);
+            std::vector<size_t> sinkPositions(nodes.size(), kNoIndex);
+            for (size_t i = 0; i < sinks.size(); ++i)
             {
-                weight = std::max<uint64_t>(1, weight / divisor);
+                sinkPositions[sinks[i]] = i;
+                network.addEdge(sinkBegin + i, destination, targets[sinks[i]], 0);
             }
-            return weights;
+
+            struct AssignmentEdge
+            {
+                size_t demand;
+                size_t sink;
+                CostNetwork::EdgeReference edge;
+            };
+            std::vector<AssignmentEdge> assignments;
+            uint64_t total = 0;
+            const auto costLimit = std::numeric_limits<int64_t>::max() / std::max<uint64_t>(4, static_cast<uint64_t>(destination + 1) * 4);
+            for (size_t demand = 0; demand < demands.size(); ++demand)
+            {
+                total += demands[demand].amount;
+                network.addEdge(source, demandBegin + demand, demands[demand].amount, 0);
+                for (size_t i = 0; i < demands[demand].sinks.size(); ++i)
+                {
+                    const auto sink = demands[demand].sinks[i];
+                    if (sinkPositions[sink] == kNoIndex)
+                    {
+                        continue;
+                    }
+                    const auto scaledCost = scalePercent(demands[demand].costs[i], distanceEffect);
+                    const auto cost = static_cast<int64_t>(std::min<uint64_t>(scaledCost, costLimit));
+                    assignments.push_back({ demand, sink, network.addEdge(demandBegin + demand, sinkBegin + sinkPositions[sink], demands[demand].amount, cost) });
+                }
+            }
+            const auto assigned = network.minimumCostFlow(source, destination, total);
+            assert(assigned == total);
+            if (assigned != total)
+            {
+                return {};
+            }
+            for (const auto& assignment : assignments)
+            {
+                const auto amount = network.flow(assignment.edge);
+                if (amount != 0)
+                {
+                    result[assignment.demand].emplace_back(assignment.sink, static_cast<uint32_t>(amount));
+                }
+            }
+            return result;
         }
     }
 
@@ -579,10 +1005,12 @@ namespace OpenLoco::CargoDist
             }
         }
 
+        std::vector<PreparedDemand> fixedDemands;
+        std::vector<PreparedDemand> flexibleDemands;
         for (const auto& [demandKey, demandAmount] : demands)
         {
             const auto& [platformDemand, sourceIndex, origin, initialIncoming, fixedDestination] = demandKey;
-            const auto supply = static_cast<uint32_t>(std::min<uint64_t>(demandAmount, std::numeric_limits<uint32_t>::max()));
+            const auto amount = static_cast<uint32_t>(std::min<uint64_t>(demandAmount, std::numeric_limits<uint32_t>::max()));
             auto sourceNode = sourceIndex;
             if (!initialIncoming.empty())
             {
@@ -608,103 +1036,102 @@ namespace OpenLoco::CargoDist
                 }
             }
             const auto reachable = reachableNodes(sourceNode, edges, adjacency, visitedNode);
-            const uint32_t accuracy = std::max<uint32_t>(1, settings.accuracy);
-            const uint32_t chunkSize = supply / accuracy + (supply % accuracy != 0);
-            const auto routeAmount = [&](size_t destinationNode, uint32_t amount, uint32_t boundaryIterations, bool reuseCurrentTree) {
-                const auto destination = nodes[destinationNode].station;
-                if (destinationNode == sourceNode)
-                {
-                    addShare(ShareKey{ destination, origin, destination, initialIncoming, {}, {}, destination }, amount);
-                    return;
-                }
-
-                uint32_t iterations = 0;
-                for (uint32_t remaining = amount; remaining != 0; ++iterations)
-                {
-                    const auto& path = reuseCurrentTree
-                        ? reconstructPath(sourceNode, destinationNode, planned.nodeStations, edges, shortestPathScratch)
-                        : shortestPath(sourceNode, destinationNode, nodes, planned.nodeStations, edges, adjacency, graph.timeSensitive, settings.saturation, visitedNode, shortestPathScratch);
-                    reuseCurrentTree = false;
-                    if (path.empty())
-                    {
-                        break;
-                    }
-                    auto chunk = std::min(remaining, chunkSize);
-                    if (iterations < boundaryIterations)
-                    {
-                        for (const auto edgeIndex : path)
-                        {
-                            const auto& edge = edges[edgeIndex];
-                            if (edge.kind == PlannedEdgeKind::ride && !edge.departure.empty())
-                            {
-                                const auto capacity = std::max<uint32_t>(1, edge.capacity);
-                                chunk = static_cast<uint32_t>(std::min<uint64_t>(chunk, capacity - edge.flow % capacity));
-                            }
-                        }
-                    }
-                    auto incoming = initialIncoming;
-                    for (const auto edgeIndex : path)
-                    {
-                        auto& edge = edges[edgeIndex];
-                        if (edge.kind != PlannedEdgeKind::ride)
-                        {
-                            continue;
-                        }
-                        edge.flow = saturatedAdd(edge.flow, chunk);
-                        const auto station = nodes[planned.nodeStations[edge.from]].station;
-                        const auto via = nodes[planned.nodeStations[edge.to]].station;
-                        addShare(ShareKey{ station, origin, via, incoming, edge.departure, edge.arrival, destination }, chunk);
-                        incoming = edge.arrival;
-                    }
-                    addShare(ShareKey{ destination, origin, destination, incoming, {}, {}, destination }, chunk);
-                    remaining -= chunk;
-                }
-            };
-
             if (fixedDestination != StationId::null)
             {
                 const auto sink = findNode(nodes, fixedDestination);
                 if (sink != kNoIndex && reachable[sink] && nodes[sink].accepts)
                 {
-                    routeAmount(sink, supply, accuracy, false);
+                    fixedDemands.push_back({ amount, { sink }, {}, sourceNode, visitedNode, origin, initialIncoming });
                 }
                 continue;
             }
 
-            std::vector<size_t> sinks;
+            PreparedDemand prepared{ amount, {}, {}, sourceNode, visitedNode, origin, initialIncoming };
             for (size_t sink = 0; sink < nodes.size(); ++sink)
             {
                 if ((sink != sourceIndex || !platformDemand) && reachable[sink] && nodes[sink].accepts)
                 {
-                    sinks.push_back(sink);
+                    prepared.sinks.push_back(sink);
                 }
             }
-            if (sinks.empty())
+            if (!prepared.sinks.empty())
             {
-                continue;
+                flexibleDemands.push_back(std::move(prepared));
+            }
+        }
+
+        const uint32_t accuracy = std::max<uint32_t>(1, settings.accuracy);
+        const auto routeAmount = [&](const PreparedDemand& demand, size_t destinationNode, uint32_t amount) {
+            const auto destination = nodes[destinationNode].station;
+            if (destinationNode == demand.sourceNode)
+            {
+                addShare(ShareKey{ destination, demand.origin, destination, demand.incoming, {}, {}, destination }, amount);
+                return;
             }
 
-            std::vector<int64_t> credits(sinks.size());
-            for (uint32_t remaining = supply; remaining != 0;)
+            const auto chunkSize = demand.amount / accuracy + (demand.amount % accuracy != 0);
+            uint32_t iterations = 0;
+            for (uint32_t remaining = amount; remaining != 0;)
             {
-                shortestPath(sourceNode, kNoIndex, nodes, planned.nodeStations, edges, adjacency, graph.timeSensitive, settings.saturation, visitedNode, shortestPathScratch);
-                const auto weights = destinationWeights(sinks, nodes, shortestPathScratch.distance, settings.distanceEffect);
-                uint64_t totalWeight = 0;
-                size_t chosen = 0;
-                for (size_t i = 0; i < sinks.size(); ++i)
+                const auto& path = shortestPath(demand.sourceNode, destinationNode, nodes, planned.nodeStations, edges, adjacency, graph.timeSensitive, settings.saturation, demand.visitedNode, shortestPathScratch);
+                if (path.empty())
                 {
-                    totalWeight += weights[i];
-                    credits[i] += static_cast<int64_t>(weights[i]);
-                    if (credits[i] > credits[chosen]
-                        || (credits[i] == credits[chosen] && stationValue(nodes[sinks[i]].station) < stationValue(nodes[sinks[chosen]].station)))
+                    break;
+                }
+                auto chunk = std::min(remaining, chunkSize);
+                if (iterations < accuracy)
+                {
+                    for (const auto edgeIndex : path)
                     {
-                        chosen = i;
+                        const auto& edge = edges[edgeIndex];
+                        if (edge.kind == PlannedEdgeKind::ride && !edge.departure.empty())
+                        {
+                            const auto capacity = std::max<uint32_t>(1, edge.capacity);
+                            chunk = static_cast<uint32_t>(std::min<uint64_t>(chunk, capacity - edge.flow % capacity));
+                        }
                     }
                 }
-                credits[chosen] -= static_cast<int64_t>(totalWeight);
-                const auto batch = std::min(remaining, chunkSize);
-                routeAmount(sinks[chosen], batch, 1, true);
-                remaining -= batch;
+                auto incoming = demand.incoming;
+                for (const auto edgeIndex : path)
+                {
+                    auto& edge = edges[edgeIndex];
+                    if (edge.kind != PlannedEdgeKind::ride)
+                    {
+                        continue;
+                    }
+                    edge.flow = saturatedAdd(edge.flow, chunk);
+                    const auto station = nodes[planned.nodeStations[edge.from]].station;
+                    const auto via = nodes[planned.nodeStations[edge.to]].station;
+                    addShare(ShareKey{ station, demand.origin, via, incoming, edge.departure, edge.arrival, destination }, chunk);
+                    incoming = edge.arrival;
+                }
+                addShare(ShareKey{ destination, demand.origin, destination, incoming, {}, {}, destination }, chunk);
+                remaining -= chunk;
+                ++iterations;
+            }
+        };
+
+        for (const auto& demand : fixedDemands)
+        {
+            routeAmount(demand, demand.sinks.front(), demand.amount);
+        }
+
+        for (auto& demand : flexibleDemands)
+        {
+            shortestPath(demand.sourceNode, kNoIndex, nodes, planned.nodeStations, edges, adjacency, graph.timeSensitive, settings.saturation, demand.visitedNode, shortestPathScratch);
+            demand.costs.reserve(demand.sinks.size());
+            for (const auto sink : demand.sinks)
+            {
+                demand.costs.push_back(shortestPathScratch.distance[sink]);
+            }
+        }
+        const auto targets = calculateFairSinkTargets(flexibleDemands, nodes);
+        const auto assignments = assignDemandTargets(flexibleDemands, nodes, targets, settings.distanceEffect);
+        for (size_t demand = 0; demand < flexibleDemands.size(); ++demand)
+        {
+            for (const auto [sink, amount] : assignments[demand])
+            {
+                routeAmount(flexibleDemands[demand], sink, amount);
             }
         }
 

@@ -14,6 +14,7 @@
 #include "Vehicles/VehicleTail.h"
 #include "World/Station.h"
 #include <OpenLoco/CargoDist/Save.h>
+#include <algorithm>
 #include <array>
 #include <gtest/gtest.h>
 #include <limits>
@@ -230,6 +231,44 @@ TEST_F(CargoDistServiceSimulationTest, MixedVehicleCapacityUsesAverageDeparture)
     ASSERT_EQ(getStateConst().serviceEdges.size(), 2);
     EXPECT_EQ(getStateConst().serviceEdges.begin()->second.capacity, 15);
     EXPECT_EQ(getStateConst().serviceEdges.begin()->second.fleetCapacity, 30);
+}
+
+TEST_F(CargoDistServiceSimulationTest, IndustryAndBuildingSinksUseSemanticTargetWeights)
+{
+    auto& industrySink = getGameState().stations[2].cargoStats[0];
+    industrySink.industryId = IndustryId(0);
+    auto& buildingSink = getGameState().stations[4].cargoStats[0];
+    buildingSink.isAccepted(true);
+    buildingSink.industryId = IndustryId::null;
+    setStationAttraction(station(2), 0, 100);
+    setStationAttraction(station(4), 0, 24);
+    getState().supply[{ 0, station(1) }] = 32;
+    createVehicleWithStops({ station(1), station(2), station(4) });
+
+    recalculateNow();
+
+    const auto& destinations = getStateConst().destinationFlows.at({ 0, station(1), station(1) });
+    const auto industry = std::find_if(destinations.begin(), destinations.end(), [](const auto& option) { return option.destination == station(2); });
+    const auto building = std::find_if(destinations.begin(), destinations.end(), [](const auto& option) { return option.destination == station(4); });
+    ASSERT_NE(industry, destinations.end());
+    ASSERT_NE(building, destinations.end());
+    EXPECT_EQ(industry->weight, 8U);
+    EXPECT_EQ(building->weight, 24U);
+}
+
+TEST_F(CargoDistServiceSimulationTest, RoutingMetadataRefreshPreservesCargoAcceptance)
+{
+    auto& destination = getGameState().stations[2];
+    destination.cargoStats[0].industryId = IndustryId(0);
+    setStationAttraction(station(2), 0, 100);
+    getState().graphDirty = false;
+
+    destination.refreshCargoRoutingMetadata();
+
+    EXPECT_TRUE(destination.cargoStats[0].isAccepted());
+    EXPECT_EQ(destination.cargoStats[0].industryId, IndustryId::null);
+    EXPECT_FALSE(getStateConst().stationAttraction.contains({ station(2), 0 }));
+    EXPECT_TRUE(getStateConst().graphDirty);
 }
 
 TEST_F(CargoDistServiceSimulationTest, CommittedDemandIncludesOnlyWaitingAndNextTransfer)

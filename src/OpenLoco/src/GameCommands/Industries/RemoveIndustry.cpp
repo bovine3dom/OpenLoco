@@ -153,12 +153,18 @@ namespace OpenLoco::GameCommands
 
             for (auto& station : StationManager::stations())
             {
+                bool affected = false;
                 for (auto& stat : station.cargoStats)
                 {
                     if (stat.industryId == id)
                     {
-                        stat.industryId = IndustryId::null;
+                        affected = true;
+                        break;
                     }
+                }
+                if (affected)
+                {
+                    station.refreshCargoRoutingMetadata();
                 }
             }
 

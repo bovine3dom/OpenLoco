@@ -78,6 +78,21 @@ namespace
         return amount;
     }
 
+    uint32_t totalToDestination(const std::vector<FlowShare>& flows, uint16_t destination)
+    {
+        uint32_t amount = 0;
+        for (const auto& flow : flows)
+        {
+            if (flow.station == station(destination)
+                && flow.via == station(destination)
+                && flow.destination == station(destination))
+            {
+                amount += flow.amount;
+            }
+        }
+        return amount;
+    }
+
     void expectSameFlows(const std::vector<FlowShare>& lhs, const std::vector<FlowShare>& rhs)
     {
         ASSERT_EQ(lhs.size(), rhs.size());
@@ -242,7 +257,7 @@ TEST(CargoDistRouting, ZeroDistanceEffectAllocatesEquallyWithStationIdRemainder)
     EXPECT_EQ(amountAt(flows, 3, 10, 3), 2U);
 }
 
-TEST(CargoDistRouting, DistanceEffectPrefersCloserSink)
+TEST(CargoDistRouting, EqualSinkTargetsIgnoreDistance)
 {
     const RoutingGraph graph{
         { node(1, 0, 0, 100), node(2, 10, 0, 0, true), node(3, 100, 0, 0, true) },
@@ -252,11 +267,8 @@ TEST(CargoDistRouting, DistanceEffectPrefersCloserSink)
     };
 
     const auto flows = calculateAsymmetricFlows(graph);
-    const auto nearAmount = amountAt(flows, 2, 1, 2);
-    const auto farAmount = amountAt(flows, 3, 1, 3);
-
-    EXPECT_GT(nearAmount, farAmount);
-    EXPECT_EQ(nearAmount + farAmount, 100U);
+    EXPECT_EQ(amountAt(flows, 2, 1, 2), 50U);
+    EXPECT_EQ(amountAt(flows, 3, 1, 3), 50U);
 }
 
 TEST(CargoDistRouting, AttractionWeightsEquidistantSinks)
@@ -277,7 +289,7 @@ TEST(CargoDistRouting, AttractionWeightsEquidistantSinks)
     EXPECT_EQ(amountAt(flows, 3, 1, 3), 90U);
 }
 
-TEST(CargoDistRouting, JourneyCostModeratesDestinationAttraction)
+TEST(CargoDistRouting, JourneyCostDoesNotChangeDestinationTargets)
 {
     const RoutingGraph graph{
         { node(1, 0, 0, 1000), node(2, 10, 0, 0, true, 10), node(3, 100, 0, 0, true, 100) },
@@ -290,12 +302,132 @@ TEST(CargoDistRouting, JourneyCostModeratesDestinationAttraction)
 
     const auto distanceFlows = calculateAsymmetricFlows(graph);
     const auto noDistanceFlows = calculateAsymmetricFlows(graph, noDistance);
-    const auto nearAmount = amountAt(distanceFlows, 2, 1, 2);
-    const auto farAmount = amountAt(distanceFlows, 3, 1, 3);
+    EXPECT_EQ(amountAt(distanceFlows, 2, 1, 2), amountAt(noDistanceFlows, 2, 1, 2));
+    EXPECT_EQ(amountAt(distanceFlows, 3, 1, 3), amountAt(noDistanceFlows, 3, 1, 3));
+    EXPECT_EQ(amountAt(distanceFlows, 2, 1, 2), 91U);
+    EXPECT_EQ(amountAt(distanceFlows, 3, 1, 3), 909U);
+}
 
-    EXPECT_GT(nearAmount, farAmount);
-    EXPECT_LT(farAmount, amountAt(noDistanceFlows, 3, 1, 3));
-    EXPECT_EQ(nearAmount + farAmount, 1000U);
+TEST(CargoDistRouting, BalancesSinkTargetsAcrossMultipleSources)
+{
+    const RoutingGraph graph{
+        {
+            node(1, 0, 0, 100),
+            node(2, 10, 0, 100),
+            node(3, 20, 0, 0, true),
+            node(4, 30, 0, 0, true),
+        },
+        { edge(1, 3, 1000), edge(1, 4, 1000), edge(2, 3, 1000) },
+        false,
+        {},
+    };
+
+    const auto flows = calculateAsymmetricFlows(graph);
+
+    EXPECT_EQ(amountToDestination(flows, 1, 4), 100U);
+    EXPECT_EQ(amountToDestination(flows, 2, 3), 100U);
+    EXPECT_EQ(totalToDestination(flows, 3), 100U);
+    EXPECT_EQ(totalToDestination(flows, 4), 100U);
+}
+
+TEST(CargoDistRouting, BalancesOverlappingReachability)
+{
+    const RoutingGraph graph{
+        {
+            node(1, 0, 0, 100),
+            node(2, 10, 0, 100),
+            node(3, 20, 0, 0, true),
+            node(4, 30, 0, 0, true),
+            node(5, 40, 0, 0, true),
+        },
+        { edge(1, 3, 1000), edge(1, 4, 1000), edge(2, 4, 1000), edge(2, 5, 1000) },
+        false,
+        {},
+    };
+
+    const auto flows = calculateAsymmetricFlows(graph);
+
+    EXPECT_EQ(totalToDestination(flows, 3), 67U);
+    EXPECT_EQ(totalToDestination(flows, 4), 67U);
+    EXPECT_EQ(totalToDestination(flows, 5), 66U);
+}
+
+TEST(CargoDistRouting, RedistributesTargetsConstrainedByReachability)
+{
+    const RoutingGraph graph{
+        {
+            node(1, 0, 0, 100),
+            node(2, 10, 0, 100),
+            node(3, 20, 0, 100),
+            node(4, 30, 0, 0, true),
+            node(5, 40, 0, 0, true),
+            node(6, 50, 0, 0, true),
+        },
+        { edge(1, 4, 1000), edge(2, 4, 1000), edge(3, 4, 1000), edge(3, 5, 1000), edge(3, 6, 1000) },
+        false,
+        {},
+    };
+
+    const auto flows = calculateAsymmetricFlows(graph);
+
+    EXPECT_EQ(totalToDestination(flows, 4), 200U);
+    EXPECT_EQ(totalToDestination(flows, 5), 50U);
+    EXPECT_EQ(totalToDestination(flows, 6), 50U);
+}
+
+TEST(CargoDistRouting, AssignsSourcesByJourneyCostAfterBalancingTargets)
+{
+    const RoutingGraph graph{
+        {
+            node(1, 0, 0, 100),
+            node(2, 100, 0, 100),
+            node(3, 10, 0, 0, true),
+            node(4, 90, 0, 0, true),
+        },
+        { edge(1, 3, 1000), edge(1, 4, 1000), edge(2, 3, 1000), edge(2, 4, 1000) },
+        false,
+        {},
+    };
+
+    const auto flows = calculateAsymmetricFlows(graph);
+
+    EXPECT_EQ(amountToDestination(flows, 1, 3), 100U);
+    EXPECT_EQ(amountToDestination(flows, 2, 4), 100U);
+}
+
+TEST(CargoDistRouting, DestinationCountIsNotLimitedByRoutingAccuracy)
+{
+    RoutingGraph graph;
+    graph.nodes.push_back(node(1, 0, 0, 34));
+    for (uint16_t destination = 2; destination <= 18; ++destination)
+    {
+        graph.nodes.push_back(node(destination, destination * 10, 0, 0, true));
+        graph.edges.push_back(edge(1, destination, 1000));
+    }
+
+    const auto flows = calculateAsymmetricFlows(graph);
+
+    for (uint16_t destination = 2; destination <= 18; ++destination)
+    {
+        EXPECT_EQ(totalToDestination(flows, destination), 2U);
+    }
+}
+
+TEST(CargoDistRouting, FixedDestinationsDoNotConsumeFlexibleSinkTargets)
+{
+    RoutingGraph graph{
+        { node(1, 0, 0, 100), node(2, 10, 0, 0, true), node(3, 20, 0, 0, true) },
+        { edge(1, 2, 1000), edge(1, 3, 1000) },
+        false,
+        {},
+    };
+    graph.demands.push_back({ station(1), station(9), 100, {}, station(2) });
+
+    const auto flows = calculateAsymmetricFlows(graph);
+
+    EXPECT_EQ(amountToDestination(flows, 9, 2), 100U);
+    EXPECT_EQ(amountToDestination(flows, 1, 2), 50U);
+    EXPECT_EQ(amountToDestination(flows, 1, 3), 50U);
 }
 
 TEST(CargoDistRouting, HigherAttractionDestinationKeepsFlowThroughIntermediateStop)
@@ -356,7 +488,7 @@ TEST(CargoDistRouting, ZeroCapacityEdgeIsIgnored)
     EXPECT_TRUE(calculateAsymmetricFlows(graph).empty());
 }
 
-TEST(CargoDistRouting, DestinationGravityUsesCompleteJourneyCost)
+TEST(CargoDistRouting, EqualTargetsIgnoreCompleteJourneyCost)
 {
     const RoutingGraph graph{
         { node(1, 0, 0, 100), node(2, 10, 0, 0, true), node(3, 100, 0, 0, true) },
@@ -371,36 +503,11 @@ TEST(CargoDistRouting, DestinationGravityUsesCompleteJourneyCost)
     settings.accuracy = 100;
 
     const auto flows = calculateAsymmetricFlows(graph, settings);
-    const auto slowNear = amountToDestination(flows, 1, 2);
-    const auto fastFar = amountToDestination(flows, 1, 3);
-
-    EXPECT_GT(fastFar, slowNear);
-    EXPECT_EQ(slowNear + fastFar, 100U);
+    EXPECT_EQ(amountToDestination(flows, 1, 2), 50U);
+    EXPECT_EQ(amountToDestination(flows, 1, 3), 50U);
 }
 
-TEST(CargoDistRouting, DestinationGravityUsesInverseSquareJourneyCost)
-{
-    const RoutingGraph graph{
-        { node(1, 0, 0, 1000), node(2, -10, 0, 0, true), node(3, 10, 0, 0, true) },
-        {
-            serviceEdge(1, 2, 1, 0, 1, 9, 1, 100'000),
-            serviceEdge(1, 3, 2, 0, 1, 19, 1, 100'000),
-        },
-        true,
-        {},
-    };
-    RoutingSettings settings{};
-    settings.accuracy = 255;
-
-    const auto flows = calculateAsymmetricFlows(graph, settings);
-    const auto faster = amountToDestination(flows, 1, 2);
-    const auto slower = amountToDestination(flows, 1, 3);
-
-    EXPECT_NEAR(faster, 800U, 8U);
-    EXPECT_EQ(faster + slower, 1000U);
-}
-
-TEST(CargoDistRouting, DestinationGravitySurvivesExtremeAttractionRatios)
+TEST(CargoDistRouting, TargetWeightsSurviveExtremeRatios)
 {
     constexpr auto maximum = std::numeric_limits<uint32_t>::max();
     const RoutingGraph graph{
@@ -416,14 +523,11 @@ TEST(CargoDistRouting, DestinationGravitySurvivesExtremeAttractionRatios)
     settings.accuracy = 100;
 
     const auto flows = calculateAsymmetricFlows(graph, settings);
-    const auto cheap = amountToDestination(flows, 1, 2);
-    const auto expensive = amountToDestination(flows, 1, 3);
-
-    EXPECT_GT(cheap, expensive);
-    EXPECT_EQ(cheap + expensive, 100U);
+    EXPECT_EQ(amountToDestination(flows, 1, 2), 0U);
+    EXPECT_EQ(amountToDestination(flows, 1, 3), 100U);
 }
 
-TEST(CargoDistRouting, DestinationGravityRespondsToItsOwnCongestion)
+TEST(CargoDistRouting, CongestionDoesNotChangeDestinationTargets)
 {
     const auto calculate = [](uint32_t cheapCapacity) {
         const RoutingGraph graph{
@@ -441,8 +545,10 @@ TEST(CargoDistRouting, DestinationGravityRespondsToItsOwnCongestion)
     const auto uncongested = calculate(1000);
     const auto congested = calculate(10);
 
-    EXPECT_LT(amountToDestination(congested, 1, 2), amountToDestination(uncongested, 1, 2));
-    EXPECT_GT(amountToDestination(congested, 1, 3), amountToDestination(uncongested, 1, 3));
+    EXPECT_EQ(amountToDestination(uncongested, 1, 2), 80U);
+    EXPECT_EQ(amountToDestination(uncongested, 1, 3), 80U);
+    EXPECT_EQ(amountToDestination(congested, 1, 2), 80U);
+    EXPECT_EQ(amountToDestination(congested, 1, 3), 80U);
 }
 
 TEST(CargoDistRouting, WaitMakesFastInfrequentServiceLoseToSlowerFrequentService)
@@ -504,8 +610,9 @@ TEST(CargoDistRouting, QueueBoundaryMovesTheNextPassenger)
 
 TEST(CargoDistRouting, QueueSplittingKeepsIdenticalServicesWithinChunkSize)
 {
+    constexpr auto supply = std::numeric_limits<uint32_t>::max();
     const RoutingGraph graph{
-        { node(1, 0, 0, 256), node(2, 10, 0, 0, true) },
+        { node(1, 0, 0, supply), node(2, 10, 0, 0, true) },
         {
             serviceEdge(1, 2, 1, 0, 1, 1, 1, 1),
             serviceEdge(1, 2, 2, 0, 1, 1, 1, 1),
@@ -518,8 +625,8 @@ TEST(CargoDistRouting, QueueSplittingKeepsIdenticalServicesWithinChunkSize)
 
     const auto first = amountAt(flows, 1, 1, 2, {}, servicePoint(1, 0), servicePoint(1, 1));
     const auto second = amountAt(flows, 1, 1, 2, {}, servicePoint(2, 0), servicePoint(2, 1));
-    EXPECT_EQ(first + second, 256U);
-    const auto chunkSize = 256U / RoutingSettings{}.accuracy;
+    EXPECT_EQ(static_cast<uint64_t>(first) + second, supply);
+    const auto chunkSize = supply / RoutingSettings{}.accuracy + (supply % RoutingSettings{}.accuracy != 0);
     EXPECT_LE(std::max(first, second) - std::min(first, second), chunkSize);
 }
 
