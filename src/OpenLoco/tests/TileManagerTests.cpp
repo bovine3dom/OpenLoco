@@ -1107,6 +1107,7 @@ TEST_F(TileManagerTest, StandardPathSignalCanBePassedFromBehindButOneWayPathSign
     const Pos3 trackStart{ toWorldSpace(kTestTile), 8 * kSmallZStep };
 
     track.setRightSignalMode(SignalMode::path);
+    signal.getLeft().setIsOccupied(true);
     EXPECT_EQ(OpenLoco::Vehicles::getSignalState(trackStart, tad, 0, 0), OpenLoco::Vehicles::SignalStateFlags::none);
     EXPECT_EQ(OpenLoco::Vehicles::getSignalMode(trackStart, tad, 0, 1U << 31), SignalMode::path);
 

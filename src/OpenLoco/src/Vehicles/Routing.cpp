@@ -282,7 +282,7 @@ namespace OpenLoco::Vehicles
             && oppositeMode == World::SignalMode::path
             && !oppositeIsGhost;
         auto ret = SignalStateFlags::none;
-        if (signalSide.isOccupied() && (signalMode == World::SignalMode::block || signalIsGhost))
+        if (!canPassFromBack && signalSide.isOccupied() && (signalMode == World::SignalMode::block || signalIsGhost))
         {
             ret |= SignalStateFlags::occupied;
         }
