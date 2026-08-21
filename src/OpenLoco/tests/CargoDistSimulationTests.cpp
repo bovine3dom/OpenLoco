@@ -465,6 +465,22 @@ TEST_F(CargoDistServiceSimulationTest, RecalculationReleasesRejectedDestination)
     EXPECT_EQ(packets->packets().front().nextHop, StationId::null);
 }
 
+TEST_F(CargoDistServiceSimulationTest, ReleasingRejectedDestinationAdvancesRoutingRevisionBeforeAsyncCommit)
+{
+    createVehicle();
+    recalculateNow();
+    getState().stationCargo[{ station(1), 0 }].append({ 10, station(1), station(2), 0, {}, {}, station(2) });
+    getGameState().stations[2].cargoStats[0].isAccepted(false);
+    markServicesDirty();
+    const auto routingRevision = getStateConst().routingRevision;
+
+    update();
+
+    ASSERT_TRUE(isServiceRecalculationPending());
+    EXPECT_EQ(getStateConst().routingRevision, routingRevision + 1);
+    EXPECT_EQ(getStateConst().stationCargo.at({ station(1), 0 }).packets().front().destination, StationId::null);
+}
+
 TEST_F(CargoDistServiceSimulationTest, RecalculationRoutesUnroutedWaitingCargo)
 {
     createVehicle();

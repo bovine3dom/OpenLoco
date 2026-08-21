@@ -1264,13 +1264,15 @@ namespace OpenLoco::CargoDist
 
         void releaseRejectedDestinations()
         {
-            const auto release = [](PacketList& packets, uint8_t cargo, bool clearRoute) {
-                packets.transform([cargo, clearRoute](CargoPacket& packet) {
+            bool changed = false;
+            const auto release = [&changed](PacketList& packets, uint8_t cargo, bool clearRoute) {
+                packets.transform([&changed, cargo, clearRoute](CargoPacket& packet) {
                     if (packet.destination != StationId::null)
                     {
                         const auto* destination = StationManager::get(packet.destination);
                         if (destination == nullptr || destination->empty() || !destination->cargoStats[cargo].isAccepted())
                         {
+                            changed = true;
                             packet.destination = StationId::null;
                             if (clearRoute)
                             {
@@ -1300,6 +1302,10 @@ namespace OpenLoco::CargoDist
                     release(*packets, nativeCargo.type, false);
                 }
             });
+            if (changed)
+            {
+                ++getState().routingRevision;
+            }
         }
 
         void clearRoutingState(uint8_t cargo)

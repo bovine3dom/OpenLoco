@@ -223,6 +223,24 @@ namespace OpenLoco::CargoDist
         return extracted;
     }
 
+    std::vector<CargoRouteSummary> getRouteSummaries(const PacketList& packets)
+    {
+        std::map<std::tuple<StationId, StationId, StationId>, uint64_t> quantities;
+        for (const auto& packet : packets.packets())
+        {
+            quantities[{ packet.origin, packet.destination, packet.nextHop }] += packet.quantity;
+        }
+
+        std::vector<CargoRouteSummary> summaries;
+        summaries.reserve(quantities.size());
+        for (const auto& [route, quantity] : quantities)
+        {
+            const auto& [origin, destination, nextHop] = route;
+            summaries.push_back({ origin, destination, nextHop, quantity });
+        }
+        return summaries;
+    }
+
     PacketList PacketList::fromPackets(Container packets)
     {
         PacketList result;

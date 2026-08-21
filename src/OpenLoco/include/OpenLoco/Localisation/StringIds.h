@@ -2226,6 +2226,12 @@ namespace OpenLoco::StringIds
     constexpr StringId replace_shared_order_vehicles = 2514;
     constexpr StringId tooltip_replace_shared_order_vehicles = 2515;
     constexpr StringId net_profit_loss = 2516;
+    constexpr StringId station_cargo_route_via = 2517;
+    constexpr StringId station_cargo_route_direct = 2518;
+    constexpr StringId station_cargo_route_destination_pending = 2519;
+    constexpr StringId station_cargo_route_via_destination_pending = 2520;
+    constexpr StringId station_cargo_route_awaiting_route = 2521;
+    constexpr StringId station_cargo_routes_omitted = 2522;
 
     constexpr StringId temporary_object_load_str_0 = 8192;
     constexpr StringId temporary_object_load_str_1 = 8193;

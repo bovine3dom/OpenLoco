@@ -17,6 +17,7 @@
 #include "Objects/CargoObject.h"
 #include "Objects/InterfaceSkinObject.h"
 #include "Objects/ObjectManager.h"
+#include "Ui/ScrollView.h"
 #include "Ui/ToolManager.h"
 #include "Ui/Widget.h"
 #include "Ui/Widgets/CaptionWidget.h"
@@ -36,13 +37,28 @@
 #include "ViewportManager.h"
 #include "World/CompanyManager.h"
 #include "World/StationManager.h"
+#include <OpenLoco/CargoDist/CargoDist.h>
 #include <OpenLoco/Utility/String.hpp>
+#include <algorithm>
+#include <limits>
+#include <map>
+#include <vector>
 
 using namespace OpenLoco::World;
 
 namespace OpenLoco::Ui::Windows::Station
 {
     static StationId _lastSelectedStation; // 0x0112C786
+
+    struct CargoWindowState
+    {
+        uint32_t expanded{};
+        uint64_t cargoRevision = std::numeric_limits<uint64_t>::max();
+        uint64_t routingRevision = std::numeric_limits<uint64_t>::max();
+        std::map<uint8_t, std::vector<CargoDist::CargoRouteSummary>> routeSummaries;
+    };
+
+    static std::map<StationId, CargoWindowState> _cargoWindowStates;
 
     using Vehicles::VehicleHead;
 
@@ -116,6 +132,7 @@ namespace OpenLoco::Ui::Windows::Station
         }
 
         // Defined at the bottom of this file.
+        static void onClose(Window& self);
         static void onMouseUp(Window& self, WidgetIndex_t widgetIndex, const WidgetId id);
         static void prepareDraw(Window& self);
         static void textInput(Window& self, WidgetIndex_t callingWidget, [[maybe_unused]] const WidgetId id, const char* input);
@@ -294,6 +311,7 @@ namespace OpenLoco::Ui::Windows::Station
         }
 
         static constexpr WindowEventList kEvents = {
+            .onClose = Common::onClose,
             .onMouseUp = onMouseUp,
             .onResize = onResize,
             .onUpdate = Common::update,
@@ -329,6 +347,7 @@ namespace OpenLoco::Ui::Windows::Station
             window = WindowManager::bringToFront(WindowType::station, enumValue(stationId));
         }
 
+        _cargoWindowStates.erase(stationId);
         if (window == nullptr)
         {
             // 0x0048F29F start
@@ -367,6 +386,7 @@ namespace OpenLoco::Ui::Windows::Station
     void reset()
     {
         _lastSelectedStation = StationId::null;
+        _cargoWindowStates.clear();
     }
 
     namespace Cargo
@@ -383,6 +403,105 @@ namespace OpenLoco::Ui::Windows::Station
             constexpr WidgetId kScrollview{ "scrollview" };
             constexpr WidgetId kStatusBar{ "status_bar" };
             constexpr WidgetId kStationCatchment{ "station_catchment" };
+        }
+
+        enum class CargoRowType : uint8_t
+        {
+            header,
+            route,
+            routesOmitted,
+        };
+
+        struct CargoListRow
+        {
+            CargoRowType type{};
+            int32_t y{};
+            int32_t height{};
+            uint8_t cargo{};
+            bool expandable{};
+            bool expanded{};
+            CargoDist::CargoRouteSummary route{};
+            size_t routesOmitted{};
+        };
+
+        static constexpr int32_t kRouteRowHeight = 10;
+        static constexpr int32_t kMaxCargoHeaderHeight = 22;
+        static constexpr size_t kMaxDisplayedCargoRoutes = (std::numeric_limits<int16_t>::max() - 1 - kMaxCargoStats * (kMaxCargoHeaderHeight + kRouteRowHeight)) / kRouteRowHeight;
+
+        static bool isExpanded(const StationId station, const uint8_t cargo)
+        {
+            const auto found = _cargoWindowStates.find(station);
+            return found != _cargoWindowStates.end() && (found->second.expanded & (1U << cargo)) != 0;
+        }
+
+        static const std::vector<CargoDist::CargoRouteSummary>& getRouteSummaries(const StationId station, const uint8_t cargo, const CargoDist::PacketList& packets)
+        {
+            auto& state = _cargoWindowStates[station];
+            const auto cargoRevision = CargoDist::getStateConst().cargoRevision;
+            const auto routingRevision = CargoDist::getStateConst().routingRevision;
+            if (state.cargoRevision != cargoRevision || state.routingRevision != routingRevision)
+            {
+                state.cargoRevision = cargoRevision;
+                state.routingRevision = routingRevision;
+                state.routeSummaries.clear();
+            }
+
+            auto found = state.routeSummaries.find(cargo);
+            if (found == state.routeSummaries.end())
+            {
+                found = state.routeSummaries.emplace(cargo, CargoDist::getRouteSummaries(packets)).first;
+            }
+            return found->second;
+        }
+
+        static std::vector<CargoListRow> getRows(Window& self)
+        {
+            const auto stationId = StationId(self.number);
+            const auto* station = StationManager::get(stationId);
+            std::vector<CargoListRow> rows;
+            size_t displayedRoutes = 0;
+            int32_t y = 0;
+            for (uint32_t cargoId = 0; cargoId < kMaxCargoStats; ++cargoId)
+            {
+                const auto& stats = station->cargoStats[cargoId];
+                if (stats.quantity == 0)
+                {
+                    continue;
+                }
+
+                const auto cargo = static_cast<uint8_t>(cargoId);
+                const auto* packets = CargoDist::getStationCargoConst(stationId, cargo);
+                const auto expandable = packets != nullptr && !packets->empty();
+                const auto expanded = expandable && isExpanded(stationId, cargo);
+                const auto showOrigin = stats.origin != stationId && stats.origin != StationId::null;
+                const auto height = 12 + (showOrigin ? 10 : 0);
+                rows.push_back({ CargoRowType::header, y, height, cargo, expandable, expanded, {}, 0 });
+                y += height;
+
+                if (expanded)
+                {
+                    const auto& summaries = getRouteSummaries(stationId, cargo, *packets);
+                    const auto routeCount = std::min(summaries.size(), kMaxDisplayedCargoRoutes - displayedRoutes);
+                    for (size_t i = 0; i < routeCount; ++i)
+                    {
+                        rows.push_back({ CargoRowType::route, y, kRouteRowHeight, cargo, false, false, summaries[i], 0 });
+                        y += kRouteRowHeight;
+                    }
+                    displayedRoutes += routeCount;
+                    if (routeCount != summaries.size())
+                    {
+                        rows.push_back({ CargoRowType::routesOmitted, y, kRouteRowHeight, cargo, false, false, {}, summaries.size() - routeCount });
+                        y += kRouteRowHeight;
+                    }
+                }
+            }
+            return rows;
+        }
+
+        static const CargoListRow* getRowAt(const std::vector<CargoListRow>& rows, const int32_t y)
+        {
+            const auto found = std::find_if(rows.begin(), rows.end(), [y](const auto& row) { return y >= row.y && y < row.y + row.height; });
+            return found == rows.end() ? nullptr : &*found;
         }
 
         static constexpr auto widgets = makeWidgets(
@@ -487,19 +606,8 @@ namespace OpenLoco::Ui::Windows::Station
         // 0x0048EB64
         static void getScrollSize(Window& self, [[maybe_unused]] uint32_t scrollIndex, [[maybe_unused]] int32_t& scrollWidth, int32_t& scrollHeight)
         {
-            auto station = StationManager::get(StationId(self.number));
-            scrollHeight = 0;
-            for (const auto& cargoStats : station->cargoStats)
-            {
-                if (cargoStats.quantity != 0)
-                {
-                    scrollHeight += 12;
-                    if (cargoStats.origin != StationId(self.number))
-                    {
-                        scrollHeight += 10;
-                    }
-                }
-            }
+            const auto rows = getRows(self);
+            scrollHeight = rows.empty() ? 0 : rows.back().y + rows.back().height;
         }
 
         // 0x0048EB4F
@@ -552,86 +660,141 @@ namespace OpenLoco::Ui::Windows::Station
             return args;
         }
 
+        static void appendStationArguments(FormatArguments& args, const StationId stationId)
+        {
+            const auto* station = StationManager::get(stationId);
+            args.push(station->name);
+            args.push(station->town);
+        }
+
+        static void drawDisclosure(Gfx::DrawingContext& drawingCtx, const CargoListRow& row)
+        {
+            const auto y = static_cast<int16_t>(row.y + 5);
+            drawingCtx.fillRect(2, y, 6, y, PaletteIndex::black0, Gfx::RectFlags::none);
+            if (!row.expanded)
+            {
+                drawingCtx.fillRect(4, y - 2, 4, y + 2, PaletteIndex::black0, Gfx::RectFlags::none);
+            }
+        }
+
+        static void drawCargoHeader(Window& self, Gfx::DrawingContext& drawingCtx, const CargoListRow& row, const StationCargoStats& cargo)
+        {
+            auto tr = Gfx::TextRenderer(drawingCtx);
+            auto quantity = std::min<int32_t>(cargo.quantity, 400);
+            auto units = (quantity + 9) / 10;
+            const auto* cargoObj = ObjectManager::get<CargoObject>(row.cargo);
+            auto xPos = static_cast<int16_t>(row.expandable ? 10 : 1);
+            if (row.expandable)
+            {
+                drawDisclosure(drawingCtx, row);
+            }
+            while (units-- > 0)
+            {
+                drawingCtx.drawImage(ZoomLevel::full, xPos, static_cast<int16_t>(row.y + 1), cargoObj->unitInlineSprite);
+                xPos += 10;
+            }
+
+            const auto cargoName = cargo.quantity == 1 ? cargoObj->unitNameSingular : cargoObj->unitNamePlural;
+            const auto textRight = self.widgets[widx::scrollview].width() - 14;
+            FormatArguments args{};
+            args.push(cargoName);
+            args.push<uint32_t>(cargo.quantity);
+            const auto stationId = StationId(self.number);
+            const auto showOrigin = cargo.origin != stationId && cargo.origin != StationId::null;
+            const auto cargoString = showOrigin ? StringIds::station_cargo_en_route_start : StringIds::station_cargo;
+            tr.drawStringRight({ textRight, static_cast<int16_t>(row.y + 1) }, AdvancedColour(Colour::black).outline(), cargoString, args);
+
+            if (showOrigin)
+            {
+                FormatArguments originArgs{};
+                appendStationArguments(originArgs, cargo.origin);
+                tr.drawStringRight({ textRight, static_cast<int16_t>(row.y + 11) }, AdvancedColour(Colour::black).outline(), StringIds::station_cargo_en_route_end, originArgs);
+            }
+        }
+
+        static void drawCargoRoute(Window& self, Gfx::DrawingContext& drawingCtx, const CargoListRow& row)
+        {
+            auto tr = Gfx::TextRenderer(drawingCtx);
+            FormatArguments args{};
+            args.push<int32_t>(static_cast<int32_t>(std::min<uint64_t>(row.route.quantity, std::numeric_limits<int32_t>::max())));
+            appendStationArguments(args, row.route.origin);
+
+            StringId format;
+            if (row.route.destination == StationId::null)
+            {
+                if (row.route.nextHop == StationId::null)
+                {
+                    format = StringIds::station_cargo_route_destination_pending;
+                }
+                else
+                {
+                    appendStationArguments(args, row.route.nextHop);
+                    format = StringIds::station_cargo_route_via_destination_pending;
+                }
+            }
+            else
+            {
+                appendStationArguments(args, row.route.destination);
+                if (row.route.nextHop == StationId::null)
+                {
+                    format = StringIds::station_cargo_route_awaiting_route;
+                }
+                else if (row.route.nextHop == row.route.destination)
+                {
+                    format = StringIds::station_cargo_route_direct;
+                }
+                else
+                {
+                    appendStationArguments(args, row.route.nextHop);
+                    format = StringIds::station_cargo_route_via;
+                }
+            }
+
+            const auto width = std::max<int32_t>(self.widgets[widx::scrollview].width() - 22, 0);
+            tr.drawStringLeftClipped({ 10, static_cast<int16_t>(row.y + 1) }, width, Colour::black, format, args);
+        }
+
+        static void drawCargoRoutesOmitted(Window& self, Gfx::DrawingContext& drawingCtx, const CargoListRow& row)
+        {
+            auto tr = Gfx::TextRenderer(drawingCtx);
+            FormatArguments args{};
+            args.push<int32_t>(static_cast<int32_t>(std::min<size_t>(row.routesOmitted, std::numeric_limits<int32_t>::max())));
+            const auto width = std::max<int32_t>(self.widgets[widx::scrollview].width() - 22, 0);
+            tr.drawStringLeftClipped({ 10, static_cast<int16_t>(row.y + 1) }, width, Colour::black, StringIds::station_cargo_routes_omitted, args);
+        }
+
         // 0x0048E986
         static void drawScroll(Window& self, Gfx::DrawingContext& drawingCtx, [[maybe_unused]] const uint32_t scrollIndex)
         {
-            auto tr = Gfx::TextRenderer(drawingCtx);
-
             drawingCtx.clearSingle(Colours::getShade(self.getColour(WindowColour::secondary).c(), 4));
 
             const auto station = StationManager::get(StationId(self.number));
-            int16_t y = 1;
-            auto cargoId = 0;
-            for (const auto& cargoStats : station->cargoStats)
+            const auto& renderTarget = drawingCtx.currentRenderTarget();
+            for (const auto& row : getRows(self))
             {
-                // auto& cargo = station->cargo_stats[i];
-                auto& cargo = cargoStats;
-                auto quantity = cargo.quantity;
-                if (quantity == 0)
+                if (row.y + row.height < renderTarget.y)
                 {
-                    cargoId++;
                     continue;
                 }
-
-                quantity = std::min(int(quantity), 400);
-
-                auto units = (quantity + 9) / 10;
-
-                auto cargoObj = ObjectManager::get<CargoObject>(cargoId);
-                if (units != 0)
+                if (row.y >= renderTarget.y + renderTarget.height)
                 {
-                    uint16_t xPos = 1;
-                    for (; units > 0; units--)
-                    {
-                        {
-                            drawingCtx.drawImage(ZoomLevel::full, xPos, y, cargoObj->unitInlineSprite);
-                            xPos += 10;
-                        }
-                    }
+                    break;
                 }
-                auto cargoName = cargoObj->unitNameSingular;
-
-                if (cargo.quantity != 1)
+                if (row.type == CargoRowType::header)
                 {
-                    cargoName = cargoObj->unitNamePlural;
+                    drawCargoHeader(self, drawingCtx, row, station->cargoStats[row.cargo]);
                 }
-
-                const auto& widget = self.widgets[widx::scrollview];
-                auto xPos = widget.width() - 14;
-
+                else if (row.type == CargoRowType::route)
                 {
-                    FormatArguments args{};
-                    args.push(cargoName);
-                    args.push<uint32_t>(cargo.quantity);
-
-                    auto cargoStr = StringIds::station_cargo;
-                    if (cargo.origin != StationId(self.number))
-                    {
-                        cargoStr = StringIds::station_cargo_en_route_start;
-                    }
-
-                    auto point = Point(xPos, y);
-                    tr.drawStringRight(point, AdvancedColour(Colour::black).outline(), cargoStr, args);
-                    y += 10;
+                    drawCargoRoute(self, drawingCtx, row);
                 }
-
-                if (cargo.origin != StationId(self.number))
+                else
                 {
-                    auto originStation = StationManager::get(cargo.origin);
-                    FormatArguments args{};
-                    args.push(originStation->name);
-                    args.push(originStation->town);
-
-                    auto point = Point(xPos, y);
-                    tr.drawStringRight(point, AdvancedColour(Colour::black).outline(), StringIds::station_cargo_en_route_end, args);
-                    y += 10;
+                    drawCargoRoutesOmitted(self, drawingCtx, row);
                 }
-
-                y += 2;
-                cargoId++;
             }
 
-            uint16_t totalUnits = 0;
+            uint32_t totalUnits = 0;
             for (const auto& stats : station->cargoStats)
             {
                 totalUnits += stats.quantity;
@@ -639,6 +802,7 @@ namespace OpenLoco::Ui::Windows::Station
 
             if (totalUnits == 0)
             {
+                auto tr = Gfx::TextRenderer(drawingCtx);
                 FormatArguments args{};
                 args.push(StringIds::nothing_waiting);
 
@@ -647,23 +811,63 @@ namespace OpenLoco::Ui::Windows::Station
             }
         }
 
-        // 0x0048EC21
-        static void onClose(Window& self)
+        static void updateScrollSize(Window& self, const uint8_t scrollIndex)
         {
-            if (StationId(self.number) == _lastSelectedStation)
+            self.updateScrollWidgets();
+            auto& scrollArea = self.scrollAreas[scrollIndex];
+            const auto visibleHeight = self.widgets[widx::scrollview].height() - 2;
+            const auto maxOffset = std::max<int32_t>(scrollArea.contentHeight - visibleHeight, 0);
+            scrollArea.contentOffsetY = std::clamp<int32_t>(scrollArea.contentOffsetY, 0, maxOffset);
+            ScrollView::updateThumbs(self, widx::scrollview);
+        }
+
+        static void onUpdate(Window& self)
+        {
+            Common::update(self);
+            updateScrollSize(self, 0);
+        }
+
+        static void onScrollMouseDown(Window& self, const int16_t x, const int16_t y, const uint8_t scrollIndex)
+        {
+            if (x > 8)
             {
-                showStationCatchment(StationId::null);
+                return;
             }
+            const auto rows = getRows(self);
+            const auto* row = getRowAt(rows, y);
+            if (row == nullptr || row->type != CargoRowType::header || !row->expandable)
+            {
+                return;
+            }
+
+            const auto stationId = StationId(self.number);
+            _cargoWindowStates[stationId].expanded ^= 1U << row->cargo;
+            updateScrollSize(self, scrollIndex);
+            self.invalidate();
+        }
+
+        static CursorId cursor(Window& self, [[maybe_unused]] WidgetIndex_t widgetIndex, const WidgetId id, const int16_t x, const int16_t y, const CursorId fallback)
+        {
+            if (id != Widx::kScrollview || x > 8)
+            {
+                return fallback;
+            }
+
+            const auto rows = getRows(self);
+            const auto* row = getRowAt(rows, y);
+            return row != nullptr && row->type == CargoRowType::header && row->expandable ? CursorId::handPointer : fallback;
         }
 
         static constexpr WindowEventList kEvents = {
-            .onClose = onClose,
+            .onClose = Common::onClose,
             .onMouseUp = onMouseUp,
             .onResize = onResize,
-            .onUpdate = Common::update,
+            .onUpdate = onUpdate,
             .getScrollSize = getScrollSize,
+            .scrollMouseDown = onScrollMouseDown,
             .textInput = Common::textInput,
             .tooltip = tooltip,
+            .cursor = cursor,
             .prepareDraw = prepareDraw,
             .draw = draw,
             .drawScroll = drawScroll,
@@ -823,6 +1027,7 @@ namespace OpenLoco::Ui::Windows::Station
         }
 
         static constexpr WindowEventList kEvents = {
+            .onClose = Common::onClose,
             .onMouseUp = Common::onMouseUp,
             .onResize = onResize,
             .onUpdate = Common::update,
@@ -1172,6 +1377,7 @@ namespace OpenLoco::Ui::Windows::Station
         }
 
         static constexpr WindowEventList kEvents = {
+            .onClose = Common::onClose,
             .onMouseUp = Common::onMouseUp,
             .onResize = onResize,
             .onUpdate = onUpdate,
@@ -1268,6 +1474,15 @@ namespace OpenLoco::Ui::Windows::Station
             { widx::tab_vehicles_ships,    VehiclesStopping::widgets, VehiclesStopping::getEvents(), 36 },
         };
         // clang-format on
+
+        static void onClose(Window& self)
+        {
+            if (StationId(self.number) == _lastSelectedStation)
+            {
+                showStationCatchment(StationId::null);
+            }
+            _cargoWindowStates.erase(StationId(self.number));
+        }
 
         static void onMouseUp(Window& self, WidgetIndex_t widgetIndex, const WidgetId id)
         {
@@ -1392,6 +1607,14 @@ namespace OpenLoco::Ui::Windows::Station
         // 0x0048E520
         static void switchTab(Window& self, WidgetIndex_t widgetIndex)
         {
+            if (self.currentTab == widx::tab_cargo - widx::tab_station && widgetIndex != widx::tab_cargo)
+            {
+                const auto found = _cargoWindowStates.find(StationId(self.number));
+                if (found != _cargoWindowStates.end())
+                {
+                    found->second.routeSummaries.clear();
+                }
+            }
             if (widgetIndex != widx::tab_cargo)
             {
                 if (StationId(self.number) == _lastSelectedStation)

@@ -82,6 +82,18 @@ namespace OpenLoco::CargoDist
         Container _packets;
     };
 
+    struct CargoRouteSummary
+    {
+        StationId origin = StationId::null;
+        StationId destination = StationId::null;
+        StationId nextHop = StationId::null;
+        uint64_t quantity{};
+
+        auto operator<=>(const CargoRouteSummary&) const = default;
+    };
+
+    std::vector<CargoRouteSummary> getRouteSummaries(const PacketList& packets);
+
     enum class VehicleCargoSlot : uint8_t
     {
         primary,

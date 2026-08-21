@@ -66,7 +66,7 @@ namespace OpenLoco::Ui::ScrollView
         }
         auto contentDeltaY = deltaY * scrollArea.contentHeight / trackHeight;
 
-        int16_t newOffset = scrollArea.contentOffsetY + contentDeltaY;
+        int32_t newOffset = scrollArea.contentOffsetY + contentDeltaY;
 
         int frameHeight = widget->height() - (kScrollbarMargin * 2);
         if (scrollArea.hasFlags(ScrollFlags::hscrollbarVisible))
@@ -74,10 +74,10 @@ namespace OpenLoco::Ui::ScrollView
             frameHeight -= kScrollbarSize;
         }
 
-        int16_t maxOffset = scrollArea.contentHeight - frameHeight;
-        maxOffset = std::max<int16_t>(maxOffset, 0);
+        int32_t maxOffset = scrollArea.contentHeight - frameHeight;
+        maxOffset = std::max(maxOffset, 0);
 
-        scrollArea.contentOffsetY = std::clamp<int16_t>(newOffset, 0, maxOffset);
+        scrollArea.contentOffsetY = std::clamp(newOffset, 0, maxOffset);
 
         ScrollView::updateThumbs(window, widgetIndex);
         WindowManager::invalidateWidget(window.type, window.number, widgetIndex);
@@ -145,7 +145,7 @@ namespace OpenLoco::Ui::ScrollView
         }
         auto contentDeltaY = deltaY * scrollArea.contentHeight / trackHeight;
 
-        int16_t newOffset = scrollArea.contentOffsetY + contentDeltaY;
+        int32_t newOffset = scrollArea.contentOffsetY + contentDeltaY;
 
         int frameHeight = widget->height() - 2;
         if (scrollArea.hasFlags(ScrollFlags::hscrollbarVisible))
@@ -153,10 +153,10 @@ namespace OpenLoco::Ui::ScrollView
             frameHeight -= kScrollbarSize;
         }
 
-        int16_t maxOffset = scrollArea.contentHeight - frameHeight;
-        maxOffset = std::max<int16_t>(maxOffset, 0);
+        int32_t maxOffset = scrollArea.contentHeight - frameHeight;
+        maxOffset = std::max(maxOffset, 0);
 
-        scrollArea.contentOffsetY = std::clamp<int16_t>(newOffset, 0, maxOffset);
+        scrollArea.contentOffsetY = std::clamp(newOffset, 0, maxOffset);
 
         ScrollView::updateThumbs(window, dragWidgetIndex);
         WindowManager::invalidateWidget(window.type, window.number, dragWidgetIndex);
@@ -413,8 +413,8 @@ namespace OpenLoco::Ui::ScrollView
         {
             trackHeight -= kScrollbarSize;
         }
-        int16_t widgetContentHeight = std::max(window.scrollAreas[scrollAreaIndex].contentHeight - trackHeight, 0);
-        window.scrollAreas[scrollAreaIndex].contentOffsetY = std::min<int16_t>(window.scrollAreas[scrollAreaIndex].contentOffsetY + kButtonClickStep, widgetContentHeight);
+        int32_t widgetContentHeight = std::max(window.scrollAreas[scrollAreaIndex].contentHeight - trackHeight, 0);
+        window.scrollAreas[scrollAreaIndex].contentOffsetY = std::min(window.scrollAreas[scrollAreaIndex].contentOffsetY + kButtonClickStep, widgetContentHeight);
         ScrollView::updateThumbs(window, widgetIndex);
         WindowManager::invalidateWidget(window.type, window.number, widgetIndex);
     }
@@ -447,8 +447,8 @@ namespace OpenLoco::Ui::ScrollView
         {
             trackHeight -= kScrollbarSize;
         }
-        int16_t widgetContentHeight = std::max(window.scrollAreas[scrollAreaIndex].contentHeight - trackHeight, 0);
-        window.scrollAreas[scrollAreaIndex].contentOffsetY = std::min<int16_t>(window.scrollAreas[scrollAreaIndex].contentOffsetY + trackHeight, widgetContentHeight);
+        int32_t widgetContentHeight = std::max(window.scrollAreas[scrollAreaIndex].contentHeight - trackHeight, 0);
+        window.scrollAreas[scrollAreaIndex].contentOffsetY = std::min(window.scrollAreas[scrollAreaIndex].contentOffsetY + trackHeight, widgetContentHeight);
         ScrollView::updateThumbs(window, widgetIndex);
         WindowManager::invalidateWidget(window.type, window.number, widgetIndex);
     }

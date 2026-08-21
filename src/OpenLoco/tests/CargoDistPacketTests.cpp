@@ -85,6 +85,36 @@ TEST(CargoDistPackets, RepeatedSplitsConserveMaximumTransferCredit)
     EXPECT_EQ(first.packets().front().transferCredit + second.packets().front().transferCredit + packets.packets().front().transferCredit, kCredit);
 }
 
+TEST(CargoDistPackets, SummarisesRoutesAcrossPacketCohorts)
+{
+    PacketList packets;
+    packets.append({ 2, station(1), station(2), 3, {}, {}, station(4) });
+    packets.append({ 3, station(1), station(2), 4, {}, {}, station(4) });
+    packets.append({ 4, station(1), station(3), 3, {}, {}, station(4) });
+    packets.append({ 5, station(2), station(3), 3, {}, {}, station(4) });
+    packets.append({ 1, station(1), StationId::null, 3 });
+
+    const auto summaries = getRouteSummaries(packets);
+
+    ASSERT_EQ(summaries.size(), 4U);
+    EXPECT_EQ(summaries[0], (CargoRouteSummary{ station(1), station(4), station(2), 5 }));
+    EXPECT_EQ(summaries[1], (CargoRouteSummary{ station(1), station(4), station(3), 4 }));
+    EXPECT_EQ(summaries[2], (CargoRouteSummary{ station(1), StationId::null, StationId::null, 1 }));
+    EXPECT_EQ(summaries[3], (CargoRouteSummary{ station(2), station(4), station(3), 5 }));
+}
+
+TEST(CargoDistPackets, RouteSummaryQuantityDoesNotWrap)
+{
+    constexpr size_t kPacketCount = 65538;
+    constexpr auto kPacketQuantity = std::numeric_limits<uint16_t>::max();
+    PacketList::Container cohorts(kPacketCount, CargoPacket{ kPacketQuantity, station(1), station(2), 3, {}, {}, station(4) });
+
+    const auto summaries = getRouteSummaries(PacketList::fromPackets(std::move(cohorts)));
+
+    ASSERT_EQ(summaries.size(), 1U);
+    EXPECT_EQ(summaries.front().quantity, static_cast<uint64_t>(kPacketCount) * kPacketQuantity);
+}
+
 TEST(CargoDistPackets, KeepsServicePlansDistinct)
 {
     const auto departure1 = servicePoint(1, 2);
