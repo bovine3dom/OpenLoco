@@ -42,6 +42,7 @@
 #include "World/TownManager.h"
 #include <OpenLoco/Math/Bound.hpp>
 #include <array>
+#include <bit>
 #include <sfl/static_vector.hpp>
 
 using namespace OpenLoco::Ui;
@@ -1141,7 +1142,9 @@ namespace OpenLoco::CompanyManager
         }
         auto cost = currency48_t{ payment };
         company->cash -= cost;
-        company->expenditures[0][static_cast<uint8_t>(type)] -= payment;
+        auto& expenditure = company->expenditures[0][static_cast<uint8_t>(type)];
+        const auto expenditureBits = std::bit_cast<uint32_t>(expenditure);
+        expenditure = std::bit_cast<currency32_t>(expenditureBits - static_cast<uint32_t>(payment));
     }
 
     constexpr currency32_t kAiLoanStep = 1000;

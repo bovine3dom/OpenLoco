@@ -38,6 +38,11 @@ namespace OpenLoco::GameCommands
             return 0;
         }
 
+        if (train.head->status == Status::unloading)
+        {
+            train.head->settleCargoIncome();
+        }
+
         if (!(flags & Flags::ghost))
         {
             Vehicles::playPickupSound(train.veh2);

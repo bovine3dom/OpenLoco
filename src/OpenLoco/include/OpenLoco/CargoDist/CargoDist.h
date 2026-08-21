@@ -31,8 +31,11 @@ namespace OpenLoco::CargoDist
         ServicePoint departure{};
         ServicePoint arrival{};
         StationId destination = StationId::null;
+        int64_t transferCredit{};
 
         auto operator<=>(const CargoPacket&) const = default;
+
+        CargoPacket extract(uint16_t amount);
     };
 
     class PacketList
@@ -223,6 +226,7 @@ namespace OpenLoco::CargoDist
         std::map<EntityId, std::vector<VehicleServiceLeg>> vehicleServiceLegs;
         std::map<FlowKey, std::vector<FlowOption>> flows;
         std::map<DestinationFlowKey, std::vector<DestinationOption>> destinationFlows;
+        std::map<EntityId, int64_t> pendingVehicleRevenueAdjustments;
         uint64_t routingRevision{};
         uint64_t cargoRevision{};
         uint32_t nextRecalculationDay{};
@@ -236,6 +240,7 @@ namespace OpenLoco::CargoDist
 
     DistributionMode getMode(uint8_t cargo);
     bool isEnabled(uint8_t cargo);
+    bool hasOutstandingTransferCredits(uint8_t cargo);
     void setMode(uint8_t cargo, DistributionMode mode);
     void markGraphDirty();
     void markServicesDirty();

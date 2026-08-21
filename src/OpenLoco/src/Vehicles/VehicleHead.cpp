@@ -63,6 +63,7 @@
 #include <OpenLoco/Math/Trigonometry.hpp>
 #include <algorithm>
 #include <cassert>
+#include <limits>
 #include <numeric>
 #include <optional>
 
@@ -86,6 +87,21 @@ namespace OpenLoco::Vehicles
     static constexpr uint16_t kUnbunchingReleased = 1U << 13;
     static constexpr uint16_t kUnbunchingRoundTripMask = kUnbunchingReleased - 1;
     static constexpr uint32_t kUnbunchingTickQuantum = 32;
+
+    static currency32_t addCurrencyClamped(const currency32_t current, const int64_t amount)
+    {
+        constexpr auto kMin = std::numeric_limits<currency32_t>::min();
+        constexpr auto kMax = std::numeric_limits<currency32_t>::max();
+        if (amount < static_cast<int64_t>(kMin) - current)
+        {
+            return kMin;
+        }
+        if (amount > static_cast<int64_t>(kMax) - current)
+        {
+            return kMax;
+        }
+        return static_cast<currency32_t>(current + amount);
+    }
 
     using RouteSignalState = RailPathfinding::SignalState;
     using RoutingResult = RailPathfinding::RouteResult;
@@ -210,6 +226,10 @@ namespace OpenLoco::Vehicles
     // 0x004C3C65
     void VehicleHead::updateMonthly()
     {
+        if (status == Status::unloading)
+        {
+            settleCargoIncome();
+        }
         Vehicle train(head);
         if ((tileX != -1) && !has38Flags(Flags38::isGhost))
         {
@@ -224,7 +244,7 @@ namespace OpenLoco::Vehicles
             const auto costs = calculateRunningCost();
             CompanyManager::applyPaymentToCompany(owner, costs, vehTypeToCost[enumValue(vehicleType)]);
 
-            const auto monthlyProfit = train.veh2->curMonthRevenue - costs;
+            const auto monthlyProfit = addCurrencyClamped(train.veh2->curMonthRevenue, -static_cast<int64_t>(costs));
 
             auto& profitHist = train.veh2->profit;
             std::rotate(std::begin(profitHist), std::end(profitHist) - 1, std::end(profitHist));
@@ -2377,6 +2397,10 @@ namespace OpenLoco::Vehicles
                 return true;
             }
 
+            if (status == Status::unloading)
+            {
+                settleCargoIncome();
+            }
             status = Status::stopped;
             vehType2->currentSpeed = 0.0_mph;
             vehType2->motorState = MotorState::stopped;
@@ -2828,6 +2852,7 @@ namespace OpenLoco::Vehicles
     // 0x004B99E1
     void VehicleHead::beginUnloading()
     {
+        settleCargoIncome();
         // See note on flag
         breakdownFlags &= ~BreakdownFlags::awaitingCargoTransfer;
 
@@ -3153,7 +3178,52 @@ namespace OpenLoco::Vehicles
         return kMinVehiclePastStationPenalty;
     }
 
-    void VehicleHead::deliverCargoPacket(Station& station, StationCargoStats& cargoStats, uint8_t cargoType, uint16_t quantity, StationId origin, uint8_t age)
+    void VehicleHead::applyVehicleRevenue(const int64_t revenue)
+    {
+        if (aiThoughtId != 0xFF)
+        {
+            auto* company = CompanyManager::get(owner);
+            company->aiThoughts[aiThoughtId].var_80 = addCurrencyClamped(company->aiThoughts[aiThoughtId].var_80, revenue);
+        }
+        Vehicle train(head);
+        train.veh2->curMonthRevenue = addCurrencyClamped(train.veh2->curMonthRevenue, revenue);
+    }
+
+    void VehicleHead::settleCargoIncome()
+    {
+        const auto adjustment = CargoDist::consumeVehicleRevenueAdjustment(id);
+        const auto grossIncome = var_58;
+        var_58 = 0;
+
+        if (grossIncome != 0 || adjustment.has_value())
+        {
+            Vehicle train(head);
+            auto vehicleIncome = adjustment.value_or(0);
+            vehicleIncome = grossIncome > 0 && vehicleIncome > std::numeric_limits<int64_t>::max() - grossIncome
+                ? std::numeric_limits<int64_t>::max()
+                : vehicleIncome + grossIncome;
+            applyVehicleRevenue(vehicleIncome);
+            train.veh1->var_48 |= Flags48::flag2;
+        }
+        if (grossIncome == 0)
+        {
+            return;
+        }
+
+        Vehicle train(head);
+        const auto loc = train.cars.firstCar.body->position + World::Pos3{ 0, 0, 28 };
+        auto remainingIncome = grossIncome;
+        while (remainingIncome != 0)
+        {
+            const auto income = static_cast<currency32_t>(std::min<uint32_t>(remainingIncome, std::numeric_limits<currency32_t>::max()));
+            CompanyManager::applyPaymentToCompany(owner, -income, ExpenditureType(static_cast<uint8_t>(vehicleType) * 2));
+            CompanyManager::spendMoneyEffect(loc, owner, -income);
+            remainingIncome -= income;
+        }
+        Audio::playSound(Audio::SoundId::income, Audio::ChannelId::ui, loc);
+    }
+
+    void VehicleHead::deliverCargoPacket(Station& station, StationCargoStats& cargoStats, uint8_t cargoType, uint16_t quantity, StationId origin, uint8_t age, const int64_t transferCredit)
     {
         station.deliverCargoToTown(cargoType, quantity);
         auto* sourceStation = StationManager::get(origin);
@@ -3169,10 +3239,22 @@ namespace OpenLoco::Vehicles
         company->cargoUnitsTotalDistance += cargoDist;
 
         auto cargoPayment = CompanyManager::calculateDeliveredCargoPayment(cargoType, quantity, tilesDistance, age);
+        if (cargoPayment > 0 && var_58 > std::numeric_limits<uint32_t>::max() - static_cast<uint32_t>(cargoPayment))
+        {
+            settleCargoIncome();
+        }
         company->cargoDelivered[cargoType] = Math::Bound::add(company->cargoDelivered[cargoType], quantity);
-        updateLastIncomeStats(cargoType, quantity, tilesDistance, age, cargoPayment);
+        const auto vehicleIncome = CargoDist::calculateFinalDeliveryIncome(transferCredit, cargoPayment);
+        updateLastIncomeStats(cargoType, quantity, tilesDistance, age, vehicleIncome);
+        if (transferCredit != 0)
+        {
+            CargoDist::addVehicleRevenueAdjustment(id, -transferCredit);
+        }
 
-        var_58 += cargoPayment;
+        if (cargoPayment > 0)
+        {
+            var_58 += cargoPayment;
+        }
         station.var_3B1 = 0;
         station.flags |= StationFlags::flag_8;
 
@@ -3263,7 +3345,14 @@ namespace OpenLoco::Vehicles
                     remainingStops.push_back(stop->getStation());
                 }
             }
-            auto result = CargoDist::unloadVehicleCargo(key, cargo, stationId, cargoStats, remainingStops, forceUnload, serviceLeg);
+            const auto getCargoDistance = [&](const StationId origin) {
+                const auto* sourceStation = StationManager::get(origin);
+                const auto distance = Math::Vector::distance2D(World::Pos2{ station->x, station->y }, World::Pos2{ sourceStation->x, sourceStation->y }) / 32;
+                return static_cast<uint16_t>(std::min<uint32_t>(distance, std::numeric_limits<uint16_t>::max()));
+            };
+            auto result = CargoDist::unloadVehicleCargo(key, cargo, stationId, cargoStats, remainingStops, forceUnload, serviceLeg, [&](const CargoDist::CargoPacket& packet) {
+                return CompanyManager::calculateDeliveredCargoPayment(cargo.type, packet.quantity, getCargoDistance(packet.origin), packet.age);
+            });
             const auto quantity = result.quantity();
             if (quantity == 0)
             {
@@ -3271,7 +3360,12 @@ namespace OpenLoco::Vehicles
             }
             for (const auto& packet : result.delivered.packets())
             {
-                deliverCargoPacket(*station, cargoStats, cargo.type, packet.quantity, packet.origin, packet.age);
+                deliverCargoPacket(*station, cargoStats, cargo.type, packet.quantity, packet.origin, packet.age, packet.transferCredit);
+            }
+            for (const auto& credit : result.transferCredits)
+            {
+                updateLastIncomeStats(cargo.type, credit.packet.quantity, getCargoDistance(credit.packet.origin), credit.packet.age, credit.amount);
+                CargoDist::addVehicleRevenueAdjustment(id, credit.amount);
             }
             if (result.transferred != 0)
             {
@@ -3411,28 +3505,7 @@ namespace OpenLoco::Vehicles
             }
         }
 
-        currency32_t cargoProfit = var_58;
-        var_58 = 0;
-        if (cargoProfit != 0)
-        {
-            if (aiThoughtId != 0xFF)
-            {
-                auto company = CompanyManager::get(owner);
-                company->aiThoughts[aiThoughtId].var_80 += cargoProfit;
-            }
-            train.veh2->curMonthRevenue += cargoProfit;
-            if (cargoProfit != 0)
-            {
-                train.veh1->var_48 |= Flags48::flag2;
-            }
-
-            CompanyManager::applyPaymentToCompany(owner, -cargoProfit, ExpenditureType(static_cast<uint8_t>(vehicleType) * 2));
-
-            auto loc = train.cars.firstCar.body->position + World::Pos3{ 0, 0, 28 };
-            CompanyManager::spendMoneyEffect(loc, owner, -cargoProfit);
-
-            Audio::playSound(Audio::SoundId::income, Audio::ChannelId::ui, loc);
-        }
+        settleCargoIncome();
 
         beginLoading();
     }
@@ -6640,7 +6713,7 @@ namespace OpenLoco::Vehicles
 
     // 0x4BA817
     // Returns false if stats were not updated
-    bool IncomeStats::addToStats(uint8_t cargoType, uint16_t cargoQty, uint16_t cargoDist, uint8_t cargoAge, currency32_t profit)
+    bool IncomeStats::addToStats(uint8_t cargoType, uint16_t cargoQty, uint16_t cargoDist, uint8_t cargoAge, int64_t profit)
     {
         for (auto i = 0; i < 4; ++i)
         {
@@ -6652,8 +6725,8 @@ namespace OpenLoco::Vehicles
             {
                 continue;
             }
-            cargoQtys[i] += cargoQty;
-            cargoProfits[i] += profit;
+            cargoQtys[i] = Math::Bound::add(cargoQtys[i], cargoQty);
+            cargoProfits[i] = addCurrencyClamped(cargoProfits[i], profit);
             cargoAges[i] = std::max(cargoAge, cargoAges[i]);
             return true;
         }
@@ -6669,14 +6742,14 @@ namespace OpenLoco::Vehicles
             cargoDistances[i] = cargoDist;
             cargoQtys[i] = cargoQty;
             cargoAges[i] = cargoAge;
-            cargoProfits[i] = profit;
+            cargoProfits[i] = addCurrencyClamped(0, profit);
             return true;
         }
         return false;
     }
 
     // 0x004BA7C7
-    void VehicleHead::updateLastIncomeStats(uint8_t cargoType, uint16_t cargoQty, uint16_t cargoDist, uint8_t cargoAge, currency32_t profit)
+    void VehicleHead::updateLastIncomeStats(uint8_t cargoType, uint16_t cargoQty, uint16_t cargoDist, uint8_t cargoAge, int64_t profit)
     {
         Vehicle train(head);
         if (cargoQty == 0)
@@ -6966,6 +7039,10 @@ namespace OpenLoco::Vehicles
     // 0x004B08DD
     void VehicleHead::liftUpVehicle()
     {
+        if (status == Status::unloading)
+        {
+            settleCargoIncome();
+        }
         RoutingManager::clearPathReservations(routingHandle);
         if (tileX == -1)
         {

@@ -110,6 +110,7 @@ namespace OpenLoco::Vehicles
         char* cargoLUTToString(CargoTotalArray& cargoTotals, char* buffer);
         bool canBeModified() const;
         void liftUpVehicle();
+        void settleCargoIncome();
         void updateTrainProperties();
         currency32_t calculateRunningCost() const;
         void discardFutureRouting();
@@ -182,8 +183,9 @@ namespace OpenLoco::Vehicles
         bool isOnExpectedRoadOrTrack();
         VehicleStatus getStatusTravelling() const;
         void getSecondStatus(VehicleStatus& vehStatus) const;
-        void updateLastIncomeStats(uint8_t cargoType, uint16_t cargoQty, uint16_t cargoDist, uint8_t cargoAge, currency32_t profit);
-        void deliverCargoPacket(Station& station, StationCargoStats& cargoStats, uint8_t cargoType, uint16_t quantity, StationId origin, uint8_t age);
+        void applyVehicleRevenue(int64_t revenue);
+        void updateLastIncomeStats(uint8_t cargoType, uint16_t cargoQty, uint16_t cargoDist, uint8_t cargoAge, int64_t profit);
+        void deliverCargoPacket(Station& station, StationCargoStats& cargoStats, uint8_t cargoType, uint16_t quantity, StationId origin, uint8_t age, int64_t transferCredit = 0);
         void calculateRefundCost();
     };
     static_assert(sizeof(VehicleHead) <= sizeof(Entity));

@@ -16,6 +16,24 @@ namespace OpenLoco::GameCommands
             return kFailure;
         }
 
+        if (args.mode == CargoDist::DistributionMode::manual)
+        {
+            if (args.cargo == kAllCargo)
+            {
+                for (uint8_t cargo = 0; cargo < CargoDist::getStateConst().settings.modes.size(); ++cargo)
+                {
+                    if (CargoDist::getMode(cargo) != CargoDist::DistributionMode::manual && CargoDist::hasOutstandingTransferCredits(cargo))
+                    {
+                        return kFailure;
+                    }
+                }
+            }
+            else if (CargoDist::getMode(args.cargo) != CargoDist::DistributionMode::manual && CargoDist::hasOutstandingTransferCredits(args.cargo))
+            {
+                return kFailure;
+            }
+        }
+
         if ((flags & Flags::apply) != 0)
         {
             bool changed = false;

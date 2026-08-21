@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <gtest/gtest.h>
+#include <limits>
 
 using namespace OpenLoco;
 using namespace OpenLoco::CargoDist;
@@ -42,6 +43,46 @@ TEST(CargoDistPackets, TakesOnlyRequestedNextHop)
     EXPECT_EQ(taken.quantityFor(station(3)), 12U);
     EXPECT_EQ(packets.quantity(), 38U);
     EXPECT_EQ(packets.quantityFor(station(3)), 18U);
+}
+
+TEST(CargoDistPackets, SplitsTransferCreditProportionally)
+{
+    PacketList packets;
+    packets.append({ 3, station(1), station(2), 3, {}, {}, station(4), 10 });
+
+    const auto taken = packets.take(1);
+
+    ASSERT_EQ(taken.size(), 1U);
+    ASSERT_EQ(packets.size(), 1U);
+    EXPECT_EQ(taken.packets().front().transferCredit, 3);
+    EXPECT_EQ(packets.packets().front().transferCredit, 7);
+}
+
+TEST(CargoDistPackets, CoalescesTransferCredits)
+{
+    PacketList packets;
+    packets.append({ 2, station(1), station(2), 3, {}, {}, station(4), 5 });
+    packets.append({ 3, station(1), station(2), 3, {}, {}, station(4), 7 });
+
+    ASSERT_EQ(packets.size(), 1U);
+    EXPECT_EQ(packets.quantity(), 5U);
+    EXPECT_EQ(packets.packets().front().transferCredit, 12);
+}
+
+TEST(CargoDistPackets, RepeatedSplitsConserveMaximumTransferCredit)
+{
+    constexpr auto kQuantity = std::numeric_limits<uint16_t>::max();
+    constexpr auto kCredit = static_cast<int64_t>(std::numeric_limits<int32_t>::max()) * kQuantity;
+    PacketList packets;
+    packets.append({ kQuantity, station(1), station(2), 3, {}, {}, station(4), kCredit });
+
+    const auto first = packets.take(1);
+    const auto second = packets.take(kQuantity / 2);
+
+    ASSERT_EQ(first.size(), 1U);
+    ASSERT_EQ(second.size(), 1U);
+    ASSERT_EQ(packets.size(), 1U);
+    EXPECT_EQ(first.packets().front().transferCredit + second.packets().front().transferCredit + packets.packets().front().transferCredit, kCredit);
 }
 
 TEST(CargoDistPackets, KeepsServicePlansDistinct)

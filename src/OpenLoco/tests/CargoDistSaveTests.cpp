@@ -6,6 +6,7 @@
 #include "S5/S5File.h"
 #include "S5/S5Options.h"
 #include "S5/SawyerStream.h"
+#include "Vehicles/Vehicle.h"
 #include <OpenLoco/CargoDist/Simulation.h>
 #include <OpenLoco/Core/MemoryStream.h>
 #include <OpenLoco/S5/SaveExtension.h>
@@ -84,6 +85,10 @@ namespace
             appendValue<uint16_t>(data, 7);
             appendValue<uint16_t>(data, 2);
         }
+        if (version >= 4)
+        {
+            appendValue<uint16_t>(data, 4);
+        }
 
         appendValue<uint32_t>(data, 0);
         appendValue<uint32_t>(data, 0);
@@ -96,6 +101,10 @@ namespace
         {
             appendValue<uint16_t>(data, static_cast<uint16_t>(ServiceId::null));
             appendValue<uint16_t>(data, kNoServiceOccurrence);
+        }
+        if (version >= 4)
+        {
+            appendValue<uint16_t>(data, 3);
         }
         appendValue<uint16_t>(data, 1);
         appendValue<uint16_t>(data, 3);
@@ -117,6 +126,10 @@ namespace
             appendValue<uint8_t>(data, 0);
             appendValue<uint8_t>(data, 0);
             appendValue<uint32_t>(data, 25);
+        }
+        if (version >= 4)
+        {
+            appendValue<uint32_t>(data, 0);
         }
 
         const auto payloadSize = static_cast<uint32_t>(data.size() - 16);
@@ -172,6 +185,7 @@ namespace
             }
         }
         EXPECT_EQ(lhs.destinationFlows, rhs.destinationFlows);
+        EXPECT_EQ(lhs.pendingVehicleRevenueAdjustments, rhs.pendingVehicleRevenueAdjustments);
     }
 
     State populatedState()
@@ -183,9 +197,9 @@ namespace
         state.settings.recalculationInterval = 5;
         state.nextRecalculationDay = 1234;
         state.graphDirty = true;
-        state.stationCargo[{ station(2), 0 }].append({ 30, station(1), station(3), 4, servicePoint(7, 1), servicePoint(7, 2), station(3) });
+        state.stationCargo[{ station(2), 0 }].append({ 30, station(1), station(3), 4, servicePoint(7, 1), servicePoint(7, 2), station(3), 120 });
         state.stationCargo[{ station(2), 0 }].append({ 10, station(4), StationId::null, 2, {}, {}, station(3) });
-        state.vehicleCargo[{ entity(20), VehicleCargoSlot::primary }].append({ 25, station(1), station(2), 6, servicePoint(8, 3), servicePoint(8, 4), station(3) });
+        state.vehicleCargo[{ entity(20), VehicleCargoSlot::primary }].append({ 25, station(1), station(2), 6, servicePoint(8, 3), servicePoint(8, 4), station(3), 80 });
         state.supply[{ 0, station(1) }] = 120;
         state.flows[{ 0, station(2), station(1), servicePoint(6, 4), station(3) }] = {
             { station(3), 75, -25, servicePoint(9, 1), servicePoint(9, 2) },
@@ -195,6 +209,7 @@ namespace
         state.stationAttraction[{ station(2), 0 }] = 120;
         state.serviceEdges[{ 0, station(1), station(2), servicePoint(8, 3), servicePoint(8, 4) }] = { 40, 10, 2 };
         state.vehicleServiceLegs[entity(7)] = { { 3, station(1), station(2), servicePoint(8, 3), servicePoint(8, 4) } };
+        state.pendingVehicleRevenueAdjustments[entity(7)] = -45;
         return state;
     }
 
@@ -258,7 +273,7 @@ TEST(CargoDistSave, RoundTripsCanonicalState)
     expectStatesEqual(original, decoded);
     EXPECT_TRUE(decoded.serviceEdges.empty());
     EXPECT_TRUE(decoded.vehicleServiceLegs.empty());
-    EXPECT_EQ(std::to_integer<uint8_t>(encoded[8]), 4);
+    EXPECT_EQ(std::to_integer<uint8_t>(encoded[8]), 5);
 }
 
 TEST(CargoDistSave, MigratesVersionOneWithoutStationAttraction)
@@ -299,6 +314,16 @@ TEST(CargoDistSave, MigratesVersionThreeAndReassignsDestinations)
     EXPECT_EQ(packet.arrival, servicePoint(7, 2));
 }
 
+TEST(CargoDistSave, MigratesVersionFourWithoutTransferCredits)
+{
+    const auto decoded = decodeState(legacyEncodedState(4));
+
+    const auto& packet = decoded.stationCargo.at({ station(2), 0 }).packets().front();
+    EXPECT_EQ(packet.destination, station(4));
+    EXPECT_EQ(packet.transferCredit, 0);
+    EXPECT_TRUE(decoded.pendingVehicleRevenueAdjustments.empty());
+}
+
 TEST(CargoDistSave, EncodingIsDeterministic)
 {
     const auto state = populatedState();
@@ -306,7 +331,7 @@ TEST(CargoDistSave, EncodingIsDeterministic)
     auto& packets = reordered.stationCargo.at({ station(2), 0 });
     packets = {};
     packets.append({ 10, station(4), StationId::null, 2, {}, {}, station(3) });
-    packets.append({ 30, station(1), station(3), 4, servicePoint(7, 1), servicePoint(7, 2), station(3) });
+    packets.append({ 30, station(1), station(3), 4, servicePoint(7, 1), servicePoint(7, 2), station(3), 120 });
 
     EXPECT_EQ(encodeState(state), encodeState(reordered));
 }
@@ -338,6 +363,21 @@ TEST(CargoDistSave, ValidatesNativeStateBeforeRestore)
     EXPECT_THROW(validateState(state, *gameState), std::runtime_error);
 }
 
+TEST(CargoDistSave, ValidatesPendingRevenueVehicle)
+{
+    State state;
+    state.pendingVehicleRevenueAdjustments[entity(7)] = 10;
+    auto gameState = std::make_unique<GameState>();
+
+    EXPECT_THROW(validateState(state, *gameState), std::runtime_error);
+
+    auto* head = reinterpret_cast<Vehicles::VehicleBase*>(&gameState->entities[7]);
+    head->baseType = EntityBaseType::vehicle;
+    head->setSubType(Vehicles::VehicleEntityType::head);
+    head->id = entity(7);
+    EXPECT_NO_THROW(validateState(state, *gameState));
+}
+
 TEST(CargoDistSave, RejectsTruncatedData)
 {
     auto encoded = encodeState(populatedState());
@@ -349,7 +389,7 @@ TEST(CargoDistSave, RejectsTruncatedData)
 TEST(CargoDistSave, RejectsUnknownVersion)
 {
     auto encoded = encodeState(populatedState());
-    encoded[8] = std::byte{ 5 };
+    encoded[8] = std::byte{ 6 };
 
     EXPECT_THROW(decodeState(encoded), std::runtime_error);
 }
@@ -360,6 +400,14 @@ TEST(CargoDistSave, RejectsInvalidMode)
     encoded[16] = std::byte{ 0xFF };
 
     EXPECT_THROW(decodeState(encoded), std::runtime_error);
+}
+
+TEST(CargoDistSave, RejectsNegativeTransferCredit)
+{
+    State state;
+    state.stationCargo[{ station(2), 0 }].append({ 10, station(1), station(3), 4, {}, {}, station(3), -1 });
+
+    EXPECT_THROW(encodeState(state), std::runtime_error);
 }
 
 TEST(CargoDistSave, RejectsInvalidFlowCursor)

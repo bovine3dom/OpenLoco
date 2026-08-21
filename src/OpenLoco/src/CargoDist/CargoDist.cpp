@@ -2,6 +2,7 @@
 #include <OpenLoco/CargoDist/Simulation.h>
 
 #include <algorithm>
+#include <cassert>
 #include <limits>
 #include <tuple>
 
@@ -209,6 +210,19 @@ namespace OpenLoco::CargoDist
         return total;
     }
 
+    CargoPacket CargoPacket::extract(const uint16_t amount)
+    {
+        assert(amount <= quantity);
+        auto extracted = *this;
+        extracted.quantity = amount;
+        const auto quotient = transferCredit / quantity;
+        const auto remainder = transferCredit % quantity;
+        extracted.transferCredit = quotient * amount + (remainder * amount) / quantity;
+        quantity -= amount;
+        transferCredit -= extracted.transferCredit;
+        return extracted;
+    }
+
     PacketList PacketList::fromPackets(Container packets)
     {
         PacketList result;
@@ -279,8 +293,8 @@ namespace OpenLoco::CargoDist
     void PacketList::canonicalise()
     {
         std::sort(_packets.begin(), _packets.end(), [](const auto& lhs, const auto& rhs) {
-            return std::tie(lhs.destination, lhs.nextHop, lhs.origin, lhs.age, lhs.departure, lhs.arrival)
-                < std::tie(rhs.destination, rhs.nextHop, rhs.origin, rhs.age, rhs.departure, rhs.arrival);
+            return std::tie(lhs.destination, lhs.nextHop, lhs.origin, lhs.age, lhs.departure, lhs.arrival, lhs.transferCredit)
+                < std::tie(rhs.destination, rhs.nextHop, rhs.origin, rhs.age, rhs.departure, rhs.arrival, rhs.transferCredit);
         });
         Container canonical;
         canonical.reserve(_packets.size());
@@ -298,8 +312,9 @@ namespace OpenLoco::CargoDist
                 {
                     const auto room = static_cast<uint32_t>(std::numeric_limits<uint16_t>::max() - previous.quantity);
                     const auto merged = std::min<uint32_t>(room, packet.quantity);
-                    previous.quantity += merged;
-                    packet.quantity -= merged;
+                    const auto extracted = packet.extract(static_cast<uint16_t>(merged));
+                    previous.quantity += extracted.quantity;
+                    previous.transferCredit += extracted.transferCredit;
                 }
             }
             if (packet.quantity != 0)
@@ -340,11 +355,8 @@ namespace OpenLoco::CargoDist
             }
 
             const auto moved = static_cast<uint16_t>(std::min<uint32_t>(requested, it->quantity));
-            auto packet = *it;
-            packet.quantity = moved;
-            result._packets.push_back(packet);
+            result._packets.push_back(it->extract(moved));
             requested -= moved;
-            it->quantity -= moved;
             if (it->quantity == 0)
             {
                 it = _packets.erase(it);

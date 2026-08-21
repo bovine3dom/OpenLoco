@@ -902,6 +902,43 @@ TEST_F(CargoDistServiceSimulationTest, ReverseFallbackDoesNotReloadAtSameStop)
     EXPECT_TRUE(getStateConst().graphDirty);
 }
 
+TEST_F(CargoDistServiceSimulationTest, SettlesPendingTransferRevenue)
+{
+    auto* head = createVehicle();
+    Vehicles::Vehicle train(*head);
+    head->aiThoughtId = 0xFF;
+    train.veh2->curMonthRevenue = 100;
+    addVehicleRevenueAdjustment(head->id, 75);
+    addVehicleRevenueAdjustment(head->id, -75);
+    EXPECT_FALSE(consumeVehicleRevenueAdjustment(head->id).has_value());
+    addVehicleRevenueAdjustment(head->id, 75);
+
+    head->settleCargoIncome();
+
+    EXPECT_EQ(train.veh2->curMonthRevenue, 175);
+    EXPECT_FALSE(consumeVehicleRevenueAdjustment(head->id).has_value());
+    EXPECT_NE(train.veh1->var_48 & Vehicles::Flags48::flag2, Vehicles::Flags48::none);
+
+    addVehicleRevenueAdjustment(head->id, std::numeric_limits<int64_t>::max());
+    head->settleCargoIncome();
+    EXPECT_EQ(train.veh2->curMonthRevenue, std::numeric_limits<currency32_t>::max());
+    addVehicleRevenueAdjustment(head->id, std::numeric_limits<int64_t>::min());
+    head->settleCargoIncome();
+    EXPECT_EQ(train.veh2->curMonthRevenue, std::numeric_limits<currency32_t>::min());
+}
+
+TEST_F(CargoDistServiceSimulationTest, KeepsRoutingEnabledForCreditedOnboardCargo)
+{
+    auto* head = createVehicle();
+    Vehicles::Vehicle train(*head);
+    const VehicleCargoKey key{ train.cars.firstCar.body->id, VehicleCargoSlot::primary };
+    getOrCreateVehicleCargo(key).append({ 10, station(1), station(2), 0, {}, {}, station(2), 50 });
+
+    setMode(0, DistributionMode::manual);
+
+    EXPECT_EQ(getMode(0), DistributionMode::asymmetric);
+}
+
 TEST(CargoDistSimulation, SynchronisesNativeCargoMirrors)
 {
     reset();
@@ -1064,6 +1101,21 @@ TEST(CargoDistSimulation, DeliversCargoAtItsFlowSink)
     EXPECT_EQ(stationCargo.quantity, 0);
 }
 
+TEST(CargoDistSimulation, TransferCreditsTrackMarginalProjectedValue)
+{
+    CargoPacket packet{ 20, station(1), station(2), 3 };
+
+    const auto firstCredit = accrueTransferCredit(packet, 10);
+    const auto secondCredit = accrueTransferCredit(packet, 100);
+    const auto finalIncome = calculateFinalDeliveryIncome(packet.transferCredit, 110);
+
+    EXPECT_EQ(firstCredit, 10);
+    EXPECT_EQ(secondCredit, 90);
+    EXPECT_EQ(packet.transferCredit, 100);
+    EXPECT_EQ(finalIncome, 10);
+    EXPECT_EQ(firstCredit + secondCredit + finalIncome, 110);
+}
+
 TEST(CargoDistSimulation, ReassignsCargoWhenItsDestinationStopsAccepting)
 {
     reset();
@@ -1105,6 +1157,41 @@ TEST(CargoDistSimulation, TransfersCargoAlongItsNextFlowLeg)
     EXPECT_EQ(vehicleCargo.qty, 0);
     EXPECT_EQ(stationCargo.quantity, 20);
     EXPECT_EQ(getStationCargoConst(station(2), 0)->quantityFor(station(3)), 20);
+}
+
+TEST(CargoDistSimulation, TransferCreditFollowsCargoToItsDestination)
+{
+    reset();
+    constexpr auto transferLeg = serviceLeg(2, 3, 8, 0, 1);
+    const std::array flows = {
+        FlowShare{ station(2), station(1), station(3), 20, {}, transferLeg.departure, transferLeg.arrival, station(3) },
+    };
+    setFlows(0, flows);
+    const VehicleCargoKey firstKey{ entity(10), VehicleCargoSlot::primary };
+    getOrCreateVehicleCargo(firstKey).append({ 20, station(1), station(2), 3, {}, {}, station(3) });
+    Vehicles::VehicleCargo firstCargo{ 1, 0, 30, station(1), 3, 20 };
+    StationCargoStats transferCargo{};
+
+    const auto transfer = unloadVehicleCargo(firstKey, firstCargo, station(2), transferCargo, {}, false, std::nullopt, [](const auto&) { return 100; });
+
+    ASSERT_EQ(transfer.transferCredits.size(), 1U);
+    EXPECT_EQ(transfer.transferCredits.front().amount, 100);
+    const auto* waiting = getStationCargoConst(station(2), 0);
+    ASSERT_NE(waiting, nullptr);
+    ASSERT_EQ(waiting->size(), 1U);
+    EXPECT_EQ(waiting->packets().front().transferCredit, 100);
+
+    const VehicleCargoKey secondKey{ entity(11), VehicleCargoSlot::primary };
+    Vehicles::VehicleCargo secondCargo{ 1, 0, 30, StationId::null, 0, 0 };
+    EXPECT_EQ(loadVehicleCargo(secondKey, secondCargo, station(2), transferCargo, transferLeg), 20);
+    StationCargoStats destinationCargo{};
+    destinationCargo.isAccepted(true);
+
+    const auto delivery = unloadVehicleCargo(secondKey, secondCargo, station(3), destinationCargo, {}, false, std::nullopt);
+
+    ASSERT_EQ(delivery.delivered.size(), 1U);
+    EXPECT_EQ(delivery.delivered.packets().front().transferCredit, 100);
+    EXPECT_EQ(calculateFinalDeliveryIncome(delivery.delivered.packets().front().transferCredit, 160), 60);
 }
 
 TEST(CargoDistSimulation, UnresolvedVehicleCargoCommitsSelectedDestination)
@@ -1170,16 +1257,26 @@ TEST(CargoDistSimulation, CapsTransferredCargoAtNativeStationLimit)
     auto& waiting = getOrCreateStationCargo(station(2), 0);
     waiting.append({ 65530, station(4), station(3), 0 });
     const VehicleCargoKey key{ entity(10), VehicleCargoSlot::primary };
-    getOrCreateVehicleCargo(key).append({ 20, station(1), station(2), 3, {}, {}, station(3) });
+    getOrCreateVehicleCargo(key).append({ 20, station(1), station(2), 3, {}, {}, station(3), 20 });
     Vehicles::VehicleCargo vehicleCargo{ 1, 0, 30, station(1), 3, 20 };
     StationCargoStats stationCargo{};
     synchroniseStationCargo(station(2), 0, stationCargo);
 
-    const auto result = unloadVehicleCargo(key, vehicleCargo, station(2), stationCargo, {}, false, std::nullopt);
+    const auto result = unloadVehicleCargo(key, vehicleCargo, station(2), stationCargo, {}, false, std::nullopt, [](const auto& packet) { return packet.quantity * 10; });
 
-    EXPECT_EQ(result.transferred, 20);
+    EXPECT_EQ(result.transferred, 5);
+    ASSERT_EQ(result.transferCredits.size(), 1U);
+    EXPECT_EQ(result.transferCredits.front().packet.quantity, 5);
+    EXPECT_EQ(result.transferCredits.front().amount, 45);
+    EXPECT_EQ(result.transferCredits.front().packet.transferCredit, 50);
+    EXPECT_EQ(vehicleCargo.qty, 15);
     EXPECT_EQ(stationCargo.quantity, std::numeric_limits<uint16_t>::max());
     EXPECT_EQ(getStationCargoConst(station(2), 0)->quantity(), std::numeric_limits<uint16_t>::max());
+    const auto* onboard = getVehicleCargoConst(key);
+    ASSERT_NE(onboard, nullptr);
+    ASSERT_EQ(onboard->size(), 1U);
+    EXPECT_EQ(onboard->packets().front().nextHop, StationId::null);
+    EXPECT_EQ(onboard->packets().front().transferCredit, 15);
 }
 
 TEST(CargoDistSimulation, ContinuesOnSameServiceWithoutTransfer)
@@ -1195,10 +1292,11 @@ TEST(CargoDistSimulation, ContinuesOnSameServiceWithoutTransfer)
     Vehicles::VehicleCargo vehicleCargo{ 1, 0, 30, station(1), 3, 20 };
     StationCargoStats stationCargo{};
 
-    const auto result = unloadVehicleCargo(key, vehicleCargo, station(2), stationCargo, {}, false, onward);
+    const auto result = unloadVehicleCargo(key, vehicleCargo, station(2), stationCargo, {}, false, onward, [](const auto&) { return 100; });
 
     EXPECT_EQ(result.quantity(), 0);
     EXPECT_EQ(result.transferred, 0);
+    EXPECT_TRUE(result.transferCredits.empty());
     EXPECT_EQ(vehicleCargo.qty, 20);
     EXPECT_EQ(stationCargo.quantity, 0);
     const auto* packets = getVehicleCargoConst(key);

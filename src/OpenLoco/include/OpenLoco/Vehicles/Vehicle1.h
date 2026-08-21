@@ -21,7 +21,7 @@ namespace OpenLoco::Vehicles
         uint8_t cargoAges[4];
         currency32_t cargoProfits[4];
         void beginNewIncome();
-        bool addToStats(uint8_t cargoType, uint16_t cargoQty, uint16_t cargoDist, uint8_t cargoAge, currency32_t profit);
+        bool addToStats(uint8_t cargoType, uint16_t cargoQty, uint16_t cargoDist, uint8_t cargoAge, int64_t profit);
     };
 
     struct Vehicle1 : VehicleBase

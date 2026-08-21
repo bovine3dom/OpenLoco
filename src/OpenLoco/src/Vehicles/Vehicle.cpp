@@ -182,6 +182,10 @@ namespace OpenLoco::Vehicles
 
         if (train.head->status != Status::crashed && train.head->status != Status::stuck)
         {
+            if (train.head->status == Status::unloading)
+            {
+                train.head->settleCargoIncome();
+            }
             train.head->status = Status::crashed;
             train.head->crashedTimeout = 0;
             CargoDist::markServicesDirty();

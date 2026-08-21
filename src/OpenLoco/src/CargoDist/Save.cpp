@@ -23,7 +23,7 @@ namespace OpenLoco::CargoDist
             std::byte{ 'T' },
             std::byte{ 0 },
         };
-        constexpr uint16_t kVersion = 4;
+        constexpr uint16_t kVersion = 5;
         constexpr uint16_t kHeaderSize = 16;
         constexpr uint32_t kMaxStationLists = S5::Limits::kMaxStations * S5::Limits::kMaxCargoObjects;
         constexpr uint32_t kMaxVehicleLists = S5::Limits::kMaxEntities * 2;
@@ -182,6 +182,7 @@ namespace OpenLoco::CargoDist
             for (const auto& packet : packets.packets())
             {
                 require(packet.quantity != 0, "CargoDist packet has zero quantity");
+                require(packet.transferCredit >= 0 && packet.transferCredit <= static_cast<int64_t>(std::numeric_limits<int32_t>::max()) * packet.quantity, "CargoDist packet has invalid transfer credit");
                 require(isValidStation(packet.origin), "CargoDist packet has invalid origin");
                 require(isValidStation(packet.nextHop, true), "CargoDist packet has invalid next hop");
                 require(isValidStation(packet.destination, true), "CargoDist packet has invalid destination");
@@ -194,6 +195,7 @@ namespace OpenLoco::CargoDist
                 encodeServicePoint(encoder, packet.departure);
                 encodeServicePoint(encoder, packet.arrival);
                 encoder.write(stationValue(packet.destination));
+                encoder.write(packet.transferCredit);
             }
         }
 
@@ -222,7 +224,12 @@ namespace OpenLoco::CargoDist
                 {
                     packet.destination = StationId(decoder.read<uint16_t>());
                 }
+                if (version >= 5)
+                {
+                    packet.transferCredit = decoder.readInt64();
+                }
                 require(packet.quantity != 0, "CargoDist packet has zero quantity");
+                require(packet.transferCredit >= 0 && packet.transferCredit <= static_cast<int64_t>(std::numeric_limits<int32_t>::max()) * packet.quantity, "CargoDist packet has invalid transfer credit");
                 require(isValidStation(packet.origin), "CargoDist packet has invalid origin");
                 require(isValidStation(packet.nextHop, true), "CargoDist packet has invalid next hop");
                 require(isValidStation(packet.destination, true), "CargoDist packet has invalid destination");
@@ -428,6 +435,18 @@ namespace OpenLoco::CargoDist
             }
         }
 
+        payload.write(countMatching(state.pendingVehicleRevenueAdjustments, [](const auto& item) { return item.second != 0; }));
+        for (const auto& [vehicle, adjustment] : state.pendingVehicleRevenueAdjustments)
+        {
+            if (adjustment == 0)
+            {
+                continue;
+            }
+            require(entityValue(vehicle) < S5::Limits::kMaxEntities, "Invalid CargoDist pending revenue vehicle");
+            payload.write(entityValue(vehicle));
+            payload.write(adjustment);
+        }
+
         require(payload.data().size() <= kMaxSaveDataSize - kHeaderSize, "CargoDist save data is too large");
         Encoder result;
         result.writeBytes(std::span{ kMagic });
@@ -588,6 +607,19 @@ namespace OpenLoco::CargoDist
                 }
                 validateDestinationOptions(options);
                 require(state.destinationFlows.emplace(key, std::move(options)).second, "Duplicate CargoDist destination flow key");
+            }
+        }
+
+        if (version >= 5)
+        {
+            const auto pendingAdjustmentCount = decoder.read<uint32_t>();
+            require(pendingAdjustmentCount <= S5::Limits::kMaxEntities, "Too many CargoDist pending revenue adjustments");
+            for (uint32_t i = 0; i < pendingAdjustmentCount; ++i)
+            {
+                const auto vehicle = EntityId(decoder.read<uint16_t>());
+                const auto adjustment = decoder.readInt64();
+                require(entityValue(vehicle) < S5::Limits::kMaxEntities && adjustment != 0, "Invalid CargoDist pending revenue vehicle");
+                require(state.pendingVehicleRevenueAdjustments.emplace(vehicle, adjustment).second, "Duplicate CargoDist pending revenue vehicle");
             }
         }
 

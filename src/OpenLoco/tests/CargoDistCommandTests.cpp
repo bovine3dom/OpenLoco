@@ -61,3 +61,27 @@ TEST(CargoDistCommand, AppliesGlobalManualMode)
     EXPECT_TRUE(std::ranges::all_of(getStateConst().settings.modes, [](auto mode) { return mode == DistributionMode::manual; }));
     EXPECT_FALSE(getStateConst().graphDirty);
 }
+
+TEST(CargoDistCommand, KeepsRoutingEnabledUntilTransferCreditsAreSettled)
+{
+    reset();
+    EntityManager::reset();
+    getState().settings.modes[31] = DistributionMode::asymmetric;
+    getState().stationCargo[{ StationId(1), 31 }].append({ 10, StationId(1), StationId(2), 0, {}, {}, StationId(2), 50 });
+    registers singleRegs = static_cast<registers>(SetCargoDistModeArgs(31, DistributionMode::manual));
+
+    setCargoDistMode(singleRegs, Flags::apply);
+
+    EXPECT_EQ(static_cast<uint32_t>(singleRegs.ebx), kFailure);
+    EXPECT_EQ(getMode(31), DistributionMode::asymmetric);
+
+    registers regs = static_cast<registers>(SetCargoDistModeArgs(kAllCargo, DistributionMode::manual));
+
+    setCargoDistMode(regs, Flags::apply);
+
+    EXPECT_EQ(static_cast<uint32_t>(regs.ebx), kFailure);
+    EXPECT_EQ(getMode(31), DistributionMode::asymmetric);
+
+    setMode(31, DistributionMode::manual);
+    EXPECT_EQ(getMode(31), DistributionMode::asymmetric);
+}

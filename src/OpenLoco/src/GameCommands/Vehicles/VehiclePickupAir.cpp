@@ -37,6 +37,11 @@ namespace OpenLoco::GameCommands
             return 0;
         }
 
+        if (train.head->status == Vehicles::Status::unloading)
+        {
+            train.head->settleCargoIncome();
+        }
+
         if (train.head->tileX != -1)
         {
             if (!(flags & Flags::ghost))
