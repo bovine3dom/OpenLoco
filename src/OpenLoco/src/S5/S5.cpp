@@ -26,9 +26,13 @@
 #include "Map/TrackElement.h"
 #include "Map/TreeElement.h"
 #include "Map/WallElement.h"
+#include "Objects/CargoObject.h"
 #include "Objects/ObjectIndex.h"
 #include "Objects/ObjectManager.h"
+#include "Objects/RoadObject.h"
 #include "Objects/ScenarioTextObject.h"
+#include "Objects/TrackObject.h"
+#include "Objects/VehicleObject.h"
 #include "OpenLoco.h"
 #include "S5/S5File.h"
 #include "S5/S5Options.h"
@@ -45,7 +49,10 @@
 #include "Vehicles/RailTraffic.h"
 #include "Vehicles/RoutingManager.h"
 #include "Vehicles/SharedOrderManager.h"
+#include "Vehicles/Vehicle.h"
 #include "Vehicles/VehicleAutoRenewal.h"
+#include "Vehicles/VehicleBody.h"
+#include "Vehicles/VehicleBogie.h"
 #include "Vehicles/VehicleHead.h"
 #include "Vehicles/VehicleManager.h"
 #include "Vehicles/VehicleReplacement.h"
@@ -54,6 +61,7 @@
 #include "World/StationManager.h"
 #include "World/TownManager.h"
 #include <OpenLoco/Core/Exception.hpp>
+#include <OpenLoco/Core/Numerics.hpp>
 #include <OpenLoco/Core/Stream.hpp>
 #include <OpenLoco/Diagnostics/Logging.h>
 #include <fstream>
@@ -114,6 +122,101 @@ namespace OpenLoco::S5
                 continue;
             }
             head->discardFutureRouting();
+        }
+    }
+
+    template<typename TObject>
+    static const TObject* getLoadedObject(const size_t id)
+    {
+        return id < ObjectManager::getMaxObjects(TObject::kObjectType) ? ObjectManager::get<TObject>(id) : nullptr;
+    }
+
+    static bool hasLoadedCargoObject(const Vehicles::VehicleCargo& cargo)
+    {
+        return cargo.type == kCargoTypeNull || getLoadedObject<CargoObject>(cargo.type) != nullptr;
+    }
+
+    static void applyVehicleCapacityOverrides(CargoDist::State* cargoDistState)
+    {
+        for (auto* head : VehicleManager::VehicleList())
+        {
+            Vehicles::Vehicle vehicle(*head);
+            bool cargoChanged = false;
+            bool canUpdateTrainProperties = true;
+            for (const auto& car : vehicle.cars)
+            {
+                auto& cargo = car.body->primaryCargo;
+                const auto* vehicleObject = getLoadedObject<VehicleObject>(car.body->objectId);
+                const auto* frontVehicleObject = getLoadedObject<VehicleObject>(car.front->objectId);
+                canUpdateTrainProperties = canUpdateTrainProperties
+                    && vehicleObject != nullptr
+                    && frontVehicleObject != nullptr
+                    && hasLoadedCargoObject(car.front->secondaryCargo)
+                    && hasLoadedCargoObject(car.back->secondaryCargo)
+                    && hasLoadedCargoObject(cargo);
+                if (vehicleObject == nullptr)
+                {
+                    continue;
+                }
+
+                const LoadedObjectHandle handle{ ObjectType::vehicle, car.body->objectId };
+                const auto& header = ObjectManager::getHeader(handle);
+                auto correctedCapacity = getEffectiveVehicleCapacity(header, cargo.maxQty);
+                const auto primaryCargoType = Numerics::bitScanForward(vehicleObject->compatibleCargoCategories[0]);
+                const auto* primaryCargoObject = primaryCargoType == -1 ? nullptr : getLoadedObject<CargoObject>(primaryCargoType);
+                const auto* cargoObject = getLoadedObject<CargoObject>(cargo.type);
+                if (primaryCargoObject != nullptr && cargoObject != nullptr)
+                {
+                    correctedCapacity = getEffectiveVehicleCapacity(header, cargo.maxQty, primaryCargoObject->unitSize, cargoObject->unitSize);
+                }
+                if (correctedCapacity == cargo.maxQty)
+                {
+                    continue;
+                }
+
+                cargo.maxQty = correctedCapacity;
+                if (cargoDistState != nullptr)
+                {
+                    cargoDistState->graphDirty = true;
+                    cargoDistState->servicesDirty = true;
+                }
+                if (cargo.qty <= correctedCapacity)
+                {
+                    continue;
+                }
+
+                cargo.qty = correctedCapacity;
+                cargoChanged = true;
+                if (cargoDistState == nullptr)
+                {
+                    continue;
+                }
+
+                const CargoDist::VehicleCargoKey key{ car.body->id, CargoDist::VehicleCargoSlot::primary };
+                const auto packetsIt = cargoDistState->vehicleCargo.find(key);
+                if (packetsIt != cargoDistState->vehicleCargo.end())
+                {
+                    auto& packets = packetsIt->second;
+                    packets.remove(packets.quantity() - correctedCapacity);
+                    cargo.townFrom = packets.representativeOrigin();
+                    cargo.numDays = packets.averageAge();
+                }
+            }
+            if (head->mode == TransportMode::road)
+            {
+                const auto roadObjectId = head->trackType == 0xFF ? getGameState().defaultTrackTypeObjectId : head->trackType;
+                canUpdateTrainProperties = canUpdateTrainProperties
+                    && getLoadedObject<RoadObject>(roadObjectId) != nullptr;
+            }
+            else if (head->mode == TransportMode::rail)
+            {
+                canUpdateTrainProperties = canUpdateTrainProperties
+                    && getLoadedObject<TrackObject>(head->trackType) != nullptr;
+            }
+            if (cargoChanged && canUpdateTrainProperties)
+            {
+                head->updateTrainProperties();
+            }
         }
     }
 
@@ -1069,6 +1172,10 @@ namespace OpenLoco::S5
 
             // Copy the S5 gamestate contents to the destination gamestate, field by field
             dst = std::move(*importedGameState);
+            auto* cargoDistState = file->cargoDistState.has_value() && !hasLoadFlags(flags, LoadFlags::titleSequence)
+                ? &*file->cargoDistState
+                : nullptr;
+            applyVehicleCapacityOverrides(cargoDistState);
             CargoDist::reset();
             Vehicles::SharedOrderManager::reset();
             Vehicles::RoutingManager::resetPathReservationState();

@@ -19,6 +19,55 @@ using namespace OpenLoco::Diagnostics;
 
 namespace OpenLoco
 {
+    struct VehicleCapacityOverride
+    {
+        std::string_view name;
+        uint8_t originalCapacity;
+        uint8_t correctedCapacity;
+    };
+
+    // Normalize well-identified vehicles to published seating or normal service capacity
+    // without modifying their DAT data, checksum, or save identity.
+    static constexpr VehicleCapacityOverride kCapacityOverrides[] = {
+        { "142     ", 90, 121 },
+        { "2EPB    ", 100, 186 },
+        { "AILSA1  ", 60, 79 },
+        { "CLASSIC ", 45, 78 },
+        { "COMET   ", 90, 44 },
+        { "CONCOR  ", 250, 100 },
+        { "ESTAR2  ", 67, 44 },
+        { "HCRAFT1 ", 200, 254 },
+        { "JFOIL1  ", 125, 250 },
+        { "LEOP1   ", 45, 75 },
+        { "RBE24   ", 50, 100 },
+        { "RTMASTER", 50, 69 },
+        { "TDH5301 ", 40, 75 },
+        { "TGV2    ", 70, 48 },
+        { "TRAM1   ", 35, 102 },
+        { "TRAM2   ", 20, 33 },
+        { "TRAM3   ", 55, 74 },
+        { "TRAM4   ", 65, 120 },
+        { "TRAMCOMB", 85, 176 },
+        { "VULCAN  ", 14, 28 },
+    };
+
+    static const VehicleCapacityOverride* findVehicleCapacityOverride(const ObjectHeader& header)
+    {
+        if (header.getType() != ObjectType::vehicle || header.getSourceGame() != SourceGame::vanilla)
+        {
+            return nullptr;
+        }
+
+        for (const auto& capacityOverride : kCapacityOverrides)
+        {
+            if (header.getName() == capacityOverride.name)
+            {
+                return &capacityOverride;
+            }
+        }
+        return nullptr;
+    }
+
     // 0x004B8C52
     void VehicleObject::drawPreviewImage(Gfx::DrawingContext& drawingCtx, const int16_t x, const int16_t y) const
     {
@@ -613,6 +662,36 @@ namespace OpenLoco
             std::string objName(header.getName());
             Logging::verbose("Incorrect number of images for object: {}", objName);
         }
+    }
+
+    uint8_t getEffectiveVehicleCapacity(const ObjectHeader& header, const uint8_t capacity)
+    {
+        const auto* capacityOverride = findVehicleCapacityOverride(header);
+        if (capacityOverride != nullptr && capacity == capacityOverride->originalCapacity)
+        {
+            return capacityOverride->correctedCapacity;
+        }
+        return capacity;
+    }
+
+    uint8_t getEffectiveVehicleCapacity(const ObjectHeader& header, const uint8_t capacity, const uint8_t primaryCargoUnitSize, const uint8_t cargoUnitSize)
+    {
+        const auto* capacityOverride = findVehicleCapacityOverride(header);
+        if (capacityOverride == nullptr || cargoUnitSize == 0)
+        {
+            return capacity;
+        }
+
+        const auto convertCapacity = [primaryCargoUnitSize, cargoUnitSize](const uint8_t baseCapacity) {
+            const auto convertedCapacity = (static_cast<uint32_t>(primaryCargoUnitSize) * baseCapacity) / cargoUnitSize;
+            return static_cast<uint8_t>(std::min(convertedCapacity, 0xFFU));
+        };
+        const auto convertLegacyCapacity = [primaryCargoUnitSize, cargoUnitSize](const uint8_t baseCapacity) {
+            return static_cast<uint8_t>((static_cast<uint32_t>(primaryCargoUnitSize) * baseCapacity) / cargoUnitSize);
+        };
+        return capacity == convertCapacity(capacityOverride->originalCapacity) || capacity == convertLegacyCapacity(capacityOverride->originalCapacity)
+            ? convertCapacity(capacityOverride->correctedCapacity)
+            : capacity;
     }
 
     // 0x004B89FF

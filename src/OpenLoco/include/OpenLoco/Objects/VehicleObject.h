@@ -293,6 +293,9 @@ namespace OpenLoco
 #pragma pack(pop)
     static_assert(sizeof(VehicleObject) == 0x15E);
 
+    uint8_t getEffectiveVehicleCapacity(const ObjectHeader& header, uint8_t capacity);
+    uint8_t getEffectiveVehicleCapacity(const ObjectHeader& header, uint8_t capacity, uint8_t primaryCargoUnitSize, uint8_t cargoUnitSize);
+
     namespace StringIds
     {
         constexpr StringId getVehicleType(const VehicleType type)

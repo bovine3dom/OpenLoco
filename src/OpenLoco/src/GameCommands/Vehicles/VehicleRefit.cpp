@@ -63,7 +63,7 @@ namespace OpenLoco::GameCommands
 
             CargoDist::eraseVehicleCargoForComponent(car.body->id);
             car.body->primaryCargo.type = args.cargoType;
-            car.body->primaryCargo.maxQty = std::min<uint8_t>(maxCargoUnits, 0xFF);
+            car.body->primaryCargo.maxQty = static_cast<uint8_t>(std::min<uint16_t>(maxCargoUnits, 0xFF));
             car.body->primaryCargo.qty = 0;
 
             auto primaryCargoObj = ObjectManager::get<CargoObject>(args.cargoType);

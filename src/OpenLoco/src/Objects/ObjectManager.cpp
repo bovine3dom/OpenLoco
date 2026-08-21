@@ -348,11 +348,16 @@ namespace OpenLoco::ObjectManager
         });
     }
 
-    static void callObjectLoad(const LoadedObjectHandle& handle, Object& obj, std::span<const std::byte> data, DependentObjects* dependencies = nullptr)
+    static void callObjectLoad(const LoadedObjectHandle& handle, const ObjectHeader& header, Object& obj, std::span<const std::byte> data, DependentObjects* dependencies = nullptr)
     {
-        return visitObject(handle.type, obj, [&](auto&& obj) {
+        visitObject(handle.type, obj, [&](auto&& obj) {
             return obj->load(handle, data, dependencies);
         });
+        if (handle.type == ObjectType::vehicle)
+        {
+            auto* vehicle = reinterpret_cast<VehicleObject*>(&obj);
+            vehicle->maxCargo[0] = getEffectiveVehicleCapacity(header, vehicle->maxCargo[0]);
+        }
     }
 
     // 0x0047237D
@@ -366,7 +371,7 @@ namespace OpenLoco::ObjectManager
         forEachLoadedObject([&loadedObjects](const LoadedObjectHandle& handle) {
             auto* obj = getAny(handle);
             auto& extHdr = getRepositoryItem(handle.type).objectEntryExtendeds[handle.id];
-            callObjectLoad(handle, *obj, std::span<const std::byte>(reinterpret_cast<std::byte*>(obj), extHdr.dataSize));
+            callObjectLoad(handle, extHdr, *obj, std::span<const std::byte>(reinterpret_cast<std::byte*>(obj), extHdr.dataSize));
             loadedObjects++;
         });
 
@@ -501,7 +506,7 @@ namespace OpenLoco::ObjectManager
         DependentObjects dependencies;
         try
         {
-            callObjectLoad({ preLoadObj->header.getType(), 0 }, *preLoadObj->object, preLoadObj->objectData, &dependencies);
+            callObjectLoad({ preLoadObj->header.getType(), 0 }, preLoadObj->header, *preLoadObj->object, preLoadObj->objectData, &dependencies);
         }
         catch (Exception::OutOfRange&) // catches the ImageTable incorrectly sized which can cause bad crashes
         {
@@ -568,7 +573,7 @@ namespace OpenLoco::ObjectManager
             preLoadObj->header, static_cast<uint32_t>(preLoadObj->objectData.size())
         };
 
-        callObjectLoad({ preLoadObj->header.getType(), id }, *preLoadObj->object, preLoadObj->objectData);
+        callObjectLoad({ preLoadObj->header.getType(), id }, preLoadObj->header, *preLoadObj->object, preLoadObj->objectData);
 
         return true;
     }

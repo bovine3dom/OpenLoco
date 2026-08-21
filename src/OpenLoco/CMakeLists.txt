@@ -835,6 +835,7 @@ set(test_files
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/UndoTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/VehicleAutoRenewalTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/VehicleMovementTests.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/VehicleObjectTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/VehicleReplacementTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/VehicleUnbunchingTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/ViewportTests.cpp"
