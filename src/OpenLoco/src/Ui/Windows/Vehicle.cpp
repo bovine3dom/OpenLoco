@@ -30,6 +30,7 @@
 #include "GameState.h"
 #include "Graphics/Colour.h"
 #include "Graphics/ImageIds.h"
+#include "Graphics/RenderTarget.h"
 #include "Graphics/TextRenderer.h"
 #include "Input.h"
 #include "LabelFrame.h"
@@ -54,6 +55,7 @@
 #include "Objects/TrackObject.h"
 #include "Objects/WaterObject.h"
 #include "SceneManager.h"
+#include "Ui/CargoRouteTree.h"
 #include "Ui/Dropdown.h"
 #include "Ui/ScrollView.h"
 #include "Ui/ToolManager.h"
@@ -63,6 +65,7 @@
 #include "Ui/Widgets/ButtonWidget.h"
 #include "Ui/Widgets/CaptionWidget.h"
 #include "Ui/Widgets/ColourButtonWidget.h"
+#include "Ui/Widgets/DropdownWidget.h"
 #include "Ui/Widgets/FrameWidget.h"
 #include "Ui/Widgets/ImageButtonWidget.h"
 #include "Ui/Widgets/LabelWidget.h"
@@ -89,12 +92,16 @@
 #include "World/CompanyManager.h"
 #include "World/StationManager.h"
 
+#include <OpenLoco/CargoDist/CargoDist.h>
 #include <OpenLoco/Math/Trigonometry.hpp>
 #include <OpenLoco/Utility/LookupTable.hpp>
 #include <algorithm>
 #include <limits>
+#include <map>
 #include <ranges>
+#include <set>
 #include <sfl/static_vector.hpp>
+#include <span>
 #include <sstream>
 #include <vector>
 
@@ -296,18 +303,30 @@ namespace OpenLoco::Ui::Windows::Vehicle
 
     namespace Cargo
     {
-        static constexpr Ui::Size kMinWindowSize = { 192, 142 };
+        static constexpr Ui::Size kMinWindowSize = { 192, 168 };
         static constexpr Ui::Size kMaxWindowSize = { 400, 440 };
 
         enum widx
         {
             refit = 9,
-            cargoList = 10,
+            groupByLabel,
+            groupBy,
+            groupByDropdown,
+            sortByLabel,
+            sortBy,
+            sortByDropdown,
+            cargoList,
         };
 
         namespace Widx
         {
             constexpr WidgetId kRefit{ "refit" };
+            constexpr WidgetId kGroupByLabel{ "groupByLabel" };
+            constexpr WidgetId kGroupBy{ "groupBy" };
+            constexpr WidgetId kGroupByDropdown{ "groupByDropdown" };
+            constexpr WidgetId kSortByLabel{ "sortByLabel" };
+            constexpr WidgetId kSortBy{ "sortBy" };
+            constexpr WidgetId kSortByDropdown{ "sortByDropdown" };
             constexpr WidgetId kCargoList{ "cargoList" };
         }
 
@@ -316,9 +335,15 @@ namespace OpenLoco::Ui::Windows::Vehicle
         static constexpr auto widgets = makeWidgets(
             Common::makeCommonWidgets(265, 177, StringIds::title_vehicle_cargo),
             Widgets::ImageButton(Widx::kRefit, { 240, 44 }, { 24, 24 }, WindowColour::secondary, ImageIds::refit_cargo_button, StringIds::refit_vehicle_tip),
-            Widgets::ScrollView(Widx::kCargoList, { 3, 44 }, { 259, 120 }, WindowColour::secondary, Scrollbars::vertical)
+            Widgets::Label(Widx::kGroupByLabel, { 3, 44 }, { 40, 12 }, WindowColour::secondary, ContentAlign::right, StringIds::cargo_group_by),
+            Widgets::dropdownWidgets(Widx::kGroupBy, Widx::kGroupByDropdown, { 45, 44 }, { 192, 12 }, WindowColour::secondary, StringIds::wcolour2_stringid, StringIds::tooltip_cargo_group_by),
+            Widgets::Label(Widx::kSortByLabel, { 3, 57 }, { 40, 12 }, WindowColour::secondary, ContentAlign::right, StringIds::cargo_sort_by),
+            Widgets::dropdownWidgets(Widx::kSortBy, Widx::kSortByDropdown, { 45, 57 }, { 192, 12 }, WindowColour::secondary, StringIds::wcolour2_stringid, StringIds::tooltip_cargo_sort_by),
+            Widgets::ScrollView(Widx::kCargoList, { 3, 70 }, { 259, 94 }, WindowColour::secondary, Scrollbars::vertical)
 
         );
+
+        static void eraseWindowState(EntityId vehicle);
     }
 
     namespace Finances
@@ -2275,7 +2300,216 @@ namespace OpenLoco::Ui::Windows::Vehicle
 
     namespace Cargo
     {
+        struct CargoWindowState
+        {
+            CargoRouteTree::GroupOrder groupOrder = CargoRouteTree::GroupOrder::sourceDestinationVia;
+            CargoRouteTree::SortMode sortMode = CargoRouteTree::SortMode::amountWaiting;
+            std::set<CargoDist::VehicleCargoKey> expandedCompartments;
+            std::map<CargoDist::VehicleCargoKey, std::set<CargoRouteTree::GroupKey>> expandedGroups;
+            uint64_t cargoRevision = std::numeric_limits<uint64_t>::max();
+            uint64_t routingRevision = std::numeric_limits<uint64_t>::max();
+            std::map<CargoDist::VehicleCargoKey, std::vector<CargoDist::CargoRouteNode>> routeTrees;
+        };
+
+        enum class CargoRowType : uint8_t
+        {
+            compartment,
+            group,
+            groupsOmitted,
+            empty,
+        };
+
+        struct CargoListRow
+        {
+            CargoRowType type{};
+            int32_t y{};
+            CargoDist::VehicleCargoKey cargoKey{};
+            Vehicles::VehicleCargo cargo{};
+            bool expandable{};
+            bool expanded{};
+            CargoRouteTree::Row group{};
+            size_t groupsOmitted{};
+        };
+
+        struct CargoCarRow
+        {
+            Vehicles::Car car{};
+            int32_t y{};
+            int32_t height{};
+        };
+
+        struct CargoList
+        {
+            std::vector<CargoCarRow> cars;
+            std::vector<CargoListRow> rows;
+            int32_t height{};
+        };
+
+        static std::map<EntityId, CargoWindowState> _windowStates;
+
         static void onRefitButton(Window& self, const WidgetIndex_t wi, const WidgetId id);
+
+        static CargoWindowState& getWindowState(const EntityId vehicle)
+        {
+            auto& state = _windowStates[vehicle];
+            const auto cargoRevision = CargoDist::getStateConst().cargoRevision;
+            const auto routingRevision = CargoDist::getStateConst().routingRevision;
+            if (state.cargoRevision != cargoRevision || state.routingRevision != routingRevision)
+            {
+                state.cargoRevision = cargoRevision;
+                state.routingRevision = routingRevision;
+                state.routeTrees.clear();
+            }
+            return state;
+        }
+
+        static void eraseWindowState(const EntityId vehicle)
+        {
+            _windowStates.erase(vehicle);
+        }
+
+        static std::vector<CargoDist::CargoRouteNode>& getRouteTree(CargoWindowState& state, const CargoDist::VehicleCargoKey key, const CargoDist::PacketList& packets)
+        {
+            auto found = state.routeTrees.find(key);
+            if (found == state.routeTrees.end())
+            {
+                const auto summaries = CargoDist::getRouteSummaries(packets);
+                found = state.routeTrees.emplace(key, CargoDist::getRouteTree(summaries, CargoRouteTree::getOrder(state.groupOrder))).first;
+                CargoRouteTree::sortTree(found->second, state.sortMode);
+            }
+            else if (state.sortMode == CargoRouteTree::SortMode::station)
+            {
+                CargoRouteTree::sortTree(found->second, state.sortMode);
+            }
+            return found->second;
+        }
+
+        static void appendCompartmentRows(CargoList& list, CargoWindowState& state, const CargoDist::VehicleCargoKey key, const Vehicles::VehicleCargo& cargo, int32_t& y, size_t& remainingRouteRows, size_t& remainingExpandedCompartments)
+        {
+            const auto* packets = CargoDist::getVehicleCargoConst(key);
+            const auto expandable = packets != nullptr && !packets->empty();
+            const auto expanded = expandable && state.expandedCompartments.contains(key);
+            list.rows.push_back({
+                .type = CargoRowType::compartment,
+                .y = y,
+                .cargoKey = key,
+                .cargo = cargo,
+                .expandable = expandable,
+                .expanded = expanded,
+            });
+            y += CargoRouteTree::kRowHeight;
+
+            if (!expanded)
+            {
+                return;
+            }
+
+            size_t omittedRows = 0;
+            std::vector<CargoRouteTree::Row> groupRows;
+            const auto maxGroupRows = remainingRouteRows > remainingExpandedCompartments ? remainingRouteRows - remainingExpandedCompartments : 0;
+            CargoRouteTree::appendRows(groupRows, getRouteTree(state, key, *packets), state.groupOrder, state.expandedGroups[key], maxGroupRows, omittedRows);
+            --remainingExpandedCompartments;
+            for (const auto& group : groupRows)
+            {
+                list.rows.push_back({
+                    .type = CargoRowType::group,
+                    .y = y,
+                    .cargoKey = key,
+                    .group = group,
+                });
+                y += CargoRouteTree::kRowHeight;
+            }
+            remainingRouteRows -= groupRows.size();
+            if (omittedRows != 0 && remainingRouteRows != 0)
+            {
+                list.rows.push_back({
+                    .type = CargoRowType::groupsOmitted,
+                    .y = y,
+                    .cargoKey = key,
+                    .groupsOmitted = omittedRows,
+                });
+                y += CargoRouteTree::kRowHeight;
+                --remainingRouteRows;
+            }
+        }
+
+        static CargoList getCargoList(Window& self)
+        {
+            CargoList list;
+            auto* head = Common::getVehicle(self);
+            if (head == nullptr)
+            {
+                return list;
+            }
+
+            auto& state = getWindowState(head->id);
+            Vehicles::Vehicle train{ *head };
+            constexpr auto kMaxScrollHeight = static_cast<size_t>(std::numeric_limits<int16_t>::max() - 1);
+            const auto baseHeight = std::min(train.cars.size() * self.rowHeight, kMaxScrollHeight);
+            auto remainingRouteRows = (kMaxScrollHeight - baseHeight) / CargoRouteTree::kRowHeight;
+            size_t remainingExpandedCompartments = 0;
+            for (const auto& car : train.cars)
+            {
+                const auto primaryKey = CargoDist::VehicleCargoKey{ car.body->id, CargoDist::VehicleCargoSlot::primary };
+                const auto secondaryKey = CargoDist::VehicleCargoKey{ car.front->id, CargoDist::VehicleCargoSlot::secondary };
+                const auto* primaryPackets = CargoDist::getVehicleCargoConst(primaryKey);
+                const auto* secondaryPackets = CargoDist::getVehicleCargoConst(secondaryKey);
+                remainingExpandedCompartments += car.body->primaryCargo.qty != 0 && primaryPackets != nullptr && !primaryPackets->empty() && state.expandedCompartments.contains(primaryKey);
+                remainingExpandedCompartments += car.front->secondaryCargo.qty != 0 && secondaryPackets != nullptr && !secondaryPackets->empty() && state.expandedCompartments.contains(secondaryKey);
+            }
+            int32_t y = 0;
+            for (const auto& car : train.cars)
+            {
+                const auto primaryKey = CargoDist::VehicleCargoKey{ car.body->id, CargoDist::VehicleCargoSlot::primary };
+                const auto secondaryKey = CargoDist::VehicleCargoKey{ car.front->id, CargoDist::VehicleCargoSlot::secondary };
+                const auto hasPrimary = car.body->primaryCargo.qty != 0;
+                const auto hasSecondary = car.front->secondaryCargo.qty != 0;
+                const auto* primaryPackets = CargoDist::getVehicleCargoConst(primaryKey);
+                const auto* secondaryPackets = CargoDist::getVehicleCargoConst(secondaryKey);
+                const auto primaryExpanded = hasPrimary && primaryPackets != nullptr && !primaryPackets->empty() && state.expandedCompartments.contains(primaryKey);
+                const auto secondaryExpanded = hasSecondary && secondaryPackets != nullptr && !secondaryPackets->empty() && state.expandedCompartments.contains(secondaryKey);
+                const auto carTop = y;
+
+                if (hasPrimary != hasSecondary && !primaryExpanded && !secondaryExpanded)
+                {
+                    y += 5;
+                }
+                if (hasPrimary)
+                {
+                    appendCompartmentRows(list, state, primaryKey, car.body->primaryCargo, y, remainingRouteRows, remainingExpandedCompartments);
+                }
+                if (hasSecondary)
+                {
+                    appendCompartmentRows(list, state, secondaryKey, car.front->secondaryCargo, y, remainingRouteRows, remainingExpandedCompartments);
+                }
+                if (!hasPrimary && !hasSecondary && car.body->primaryCargo.type != 0xFF)
+                {
+                    list.rows.push_back({
+                        .type = CargoRowType::empty,
+                        .y = y + 5,
+                    });
+                    y += 15;
+                }
+
+                const auto carHeight = std::max<int32_t>(self.rowHeight, y - carTop);
+                list.cars.push_back({ car, carTop, carHeight });
+                y = carTop + carHeight;
+            }
+            list.height = y;
+            return list;
+        }
+
+        static const CargoListRow* getRowAt(const CargoList& list, const int16_t y)
+        {
+            const auto found = std::find_if(list.rows.begin(), list.rows.end(), [y](const auto& row) { return y >= row.y && y < row.y + CargoRouteTree::kRowHeight; });
+            return found == list.rows.end() ? nullptr : &*found;
+        }
+
+        static const CargoCarRow* getCarAt(const CargoList& list, const int32_t y)
+        {
+            const auto found = std::find_if(list.cars.begin(), list.cars.end(), [y](const auto& row) { return y >= row.y && y < row.y + row.height; });
+            return found == list.cars.end() ? nullptr : &*found;
+        }
 
         static bool canRefit(Vehicles::VehicleHead* headVehicle)
         {
@@ -2293,6 +2527,15 @@ namespace OpenLoco::Ui::Windows::Vehicle
 
             auto object = ObjectManager::get<VehicleObject>(train.cars.firstCar.front->objectId);
             return (object->hasFlags(VehicleObjectFlags::refittable));
+        }
+
+        static void resizeDropdown(Window& self, const widx comboIndex, const widx buttonIndex, const int16_t right)
+        {
+            auto& combo = self.widgets[comboIndex];
+            combo.right = right;
+            auto& button = self.widgets[buttonIndex];
+            button.right = combo.right - 1;
+            button.left = button.right - 10;
         }
 
         // 0x004B3DDE
@@ -2321,6 +2564,8 @@ namespace OpenLoco::Ui::Windows::Vehicle
             self.widgets[Common::widx::caption].right = self.width - 2;
             self.widgets[Common::widx::closeButton].left = self.width - 15;
             self.widgets[Common::widx::closeButton].right = self.width - 3;
+            resizeDropdown(self, widx::groupBy, widx::groupByDropdown, self.width - 27);
+            resizeDropdown(self, widx::sortBy, widx::sortByDropdown, self.width - 27);
             self.widgets[widx::cargoList].right = self.width - 26;
             self.widgets[widx::cargoList].bottom = self.height - 27;
             self.widgets[widx::refit].right = self.width - 2;
@@ -2330,9 +2575,23 @@ namespace OpenLoco::Ui::Windows::Vehicle
             {
                 self.widgets[widx::refit].hidden = true;
                 self.widgets[widx::cargoList].right = self.width - 26 + 22;
+                resizeDropdown(self, widx::groupBy, widx::groupByDropdown, self.width - 4);
+                resizeDropdown(self, widx::sortBy, widx::sortByDropdown, self.width - 4);
             }
 
             Widget::leftAlignTabs(self, Common::widx::tabMain, Common::widx::tabRoute);
+
+            const auto& state = getWindowState(headVehicle->id);
+            {
+                auto& widget = self.widgets[widx::groupBy];
+                FormatArguments args{ widget.textArgs };
+                args.push(CargoRouteTree::getGroupOrderNames()[static_cast<size_t>(state.groupOrder)]);
+            }
+            {
+                auto& widget = self.widgets[widx::sortBy];
+                FormatArguments args{ widget.textArgs };
+                args.push(CargoRouteTree::getSortModeNames()[static_cast<size_t>(state.sortMode)]);
+            }
         }
 
         // 0x004B3F0D
@@ -2399,64 +2658,111 @@ namespace OpenLoco::Ui::Windows::Vehicle
             y += 10;
         }
 
+        static void drawCargoRow(Gfx::DrawingContext& drawingCtx, const CargoListRow& row, const StringId strFormat)
+        {
+            constexpr int16_t kCargoXPos = 24;
+            if (row.expandable)
+            {
+                CargoRouteTree::drawDisclosure(drawingCtx, kCargoXPos + 2, static_cast<int16_t>(row.y + 5), row.expanded);
+            }
+            auto y = static_cast<int16_t>(row.y + 1);
+            drawCargoText(drawingCtx, row.expandable ? kCargoXPos + 10 : kCargoXPos, y, strFormat, row.cargo.qty, row.cargo.type, row.cargo.townFrom);
+        }
+
+        static void drawGroupsOmitted(Window& self, Gfx::DrawingContext& drawingCtx, const CargoListRow& row)
+        {
+            auto tr = Gfx::TextRenderer(drawingCtx);
+            FormatArguments args{};
+            args.push<int32_t>(static_cast<int32_t>(std::min<size_t>(row.groupsOmitted, std::numeric_limits<int32_t>::max())));
+            const auto width = std::max<int32_t>(self.widgets[widx::cargoList].width() - 46, 0);
+            tr.drawStringLeftClipped({ 34, static_cast<int16_t>(row.y + 1) }, width, Colour::black, StringIds::station_cargo_groups_omitted, args);
+        }
+
         // 0x004B3F62
         static void drawScroll(Window& self, Gfx::DrawingContext& drawingCtx, [[maybe_unused]] const uint32_t i)
         {
-            auto tr = Gfx::TextRenderer(drawingCtx);
-
             drawingCtx.clearSingle(Colours::getShade(self.getColour(WindowColour::secondary).c(), 4));
-            auto* head = Common::getVehicle(self);
-            if (head == nullptr)
+            const auto list = getCargoList(self);
+            const auto& renderTarget = drawingCtx.currentRenderTarget();
+            constexpr int16_t kCargoXPos = 24;
+            for (const auto& carRow : list.cars)
             {
-                return;
-            }
-            Vehicles::Vehicle train{ *head };
-            int16_t y = 0;
-            for (auto& car : train.cars)
-            {
-                StringId strFormat = StringIds::black_stringid;
-                auto front = car.front;
-                auto body = car.body;
-
-                // Draw hover background if applicable
-                if (front->id == EntityId(self.rowHover))
+                if (carRow.y + carRow.height < renderTarget.y || carRow.y >= renderTarget.y + renderTarget.height)
                 {
-                    drawingCtx.fillRect(0, y, self.width, y + self.rowHeight - 1, enumValue(ExtColour::unk30), Gfx::RectFlags::transparent);
-                    strFormat = StringIds::wcolour2_stringid;
+                    continue;
                 }
 
-                constexpr auto kCargoXPos = 24;
-
-                // Get width of the drawing
-                auto width = getWidthVehicleInline(car);
-                // Actually draw it
-                drawVehicleInline(drawingCtx, car, Ui::Point(kCargoXPos - width, y + (self.rowHeight - 22) / 2), VehicleInlineMode::basic, VehiclePartsToDraw::bogies);
-                drawVehicleInline(drawingCtx, car, Ui::Point(kCargoXPos - width, y + (self.rowHeight - 22) / 2), VehicleInlineMode::basic, VehiclePartsToDraw::bodies);
-
-                if (body->primaryCargo.type != 0xFF)
+                if (carRow.car.front->id == EntityId(self.rowHover))
                 {
-                    int16_t cargoTextYPos = y + self.rowHeight / 2 - ((self.rowHeight - 22) / 2) - 10;
-                    if (front->secondaryCargo.qty != 0 || body->primaryCargo.qty != 0)
-                    {
-                        if (body->primaryCargo.qty == 0 || front->secondaryCargo.qty == 0)
-                        {
-                            cargoTextYPos += 5;
-                        }
-                        drawCargoText(drawingCtx, kCargoXPos, cargoTextYPos, strFormat, body->primaryCargo.qty, body->primaryCargo.type, body->primaryCargo.townFrom);
-                        drawCargoText(drawingCtx, kCargoXPos, cargoTextYPos, strFormat, front->secondaryCargo.qty, front->secondaryCargo.type, front->secondaryCargo.townFrom);
-                    }
-                    else
+                    drawingCtx.fillRect(0, carRow.y, kCargoXPos - 1, carRow.y + self.rowHeight - 1, enumValue(ExtColour::unk30), Gfx::RectFlags::transparent);
+                }
+
+                const auto width = getWidthVehicleInline(carRow.car);
+                const auto vehicleY = carRow.y + (self.rowHeight - 22) / 2;
+                drawVehicleInline(drawingCtx, carRow.car, Ui::Point(kCargoXPos - width, vehicleY), VehicleInlineMode::basic, VehiclePartsToDraw::bogies);
+                drawVehicleInline(drawingCtx, carRow.car, Ui::Point(kCargoXPos - width, vehicleY), VehicleInlineMode::basic, VehiclePartsToDraw::bodies);
+            }
+
+            auto tr = Gfx::TextRenderer(drawingCtx);
+            for (const auto& row : list.rows)
+            {
+                if (row.y + CargoRouteTree::kRowHeight < renderTarget.y)
+                {
+                    continue;
+                }
+                if (row.y >= renderTarget.y + renderTarget.height)
+                {
+                    break;
+                }
+
+                const auto* car = getCarAt(list, row.y);
+                const auto isHovered = car != nullptr && car->car.front->id == EntityId(self.rowHover);
+                const auto strFormat = isHovered ? StringIds::wcolour2_stringid : StringIds::black_stringid;
+                if (isHovered && (row.type == CargoRowType::compartment || row.type == CargoRowType::empty))
+                {
+                    drawingCtx.fillRect(kCargoXPos, row.y, self.widgets[widx::cargoList].width(), row.y + CargoRouteTree::kRowHeight - 1, enumValue(ExtColour::unk30), Gfx::RectFlags::transparent);
+                }
+                switch (row.type)
+                {
+                    case CargoRowType::compartment:
+                        drawCargoRow(drawingCtx, row, strFormat);
+                        break;
+                    case CargoRowType::group:
+                        CargoRouteTree::drawRow(drawingCtx, row.group, row.y, self.widgets[widx::cargoList].width(), kCargoXPos);
+                        break;
+                    case CargoRowType::groupsOmitted:
+                        drawGroupsOmitted(self, drawingCtx, row);
+                        break;
+                    case CargoRowType::empty:
                     {
                         FormatArguments args{};
                         args.push<StringId>(StringIds::cargo_empty);
-
-                        auto point = Point(kCargoXPos, cargoTextYPos + 5);
-                        tr.drawStringLeft(point, Colour::black, strFormat, args);
+                        tr.drawStringLeft({ kCargoXPos, static_cast<int16_t>(row.y + 1) }, Colour::black, strFormat, args);
+                        break;
                     }
                 }
-
-                y += self.rowHeight;
             }
+        }
+
+        static void updateScrollSize(Window& self, const uint8_t scrollIndex)
+        {
+            self.updateScrollWidgets();
+            auto& scrollArea = self.scrollAreas[scrollIndex];
+            const auto visibleHeight = self.widgets[widx::cargoList].height() - 2;
+            const auto maxOffset = std::max<int32_t>(scrollArea.contentHeight - visibleHeight, 0);
+            scrollArea.contentOffsetY = std::clamp<int32_t>(scrollArea.contentOffsetY, 0, maxOffset);
+            ScrollView::updateThumbs(self, widx::cargoList);
+        }
+
+        static void showDropdown(Window& self, const widx comboIndex, const std::span<const StringId> items, const size_t selected)
+        {
+            const auto& widget = self.widgets[comboIndex];
+            Dropdown::show(self.x + widget.left, self.y + widget.top, widget.width() - 4, widget.height(), self.getColour(WindowColour::secondary), items.size(), 0);
+            for (size_t i = 0; i < items.size(); ++i)
+            {
+                Dropdown::add(i, StringIds::dropdown_stringid, items[i]);
+            }
+            Dropdown::setItemSelected(selected);
         }
 
         // 0x004B41BD
@@ -2485,39 +2791,71 @@ namespace OpenLoco::Ui::Windows::Vehicle
         // 0x004B41E2
         static void onMouseDown(Window& self, const WidgetIndex_t i, const WidgetId id)
         {
-            switch (id)
+            const auto& state = getWindowState(EntityId(self.number));
+            if (id == Widx::kGroupByDropdown)
             {
-                case Widx::kRefit:
-                    onRefitButton(self, i, id);
-                    break;
+                showDropdown(self, widx::groupBy, CargoRouteTree::getGroupOrderNames(), static_cast<size_t>(state.groupOrder));
+            }
+            else if (id == Widx::kSortByDropdown)
+            {
+                showDropdown(self, widx::sortBy, CargoRouteTree::getSortModeNames(), static_cast<size_t>(state.sortMode));
+            }
+            else if (id == Widx::kRefit)
+            {
+                onRefitButton(self, i, id);
             }
         }
 
         // 0x004B41E9
         static void onDropdown(Window& self, [[maybe_unused]] const WidgetIndex_t i, const WidgetId id, const int16_t dropdownIndex)
         {
-            switch (id)
+            if (dropdownIndex < 0)
             {
-                case Widx::kRefit:
-                {
-                    if (dropdownIndex == -1)
-                    {
-                        break;
-                    }
-
-                    GameCommands::VehicleRefitArgs args{};
-                    args.head = static_cast<EntityId>(self.number);
-                    args.cargoType = Dropdown::getItemArgument(dropdownIndex, 3);
-
-                    if (Common::confirmComponentChange(args.head, StringIds::confirm_vehicle_component_refit_cargo_warning_title, StringIds::confirm_vehicle_component_refit_cargo_warning_message, StringIds::confirm_vehicle_component_refit_cargo_warning_confirm, false))
-                    {
-                        GameCommands::setErrorTitle(StringIds::cant_refit_vehicle);
-                        GameCommands::doCommand(args, GameCommands::Flags::apply);
-                    }
-
-                    break;
-                }
+                return;
             }
+
+            auto& state = getWindowState(EntityId(self.number));
+            if (id == Widx::kGroupByDropdown && static_cast<size_t>(dropdownIndex) < CargoRouteTree::getGroupOrderNames().size())
+            {
+                const auto groupOrder = static_cast<CargoRouteTree::GroupOrder>(dropdownIndex);
+                if (state.groupOrder == groupOrder)
+                {
+                    return;
+                }
+                state.groupOrder = groupOrder;
+                state.expandedGroups.clear();
+                state.routeTrees.clear();
+            }
+            else if (id == Widx::kSortByDropdown && static_cast<size_t>(dropdownIndex) < CargoRouteTree::getSortModeNames().size())
+            {
+                const auto sortMode = static_cast<CargoRouteTree::SortMode>(dropdownIndex);
+                if (state.sortMode == sortMode)
+                {
+                    return;
+                }
+                state.sortMode = sortMode;
+                state.routeTrees.clear();
+            }
+            else if (id == Widx::kRefit)
+            {
+                GameCommands::VehicleRefitArgs args{};
+                args.head = static_cast<EntityId>(self.number);
+                args.cargoType = Dropdown::getItemArgument(dropdownIndex, 3);
+
+                if (Common::confirmComponentChange(args.head, StringIds::confirm_vehicle_component_refit_cargo_warning_title, StringIds::confirm_vehicle_component_refit_cargo_warning_message, StringIds::confirm_vehicle_component_refit_cargo_warning_confirm, false))
+                {
+                    GameCommands::setErrorTitle(StringIds::cant_refit_vehicle);
+                    GameCommands::doCommand(args, GameCommands::Flags::apply);
+                }
+                return;
+            }
+            else
+            {
+                return;
+            }
+
+            updateScrollSize(self, 0);
+            self.invalidate();
         }
 
         static void onRefitButton(Window& self, const WidgetIndex_t wi, [[maybe_unused]] const WidgetId id)
@@ -2591,7 +2929,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
         // 0x004B4360
         static void getScrollSize(Ui::Window& self, [[maybe_unused]] const uint32_t scrollIndex, [[maybe_unused]] int32_t& scrollWidth, int32_t& scrollHeight)
         {
-            scrollHeight = static_cast<int32_t>(Common::getNumCars(self) * self.rowHeight);
+            scrollHeight = getCargoList(self).height;
         }
 
         static char* generateCargoTooltipDetails(char* buffer, const StringId cargoFormat, const uint8_t cargoType, const uint8_t maxCargo, const uint32_t acceptedCargoTypes)
@@ -2638,18 +2976,24 @@ namespace OpenLoco::Ui::Windows::Vehicle
         {
             Ui::ToolTip::setTooltipTimeout(2000);
             self.flags &= ~WindowFlags::notScrollView;
-            auto car = Common::getCarFromScrollView(self, y);
+            const auto list = getCargoList(self);
+            const auto* carRow = getCarAt(list, y);
             StringId tooltipFormat = StringIds::null;
             EntityId tooltipContent = EntityId::null;
-            if (car)
+            if (carRow != nullptr)
             {
                 tooltipFormat = StringIds::buffer_337;
-                tooltipContent = car->front->id;
+                tooltipContent = carRow->car.front->id;
                 if (EntityId(self.rowHover) != tooltipContent)
                 {
                     self.rowHover = enumValue(tooltipContent);
                     self.invalidate();
                 }
+            }
+            else if (self.rowHover != -1)
+            {
+                self.rowHover = -1;
+                self.invalidate();
             }
 
             char* buffer = const_cast<char*>(StringManager::getString(StringIds::buffer_337));
@@ -2673,16 +3017,78 @@ namespace OpenLoco::Ui::Windows::Vehicle
             Ui::ToolTip::set_52336E(true);
 
             {
-                auto vehicleObj = ObjectManager::get<VehicleObject>(car->front->objectId);
+                auto vehicleObj = ObjectManager::get<VehicleObject>(carRow->car.front->objectId);
                 FormatArguments args{};
                 args.push(vehicleObj->name);
                 buffer = StringManager::formatString(buffer, StringIds::cargo_capacity_tooltip, args);
             }
 
-            auto body = car->body;
-            auto front = car->front;
+            auto body = carRow->car.body;
+            auto front = carRow->car.front;
             buffer = generateCargoTooltipDetails(buffer, StringIds::cargo_capacity, body->primaryCargo.type, body->primaryCargo.maxQty, body->primaryCargo.acceptedTypes);
             buffer = generateCargoTooltipDetails(buffer, StringIds::cargo_capacity_plus, front->secondaryCargo.type, front->secondaryCargo.maxQty, front->secondaryCargo.acceptedTypes);
+        }
+
+        static bool isDisclosureHit(const CargoListRow& row, const int16_t x)
+        {
+            if (row.type == CargoRowType::compartment)
+            {
+                return row.expandable && x >= 26 && x <= 32;
+            }
+            return row.type == CargoRowType::group && CargoRouteTree::isDisclosureHit(row.group, x, 24);
+        }
+
+        static bool isStationLinkHit(Window& self, const CargoListRow& row, const int16_t x)
+        {
+            return row.type == CargoRowType::group && CargoRouteTree::isStationLinkHit(row.group, x, self.widgets[widx::cargoList].width(), 24);
+        }
+
+        static void onScrollMouseDown(Window& self, const int16_t x, const int16_t y, const uint8_t scrollIndex)
+        {
+            const auto list = getCargoList(self);
+            const auto* row = getRowAt(list, y);
+            if (row == nullptr)
+            {
+                return;
+            }
+
+            if (isDisclosureHit(*row, x))
+            {
+                auto& state = getWindowState(EntityId(self.number));
+                if (row->type == CargoRowType::compartment)
+                {
+                    if (state.expandedCompartments.erase(row->cargoKey) == 0)
+                    {
+                        state.expandedCompartments.insert(row->cargoKey);
+                    }
+                }
+                else
+                {
+                    auto& expandedGroups = state.expandedGroups[row->cargoKey];
+                    if (expandedGroups.erase(row->group.key) == 0)
+                    {
+                        expandedGroups.insert(row->group.key);
+                    }
+                }
+                updateScrollSize(self, scrollIndex);
+                self.invalidate();
+            }
+            else if (isStationLinkHit(self, *row, x))
+            {
+                CargoRouteTree::centreOnStation(row->group.station);
+            }
+        }
+
+        static CursorId cursor(Window& self, [[maybe_unused]] WidgetIndex_t widgetIndex, const WidgetId id, const int16_t x, const int16_t y, const CursorId fallback)
+        {
+            if (id != Widx::kCargoList)
+            {
+                return fallback;
+            }
+
+            const auto list = getCargoList(self);
+            const auto* row = getRowAt(list, y);
+            return row != nullptr && (isDisclosureHit(*row, x) || isStationLinkHit(self, *row, x)) ? CursorId::handPointer : fallback;
         }
 
         // 0x004B4607
@@ -2690,10 +3096,12 @@ namespace OpenLoco::Ui::Windows::Vehicle
         {
             self.frameNo += 1;
             self.callPrepareDraw();
-            WindowManager::invalidateWidget(self.type, self.number, 6);
+            updateScrollSize(self, 0);
+            self.invalidate();
         }
 
         static constexpr WindowEventList kEvents = {
+            .onClose = Common::onClose,
             .onMouseUp = onMouseUp,
             .onMouseDown = onMouseDown,
             .onDropdown = onDropdown,
@@ -2701,9 +3109,11 @@ namespace OpenLoco::Ui::Windows::Vehicle
             .onHandleInputBegin = listWindowOnHandleInputBegin,
             .onHandleInputEnd = listWindowOnHandleInputEnd,
             .getScrollSize = getScrollSize,
+            .scrollMouseDown = onScrollMouseDown,
             .scrollMouseOver = scrollMouseOver,
             .textInput = Common::textInput,
             .tooltip = tooltip,
+            .cursor = cursor,
             .prepareDraw = prepareDraw,
             .draw = draw,
             .drawScroll = drawScroll,
@@ -2890,6 +3300,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
         }
 
         static constexpr WindowEventList kEvents = {
+            .onClose = Common::onClose,
             .onMouseUp = onMouseUp,
             .onUpdate = onUpdate,
             .textInput = Common::textInput,
@@ -2939,6 +3350,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
         // 0x004B509B
         static void close(Window& self)
         {
+            Cargo::eraseWindowState(EntityId(self.number));
             resetSharedOrderDropdown(EntityId(self.number));
             if (ToolManager::isToolActive(self.type, self.number))
             {
@@ -4617,6 +5029,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
         // NB: not a vanilla function
         static void onClose(Window& self)
         {
+            Cargo::eraseWindowState(EntityId(self.number));
             if (ToolManager::isToolActive(WindowType::vehicle, self.number))
             {
                 ToolManager::toolCancel();

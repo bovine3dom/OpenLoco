@@ -92,7 +92,24 @@ namespace OpenLoco::CargoDist
         auto operator<=>(const CargoRouteSummary&) const = default;
     };
 
+    enum class CargoRouteField : uint8_t
+    {
+        origin,
+        destination,
+        nextHop,
+    };
+
+    struct CargoRouteNode
+    {
+        StationId station = StationId::null;
+        uint64_t quantity{};
+        std::vector<CargoRouteNode> children;
+
+        auto operator<=>(const CargoRouteNode&) const = default;
+    };
+
     std::vector<CargoRouteSummary> getRouteSummaries(const PacketList& packets);
+    std::vector<CargoRouteNode> getRouteTree(std::span<const CargoRouteSummary> summaries, const std::array<CargoRouteField, 3>& order);
 
     enum class VehicleCargoSlot : uint8_t
     {

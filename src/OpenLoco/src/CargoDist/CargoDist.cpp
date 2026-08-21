@@ -17,6 +17,37 @@ namespace OpenLoco::CargoDist
             return static_cast<uint16_t>(id);
         }
 
+        struct CargoRouteNodeBuilder
+        {
+            uint64_t quantity{};
+            std::map<StationId, CargoRouteNodeBuilder> children;
+        };
+
+        StationId getRouteField(const CargoRouteSummary& route, CargoRouteField field)
+        {
+            switch (field)
+            {
+                case CargoRouteField::origin:
+                    return route.origin;
+                case CargoRouteField::destination:
+                    return route.destination;
+                case CargoRouteField::nextHop:
+                    return route.nextHop;
+            }
+            return StationId::null;
+        }
+
+        std::vector<CargoRouteNode> makeRouteTree(const std::map<StationId, CargoRouteNodeBuilder>& builders)
+        {
+            std::vector<CargoRouteNode> nodes;
+            nodes.reserve(builders.size());
+            for (const auto& [station, builder] : builders)
+            {
+                nodes.push_back({ station, builder.quantity, makeRouteTree(builder.children) });
+            }
+            return nodes;
+        }
+
         template<typename TOption>
         struct AllocationCandidate
         {
@@ -239,6 +270,30 @@ namespace OpenLoco::CargoDist
             summaries.push_back({ origin, destination, nextHop, quantity });
         }
         return summaries;
+    }
+
+    std::vector<CargoRouteNode> getRouteTree(const std::span<const CargoRouteSummary> summaries, const std::array<CargoRouteField, 3>& order)
+    {
+        constexpr std::array kFields = { CargoRouteField::origin, CargoRouteField::destination, CargoRouteField::nextHop };
+        if (!std::is_permutation(order.begin(), order.end(), kFields.begin()))
+        {
+            return {};
+        }
+
+        std::map<StationId, CargoRouteNodeBuilder> roots;
+        for (const auto& route : summaries)
+        {
+            auto* level = &roots;
+            for (const auto field : order)
+            {
+                auto& node = (*level)[getRouteField(route, field)];
+                node.quantity = route.quantity > std::numeric_limits<uint64_t>::max() - node.quantity
+                    ? std::numeric_limits<uint64_t>::max()
+                    : node.quantity + route.quantity;
+                level = &node.children;
+            }
+        }
+        return makeRouteTree(roots);
     }
 
     PacketList PacketList::fromPackets(Container packets)

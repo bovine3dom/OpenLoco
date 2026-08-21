@@ -273,6 +273,7 @@ set(OLOCO_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Tutorial.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Ui.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Ui/Chart.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/Ui/CargoRouteTree.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Ui/Cursor.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Ui/Dropdown.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Ui/LastMapWindowAttributes.cpp"

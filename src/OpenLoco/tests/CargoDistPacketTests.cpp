@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT
+#include "Ui/CargoRouteTree.h"
 #include <OpenLoco/CargoDist/CargoDist.h>
 
 #include <algorithm>
 #include <gtest/gtest.h>
 #include <limits>
+#include <set>
 
 using namespace OpenLoco;
 using namespace OpenLoco::CargoDist;
@@ -113,6 +115,98 @@ TEST(CargoDistPackets, RouteSummaryQuantityDoesNotWrap)
 
     ASSERT_EQ(summaries.size(), 1U);
     EXPECT_EQ(summaries.front().quantity, static_cast<uint64_t>(kPacketCount) * kPacketQuantity);
+}
+
+TEST(CargoDistPackets, GroupsRouteSummariesInRequestedOrder)
+{
+    const std::vector summaries = {
+        CargoRouteSummary{ station(1), station(4), station(2), 5 },
+        CargoRouteSummary{ station(1), station(4), station(3), 4 },
+        CargoRouteSummary{ station(1), StationId::null, StationId::null, 1 },
+        CargoRouteSummary{ station(2), station(4), station(3), 5 },
+    };
+    constexpr std::array order = {
+        CargoRouteField::origin,
+        CargoRouteField::destination,
+        CargoRouteField::nextHop,
+    };
+
+    const auto tree = getRouteTree(summaries, order);
+
+    EXPECT_EQ(tree, (std::vector<CargoRouteNode>{
+                        { station(1), 10, {
+                                              { station(4), 9, { { station(2), 5, {} }, { station(3), 4, {} } } },
+                                              { StationId::null, 1, { { StationId::null, 1, {} } } },
+                                          } },
+                        { station(2), 5, { { station(4), 5, { { station(3), 5, {} } } } } },
+                    }));
+
+    constexpr std::array destinationFirst = {
+        CargoRouteField::destination,
+        CargoRouteField::origin,
+        CargoRouteField::nextHop,
+    };
+    const auto destinationTree = getRouteTree(summaries, destinationFirst);
+    EXPECT_EQ(destinationTree, (std::vector<CargoRouteNode>{
+                                   { station(4), 14, {
+                                                         { station(1), 9, { { station(2), 5, {} }, { station(3), 4, {} } } },
+                                                         { station(2), 5, { { station(3), 5, {} } } },
+                                                     } },
+                                   { StationId::null, 1, { { station(1), 1, { { StationId::null, 1, {} } } } } },
+                               }));
+
+    constexpr std::array invalidOrder = {
+        CargoRouteField::origin,
+        CargoRouteField::origin,
+        CargoRouteField::nextHop,
+    };
+    EXPECT_TRUE(getRouteTree(summaries, invalidOrder).empty());
+}
+
+TEST(CargoDistPackets, RouteTreeQuantityDoesNotWrap)
+{
+    const std::vector summaries = {
+        CargoRouteSummary{ station(1), station(2), station(2), std::numeric_limits<uint64_t>::max() },
+        CargoRouteSummary{ station(1), station(2), station(2), 1 },
+    };
+    constexpr std::array order = {
+        CargoRouteField::origin,
+        CargoRouteField::destination,
+        CargoRouteField::nextHop,
+    };
+
+    const auto tree = getRouteTree(summaries, order);
+
+    constexpr auto kMax = std::numeric_limits<uint64_t>::max();
+    EXPECT_EQ(tree, (std::vector<CargoRouteNode>{ { station(1), kMax, { { station(2), kMax, { { station(2), kMax, {} } } } } } }));
+}
+
+TEST(CargoRouteTree, FlattensExpandedGroupsWithinRowLimit)
+{
+    const std::vector<CargoRouteNode> tree = {
+        { station(1), 10, { { station(2), 10, { { station(3), 10, {} } } } } },
+        { station(4), 5, {} },
+    };
+    Ui::CargoRouteTree::GroupKey sourceKey{};
+    sourceKey.depth = 1;
+    sourceKey.stations[0] = station(1);
+    auto destinationKey = sourceKey;
+    destinationKey.depth = 2;
+    destinationKey.stations[1] = station(2);
+    const std::set expandedGroups = { sourceKey, destinationKey };
+
+    std::vector<Ui::CargoRouteTree::Row> rows;
+    size_t omittedRows = 0;
+    Ui::CargoRouteTree::appendRows(rows, tree, Ui::CargoRouteTree::GroupOrder::sourceDestinationVia, expandedGroups, 2, omittedRows);
+
+    ASSERT_EQ(rows.size(), 2U);
+    EXPECT_EQ(rows[0].station, station(1));
+    EXPECT_EQ(rows[0].field, CargoRouteField::origin);
+    EXPECT_TRUE(rows[0].expanded);
+    EXPECT_EQ(rows[1].station, station(2));
+    EXPECT_EQ(rows[1].field, CargoRouteField::destination);
+    EXPECT_TRUE(rows[1].expanded);
+    EXPECT_EQ(omittedRows, 2U);
 }
 
 TEST(CargoDistPackets, KeepsServicePlansDistinct)

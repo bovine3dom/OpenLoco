@@ -2232,6 +2232,25 @@ namespace OpenLoco::StringIds
     constexpr StringId station_cargo_route_via_destination_pending = 2520;
     constexpr StringId station_cargo_route_awaiting_route = 2521;
     constexpr StringId station_cargo_routes_omitted = 2522;
+    constexpr StringId cargo_group_by = 2523;
+    constexpr StringId cargo_sort_by = 2524;
+    constexpr StringId cargo_group_source_via_destination = 2525;
+    constexpr StringId cargo_group_source_destination_via = 2526;
+    constexpr StringId cargo_group_via_source_destination = 2527;
+    constexpr StringId cargo_group_via_destination_source = 2528;
+    constexpr StringId cargo_group_destination_source_via = 2529;
+    constexpr StringId cargo_group_destination_via_source = 2530;
+    constexpr StringId cargo_sort_station = 2531;
+    constexpr StringId cargo_sort_amount_waiting = 2532;
+    constexpr StringId station_cargo_group_source = 2533;
+    constexpr StringId station_cargo_group_source_unknown = 2534;
+    constexpr StringId station_cargo_group_destination = 2535;
+    constexpr StringId station_cargo_group_destination_pending = 2536;
+    constexpr StringId station_cargo_group_via = 2537;
+    constexpr StringId station_cargo_group_awaiting_route = 2538;
+    constexpr StringId station_cargo_groups_omitted = 2539;
+    constexpr StringId tooltip_cargo_group_by = 2540;
+    constexpr StringId tooltip_cargo_sort_by = 2541;
 
     constexpr StringId temporary_object_load_str_0 = 8192;
     constexpr StringId temporary_object_load_str_1 = 8193;
