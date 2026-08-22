@@ -4,6 +4,7 @@
 #include <OpenLoco/GameCommands/Track/RemoveSignal.h>
 #include <OpenLoco/GameCommands/Track/RemoveTrack.h>
 #include <OpenLoco/GameState.h>
+#include <OpenLoco/Map/MapSelection.h>
 #include <OpenLoco/Map/RoadElement.h>
 #include <OpenLoco/Map/SignalElement.h>
 #include <OpenLoco/Map/StationElement.h>
@@ -116,6 +117,7 @@ namespace
         void TearDown() override
         {
             SignalConflicts::clearPreview();
+            OpenLoco::World::resetMapSelectionFlag(OpenLoco::World::MapSelectionFlags::unk_04);
             OpenLoco::GameCommands::setUpdatingCompanyId(_previousUpdatingCompany);
             OpenLoco::EntityManager::reset();
             OpenLoco::Vehicles::OrderManager::reset();
@@ -1392,20 +1394,43 @@ TEST_F(PathSignalsTest, SkipsWaypointWhenReferencedTrackPieceWasRebuilt)
     OpenLoco::Vehicles::OrderManager::insertOrder(train, 2 * sizeof(staleWaypoint), &modifier);
     OpenLoco::Vehicles::OrderManager::insertOrder(train, 2 * sizeof(staleWaypoint) + sizeof(modifier), &nextOrder);
 
+    EXPECT_EQ(OpenLoco::Vehicles::OrderManager::getRailWaypointStatus(*train, staleWaypoint), OpenLoco::Vehicles::OrderManager::RailWaypointStatus::rebuilt);
     train->var_52 = 1;
     EXPECT_FALSE(OpenLoco::Vehicles::OrderManager::trySkipRebuiltRailWaypoint(*train));
     train->var_52 = 0;
     train->var_53 = 1;
+    EXPECT_EQ(OpenLoco::Vehicles::OrderManager::getRailWaypointStatus(*train, staleWaypoint), OpenLoco::Vehicles::OrderManager::RailWaypointStatus::missing);
     EXPECT_FALSE(OpenLoco::Vehicles::OrderManager::trySkipRebuiltRailWaypoint(*train));
     auto* replacementTrack = getTrack(kFirstPos, 2);
     ASSERT_NE(replacementTrack, nullptr);
     replacementTrack->setMod(0, true);
+    EXPECT_EQ(OpenLoco::Vehicles::OrderManager::getRailWaypointStatus(*train, staleWaypoint), OpenLoco::Vehicles::OrderManager::RailWaypointStatus::rebuilt);
     train->unbunchingLastDepartureTick = 1234;
     train->unbunchingState = 5678;
     train->sub_4ACEE7(0xD4CB00, 0xD4CB00, false);
     EXPECT_EQ(train->currentOrder, 2 * sizeof(staleWaypoint) + sizeof(modifier));
     EXPECT_EQ(train->unbunchingLastDepartureTick, 1234U);
     EXPECT_EQ(train->unbunchingState, 5678U);
+}
+
+TEST_F(PathSignalsTest, HighlightsBrokenWaypointsInRouteFrames)
+{
+    addTrack(kFirstPos, 2, 0);
+    auto* train = createTrain(kFirstPos, kTurnNorth);
+    ASSERT_NE(train, nullptr);
+    const OpenLoco::Vehicles::OrderRouteWaypoint staleWaypoint{ toTileSpace(kFirstPos), kFirstPos.z / 8, 0, 0 };
+    const OpenLoco::Vehicles::OrderRouteWaypoint validWaypoint{ toTileSpace(kFirstPos), kFirstPos.z / 8, 0, 2 };
+    OpenLoco::Vehicles::OrderManager::insertOrder(train, 0, &staleWaypoint);
+    OpenLoco::Vehicles::OrderManager::insertOrder(train, sizeof(staleWaypoint), &validWaypoint);
+
+    OpenLoco::Vehicles::OrderManager::generateNumDisplayFrames(train);
+    const auto frames = OpenLoco::Vehicles::OrderManager::displayFrames();
+    ASSERT_EQ(frames.size(), 2);
+    EXPECT_EQ(OpenLoco::Vehicles::OrderManager::getNumDisplayFrameColour(frames[0]), OpenLoco::Colour::red);
+    EXPECT_EQ(OpenLoco::Vehicles::OrderManager::getNumDisplayFrameColour(frames[1]), OpenLoco::Colour::white);
+
+    addTrack(kFirstPos, 0, 0);
+    EXPECT_EQ(OpenLoco::Vehicles::OrderManager::getNumDisplayFrameColour(frames[0]), OpenLoco::Colour::white);
 }
 
 TEST_F(PathSignalsTest, KeepsWaypointWhenReferencedTrackPieceExists)
@@ -1416,6 +1441,7 @@ TEST_F(PathSignalsTest, KeepsWaypointWhenReferencedTrackPieceExists)
     const OpenLoco::Vehicles::OrderRouteWaypoint waypoint{ toTileSpace(kFirstPos), kFirstPos.z / 8, 0, 0 };
     OpenLoco::Vehicles::OrderManager::insertOrder(train, 0, &waypoint);
 
+    EXPECT_EQ(OpenLoco::Vehicles::OrderManager::getRailWaypointStatus(*train, waypoint), OpenLoco::Vehicles::OrderManager::RailWaypointStatus::valid);
     EXPECT_FALSE(OpenLoco::Vehicles::OrderManager::trySkipRebuiltRailWaypoint(*train));
     EXPECT_EQ(train->currentOrder, 0);
 }
@@ -1431,12 +1457,14 @@ TEST_F(PathSignalsTest, HandlesWaypointReplacedByDescendingSlope)
     const OpenLoco::Vehicles::OrderStopAt nextOrder{ OpenLoco::StationId(1) };
     OpenLoco::Vehicles::OrderManager::insertOrder(staleTrain, 0, &staleWaypoint);
     OpenLoco::Vehicles::OrderManager::insertOrder(staleTrain, sizeof(staleWaypoint), &nextOrder);
+    EXPECT_EQ(OpenLoco::Vehicles::OrderManager::getRailWaypointStatus(*staleTrain, staleWaypoint), OpenLoco::Vehicles::OrderManager::RailWaypointStatus::rebuilt);
     EXPECT_TRUE(OpenLoco::Vehicles::OrderManager::trySkipRebuiltRailWaypoint(*staleTrain));
 
     auto* validTrain = createTrain(kFirstPos, kSlopeTaD);
     ASSERT_NE(validTrain, nullptr);
     const OpenLoco::Vehicles::OrderRouteWaypoint validWaypoint{ toTileSpace(kFirstPos), kFirstPos.z / 8, 0, kSlopeTrackId };
     OpenLoco::Vehicles::OrderManager::insertOrder(validTrain, 0, &validWaypoint);
+    EXPECT_EQ(OpenLoco::Vehicles::OrderManager::getRailWaypointStatus(*validTrain, validWaypoint), OpenLoco::Vehicles::OrderManager::RailWaypointStatus::valid);
     EXPECT_FALSE(OpenLoco::Vehicles::OrderManager::trySkipRebuiltRailWaypoint(*validTrain));
 }
 
@@ -1449,9 +1477,11 @@ TEST_F(PathSignalsTest, KeepsWaypointWhenReplacementIsMissingOrAmbiguous)
     OpenLoco::Vehicles::OrderManager::insertOrder(train, 0, &staleWaypoint);
     OpenLoco::Vehicles::OrderManager::insertOrder(train, sizeof(staleWaypoint), &nextOrder);
 
+    EXPECT_EQ(OpenLoco::Vehicles::OrderManager::getRailWaypointStatus(*train, staleWaypoint), OpenLoco::Vehicles::OrderManager::RailWaypointStatus::missing);
     EXPECT_FALSE(OpenLoco::Vehicles::OrderManager::trySkipRebuiltRailWaypoint(*train));
     addTrack(kFirstPos, 2, 0);
     addTrack(kFirstPos, 8, 0);
+    EXPECT_EQ(OpenLoco::Vehicles::OrderManager::getRailWaypointStatus(*train, staleWaypoint), OpenLoco::Vehicles::OrderManager::RailWaypointStatus::ambiguous);
     EXPECT_FALSE(OpenLoco::Vehicles::OrderManager::trySkipRebuiltRailWaypoint(*train));
     EXPECT_EQ(train->currentOrder, 0);
 }

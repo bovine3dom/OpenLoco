@@ -4859,6 +4859,11 @@ namespace OpenLoco::Ui::Windows::Vehicle
             {
                 int16_t y = rowNum * lineHeight;
                 auto strFormat = StringIds::black_stringid;
+                const auto* waypoint = order.as<Vehicles::OrderRouteWaypoint>();
+                if (waypoint != nullptr && Vehicles::OrderManager::getRailWaypointStatus(*head, *waypoint) != Vehicles::OrderManager::RailWaypointStatus::valid)
+                {
+                    strFormat = StringIds::red_stringid;
+                }
                 if (self.orderTableIndex == rowNum)
                 {
                     drawingCtx.fillRect(0, y, self.width, y + 9, PaletteIndex::black0, Gfx::RectFlags::none);

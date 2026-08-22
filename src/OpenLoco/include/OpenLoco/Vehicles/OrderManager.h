@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Graphics/Colour.h"
 #include "LabelFrame.h"
 #include "Types.hpp"
 #include "Vehicles/Orders.h"
@@ -108,11 +109,20 @@ namespace OpenLoco::Vehicles
 
 namespace OpenLoco::Vehicles::OrderManager
 {
+    enum class RailWaypointStatus : uint8_t
+    {
+        valid,
+        rebuilt,
+        missing,
+        ambiguous,
+    };
+
     struct NumDisplayFrame
     {
         uint32_t orderOffset; // 0x0
         LabelFrame frame;     // 0x4
         uint8_t lineNumber;   // 0x24
+        EntityId vehicleId;
     };
 
     Order* orders();
@@ -137,12 +147,14 @@ namespace OpenLoco::Vehicles::OrderManager
     void freeOrders(VehicleHead* const head);
     void allocateOrders(VehicleHead& head);
 
-    std::pair<World::Pos3, std::string> generateOrderUiStringAndLoc(uint32_t orderOffset, uint8_t orderNum);
+    std::pair<World::Pos3, std::string> generateOrderUiStringAndLoc(uint32_t orderOffset, uint8_t orderNum, Colour colour);
     void generateNumDisplayFrames(Vehicles::VehicleHead* head);
     void clearNumDisplayFrames();
     std::span<const NumDisplayFrame> displayFrames();
+    Colour getNumDisplayFrameColour(const NumDisplayFrame& frame);
     uint16_t reverseVehicleOrderTable(uint32_t tableOffset, uint16_t orderOfInterest);
     uint8_t swapAdjacentOrders(Order& a, Order& b);
+    RailWaypointStatus getRailWaypointStatus(const VehicleHead& head, const OrderRouteWaypoint& waypoint);
     bool trySkipRebuiltRailWaypoint(VehicleHead& head);
     void removeOrdersForStation(const StationId stationId);
     void fixCorruptWaypointOrders();

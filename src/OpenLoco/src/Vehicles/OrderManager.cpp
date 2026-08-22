@@ -419,12 +419,12 @@ namespace OpenLoco::Vehicles::OrderManager
     }
 
     // 0x00470B76
-    std::pair<World::Pos3, std::string> generateOrderUiStringAndLoc(uint32_t orderOffset, uint8_t orderNum)
+    std::pair<World::Pos3, std::string> generateOrderUiStringAndLoc(uint32_t orderOffset, uint8_t orderNum, Colour colour)
     {
         std::stringstream ss;
         ss << ControlCodes::inlineSpriteStr;
 
-        auto imageId = Gfx::recolour(ImageIds::getNumberCircle(orderNum), Colour::white);
+        auto imageId = Gfx::recolour(ImageIds::getNumberCircle(orderNum), colour);
         ss.write(reinterpret_cast<const char*>(&imageId), 4);
         OrderRingView orderRing(orderOffset);
         auto order = orderRing.begin();
@@ -496,19 +496,19 @@ namespace OpenLoco::Vehicles::OrderManager
         Gfx::invalidateScreen();
         _displayFrames.clear();
         auto orders = Vehicles::OrderRingView(head->orderTableOffset);
-        uint8_t i = 0;
         for (auto& order : orders)
         {
-            if (!order.hasFlags(Vehicles::OrderFlags::HasNumber))
+            if (!order.hasFlags(OrderFlags::HasNumber))
             {
                 continue;
             }
-            NumDisplayFrame newFrame;
+            NumDisplayFrame newFrame{};
             newFrame.orderOffset = order.getOffset();
+            newFrame.vehicleId = head->id;
 
             auto lineNumber = 0;
-            auto* stationOrder = order.as<Vehicles::OrderStation>();
-            auto* waypointOrder = order.as<Vehicles::OrderRouteWaypoint>();
+            auto* stationOrder = order.as<OrderStation>();
+            auto* waypointOrder = order.as<OrderRouteWaypoint>();
             if (stationOrder != nullptr)
             {
                 lineNumber++; // station labels start on line 0 so add 1 for the number
@@ -542,10 +542,9 @@ namespace OpenLoco::Vehicles::OrderManager
             // For some reason save only a byte when this could in theory be larger
             newFrame.lineNumber = static_cast<uint8_t>(lineNumber);
             _displayFrames.push_back(newFrame);
-            i++;
         }
 
-        i = 1;
+        uint8_t i = 1;
         for (auto& unk : _displayFrames)
         {
             auto order = Vehicles::OrderRingView(unk.orderOffset, 0).begin();
@@ -554,7 +553,7 @@ namespace OpenLoco::Vehicles::OrderManager
                 continue;
             }
 
-            auto [loc, str] = generateOrderUiStringAndLoc(order->getOffset(), i);
+            auto [loc, str] = generateOrderUiStringAndLoc(order->getOffset(), i, Colour::white);
             const auto pos = World::gameToScreen(loc, Ui::WindowManager::getCurrentRotation());
             auto stringWidth = Gfx::TextRenderer::getStringWidth(Gfx::Font::medium_bold, str.c_str());
             for (auto level = ZoomLevel::min; level <= ZoomLevel::max; ++level)
@@ -653,6 +652,72 @@ namespace OpenLoco::Vehicles::OrderManager
         return lengthOrderB;
     }
 
+    RailWaypointStatus getRailWaypointStatus(const VehicleHead& head, const OrderRouteWaypoint& waypoint)
+    {
+        if (head.mode != TransportMode::rail)
+        {
+            return RailWaypointStatus::valid;
+        }
+
+        const auto waypointPos = waypoint.getWaypoint();
+        const auto waypointTaD = (waypoint.getTrackId() << 3) | waypoint.getDirection();
+        std::optional<uint16_t> replacement;
+        bool ambiguous = false;
+        for (const auto& entry : World::TileManager::get(waypointPos))
+        {
+            const auto* track = entry.as<World::TrackElement>();
+            if (track == nullptr
+                || entry.isGhost()
+                || entry.isAiAllocated()
+                || track->sequenceIndex() != 0
+                || track->owner() != head.owner
+                || track->trackObjectId() != head.trackType
+                || (track->mods() & head.var_53) != head.var_53
+                || track->rotation() != waypoint.getDirection())
+            {
+                continue;
+            }
+            const auto& firstPiece = World::TrackData::getTrackPiece(track->trackId()).front();
+            const auto startZ = track->baseHeight() - firstPiece.z;
+            if (startZ != waypointPos.z)
+            {
+                continue;
+            }
+
+            const auto candidate = static_cast<uint16_t>((track->trackId() << 3) | track->rotation());
+            if (candidate == waypointTaD)
+            {
+                return RailWaypointStatus::valid;
+            }
+            ambiguous |= replacement.has_value() && *replacement != candidate;
+            replacement = candidate;
+        }
+        if (ambiguous)
+        {
+            return RailWaypointStatus::ambiguous;
+        }
+        return replacement.has_value() ? RailWaypointStatus::rebuilt : RailWaypointStatus::missing;
+    }
+
+    Colour getNumDisplayFrameColour(const NumDisplayFrame& frame)
+    {
+        const auto* head = EntityManager::get<VehicleHead>(frame.vehicleId);
+        if (head == nullptr || frame.orderOffset < head->orderTableOffset)
+        {
+            return Colour::white;
+        }
+        const auto relativeOffset = frame.orderOffset - head->orderTableOffset;
+        if (!isOrderOffsetValid(*head, relativeOffset))
+        {
+            return Colour::white;
+        }
+
+        const auto* waypoint = orders()[frame.orderOffset].as<OrderRouteWaypoint>();
+        return waypoint != nullptr && getRailWaypointStatus(*head, *waypoint) != RailWaypointStatus::valid
+            ? Colour::red
+            : Colour::white;
+    }
+
     bool trySkipRebuiltRailWaypoint(VehicleHead& head)
     {
         if (head.mode != TransportMode::rail || head.var_52 == 1)
@@ -660,60 +725,19 @@ namespace OpenLoco::Vehicles::OrderManager
             return false;
         }
 
-        const auto isRebuiltWaypoint = [&head](const Order& order) {
-            const auto* waypoint = order.as<OrderRouteWaypoint>();
-            if (waypoint == nullptr)
-            {
-                return false;
-            }
-
-            const auto waypointPos = waypoint->getWaypoint();
-            const auto waypointTaD = (waypoint->getTrackId() << 3) | waypoint->getDirection();
-            // Only infer a rebuild when one compatible replacement occupies the same track origin.
-            std::optional<uint16_t> replacement;
-            bool ambiguous = false;
-            for (const auto& entry : World::TileManager::get(waypointPos))
-            {
-                const auto* track = entry.as<World::TrackElement>();
-                if (track == nullptr
-                    || entry.isGhost()
-                    || entry.isAiAllocated()
-                    || track->sequenceIndex() != 0
-                    || track->owner() != head.owner
-                    || track->trackObjectId() != head.trackType
-                    || (track->mods() & head.var_53) != head.var_53
-                    || track->rotation() != waypoint->getDirection())
-                {
-                    continue;
-                }
-                const auto& firstPiece = World::TrackData::getTrackPiece(track->trackId()).front();
-                const auto startZ = track->baseHeight() - firstPiece.z;
-                if (startZ != waypointPos.z)
-                {
-                    continue;
-                }
-
-                const auto candidate = static_cast<uint16_t>((track->trackId() << 3) | track->rotation());
-                if (candidate == waypointTaD)
-                {
-                    return false;
-                }
-                ambiguous |= replacement.has_value() && *replacement != candidate;
-                replacement = candidate;
-            }
-            return replacement.has_value() && !ambiguous;
-        };
-
         const auto orders = OrderRingView(head.orderTableOffset, head.currentOrder);
         auto curOrder = orders.begin();
-        if (!isRebuiltWaypoint(*curOrder))
+        const auto* waypoint = curOrder->as<OrderRouteWaypoint>();
+        if (waypoint == nullptr || getRailWaypointStatus(head, *waypoint) != RailWaypointStatus::rebuilt)
         {
             return false;
         }
 
         for (++curOrder; curOrder != orders.end(); ++curOrder)
         {
-            if (curOrder->hasFlags(OrderFlags::IsRoutable) && !isRebuiltWaypoint(*curOrder))
+            const auto* nextWaypoint = curOrder->as<OrderRouteWaypoint>();
+            const auto isRebuiltWaypoint = nextWaypoint != nullptr && getRailWaypointStatus(head, *nextWaypoint) == RailWaypointStatus::rebuilt;
+            if (curOrder->hasFlags(OrderFlags::IsRoutable) && !isRebuiltWaypoint)
             {
                 head.currentOrder = curOrder->getOffset() - head.orderTableOffset;
                 Ui::WindowManager::invalidateOrderPageByVehicleNumber(enumValue(head.id));

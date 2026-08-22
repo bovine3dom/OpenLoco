@@ -108,7 +108,8 @@ namespace OpenLoco::Ui
             {
                 continue;
             }
-            auto res = Vehicles::OrderManager::generateOrderUiStringAndLoc(orderFrame.orderOffset, orderNum);
+            const auto colour = Vehicles::OrderManager::getNumDisplayFrameColour(orderFrame);
+            auto res = Vehicles::OrderManager::generateOrderUiStringAndLoc(orderFrame.orderOffset, orderNum, colour);
             auto& orderString = res.second;
             if (orderString.empty())
             {
@@ -118,7 +119,7 @@ namespace OpenLoco::Ui
             tr.setCurrentFont(Gfx::Font::medium_normal);
 
             auto point = Point(orderFrame.frame.left[zoom.index()] + 1, orderFrame.frame.top[zoom.index()]);
-            tr.drawString(point, AdvancedColour(Colour::white).outline(), const_cast<char*>(orderString.c_str()));
+            tr.drawString(point, AdvancedColour(colour).outline(), const_cast<char*>(orderString.c_str()));
         }
     }
 
@@ -223,7 +224,8 @@ namespace OpenLoco::Ui
                 }
 
                 orderNum++;
-                auto orderString = Vehicles::OrderManager::generateOrderUiStringAndLoc(orderFrame.orderOffset, orderNum).second;
+                const auto colour = Vehicles::OrderManager::getNumDisplayFrameColour(orderFrame);
+                auto orderString = Vehicles::OrderManager::generateOrderUiStringAndLoc(orderFrame.orderOffset, orderNum, colour).second;
                 if (orderString.empty())
                 {
                     continue;
@@ -231,7 +233,7 @@ namespace OpenLoco::Ui
 
                 const auto labelRect = getUiLabelRect(orderFrame.frame);
                 const auto point = Ui::Point{ labelRect.left() + 1, labelRect.top() };
-                tr.drawString(point, AdvancedColour(Colour::white).outline(), orderString.data());
+                tr.drawString(point, AdvancedColour(colour).outline(), orderString.data());
             }
         }
         drawingCtx.popRenderTarget();
