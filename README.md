@@ -24,6 +24,13 @@ so far:
 - disconnected track ends are painted red in build mode
 - with order window open, click or ctrl+click another vehicle to copy or share its orders
 - cargo should not paint on top of trains at stations
+- vehicle type cap increased to 1000
+- "vehicles don't expire" option
+- stale waypoints marked red
+- road vehicles (inc trams) now use all possible parts of a stop
+- source/via/destination shown on station and vehicle cargo tabs
+- carrying capacity bikeshedded. generally trams increased and trains decreased
+- random demolitions disabled to encourage more building variety. demolition for growth still allowed
 
 
 
