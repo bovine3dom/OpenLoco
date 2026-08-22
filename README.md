@@ -157,6 +157,14 @@ cmake --build --preset posix-release
 
 For a quick local Debug build without test targets, use `posix-quick` for both commands instead.
 
+For faster linking with CMake 3.29 or newer, install [mold](https://github.com/rui314/mold) and configure the build with:
+```
+cmake --preset posix-quick -DCMAKE_LINKER_TYPE=MOLD
+cmake --build --preset posix-quick
+cmake --preset posix -DCMAKE_LINKER_TYPE=MOLD
+cmake --build --preset posix-release
+```
+
 Note: If building x86-32 installing some packages can be problematic. To work around this, you can use [our Docker images](https://github.com/OpenLoco/openloco-docker-build) for compilation.
 
 Note: Due to issues with distro yaml-cpp packages, its source release is downloaded during CMake generation.
