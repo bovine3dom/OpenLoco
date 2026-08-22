@@ -2,6 +2,7 @@
 #include <OpenLoco/CargoDist/Routing.h>
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -12,6 +13,10 @@
 #include <tuple>
 #include <utility>
 #include <vector>
+#if defined(_MSC_VER) && defined(_M_X64)
+#include <immintrin.h>
+#include <intrin.h>
+#endif
 
 namespace OpenLoco::CargoDist
 {
@@ -116,6 +121,15 @@ namespace OpenLoco::CargoDist
             size_t visitedNode;
             StationId origin;
             ServicePoint incoming;
+        };
+
+        struct PassengerPair
+        {
+            size_t first;
+            size_t second;
+            int64_t credit{};
+            uint64_t weight{};
+            bool reverseFirst{};
         };
 
         class CapacityNetwork
@@ -795,9 +809,18 @@ namespace OpenLoco::CargoDist
         MultiplyDivideResult proportionalShare(uint64_t lhs, uint64_t rhs, uint64_t divisor)
         {
             assert(lhs < divisor && rhs <= divisor);
+            if (rhs == 0)
+            {
+                return {};
+            }
             uint64_t quotient = 0;
             uint64_t remainder = 0;
-            for (int8_t bit = 63; bit >= 0; --bit)
+            int8_t bit = 63;
+            while ((rhs & (uint64_t{ 1 } << bit)) == 0)
+            {
+                --bit;
+            }
+            for (; bit >= 0; --bit)
             {
                 uint8_t digit = 0;
                 if (remainder >= divisor - remainder)
@@ -824,6 +847,88 @@ namespace OpenLoco::CargoDist
                 quotient = quotient * 2 + digit;
             }
             return { quotient, remainder };
+        }
+
+        uint64_t scaleRatio(uint64_t value, uint64_t numerator, uint64_t denominator)
+        {
+            assert(denominator != 0 && numerator <= denominator);
+            if (numerator == denominator)
+            {
+                return value;
+            }
+#if defined(_MSC_VER) && defined(_M_X64)
+            uint64_t high;
+            const auto low = _umul128(value, numerator, &high);
+            uint64_t remainder;
+            return _udiv128(high, low, denominator, &remainder);
+#elif defined(__SIZEOF_INT128__)
+            return static_cast<uint64_t>(static_cast<__uint128_t>(value) * numerator / denominator);
+#else
+            if (value == 0 || numerator == 0)
+            {
+                return 0;
+            }
+            if (value <= denominator)
+            {
+                return proportionalShare(numerator, value, denominator).quotient;
+            }
+            const auto whole = value / denominator * numerator;
+            return whole + proportionalShare(value % denominator, numerator, denominator).quotient;
+#endif
+        }
+
+        void updatePassengerPairWeights(
+            std::vector<PassengerPair>& pairs,
+            const std::vector<PreparedDemand>& demands,
+            const std::vector<RoutingNode>& nodes,
+            const std::vector<std::vector<uint64_t>>& journeyCosts,
+            const std::vector<uint32_t>& budgets,
+            const std::vector<size_t>& componentOf,
+            uint8_t distanceEffect)
+        {
+            constexpr uint64_t kMaximumWeight = uint64_t{ 1 } << 32;
+            std::vector<uint64_t> costs(pairs.size(), kUnreachableJourneyCost);
+            std::vector<uint64_t> attractions(pairs.size());
+            std::vector<uint64_t> minimumCosts(demands.size(), kMaximumCost);
+            std::vector<uint64_t> maximumAttractions(demands.size(), 1);
+            for (size_t i = 0; i < pairs.size(); ++i)
+            {
+                auto& pair = pairs[i];
+                pair.weight = 0;
+                if (budgets[pair.first] == 0 || budgets[pair.second] == 0)
+                {
+                    continue;
+                }
+                const auto firstCost = journeyCosts[pair.first][demands[pair.second].sourceNode];
+                const auto secondCost = journeyCosts[pair.second][demands[pair.first].sourceNode];
+                if (firstCost == kUnreachableJourneyCost || secondCost == kUnreachableJourneyCost)
+                {
+                    continue;
+                }
+                costs[i] = firstCost / 2 + secondCost / 2 + (firstCost % 2 + secondCost % 2 + 1) / 2;
+                costs[i] = std::max<uint64_t>(1, costs[i]);
+                attractions[i] = std::max<uint64_t>(1, nodes[demands[pair.first].sourceNode].attraction)
+                    * std::max<uint64_t>(1, nodes[demands[pair.second].sourceNode].attraction);
+                const auto component = componentOf[pair.first];
+                minimumCosts[component] = std::min(minimumCosts[component], costs[i]);
+                maximumAttractions[component] = std::max(maximumAttractions[component], attractions[i]);
+            }
+
+            for (size_t i = 0; i < pairs.size(); ++i)
+            {
+                auto& pair = pairs[i];
+                if (costs[i] == kUnreachableJourneyCost)
+                {
+                    continue;
+                }
+                const auto component = componentOf[pair.first];
+                const auto minimumCost = minimumCosts[component];
+                const auto effectiveCost = saturatedAdd(minimumCost, scalePercent(costs[i] - minimumCost, distanceEffect));
+                auto weight = scaleRatio(kMaximumWeight, attractions[i], maximumAttractions[component]);
+                weight = scaleRatio(weight, minimumCost, effectiveCost);
+                weight = scaleRatio(weight, minimumCost, effectiveCost);
+                pair.weight = std::max<uint64_t>(1, weight);
+            }
         }
 
         std::vector<uint64_t> weightedTargets(uint64_t total, const std::vector<size_t>& sinks, const std::vector<RoutingNode>& nodes)
@@ -1070,6 +1175,7 @@ namespace OpenLoco::CargoDist
 
         std::vector<PreparedDemand> fixedDemands;
         std::vector<PreparedDemand> flexibleDemands;
+        std::vector<PreparedDemand> passengerDemands;
         for (const auto& [demandKey, demandAmount] : demands)
         {
             const auto& [platformDemand, sourceIndex, origin, initialIncoming, fixedDestination] = demandKey;
@@ -1119,6 +1225,7 @@ namespace OpenLoco::CargoDist
                 continue;
             }
 
+            const auto pairablePassenger = graph.passengerRouting && platformDemand && origin == nodes[sourceIndex].station;
             PreparedDemand prepared{ amount, {}, {}, sourceNode, visitedNode, origin, initialIncoming };
             for (size_t sink = 0; sink < nodes.size(); ++sink)
             {
@@ -1127,7 +1234,11 @@ namespace OpenLoco::CargoDist
                     prepared.sinks.push_back(sink);
                 }
             }
-            if (!prepared.sinks.empty())
+            if (pairablePassenger)
+            {
+                passengerDemands.push_back(std::move(prepared));
+            }
+            else if (!prepared.sinks.empty())
             {
                 flexibleDemands.push_back(std::move(prepared));
             }
@@ -1216,6 +1327,266 @@ namespace OpenLoco::CargoDist
                     const auto amount = std::min(remaining, chunkSize);
                     routeAmount(demand, demand.sinks[chosen], amount);
                     remaining -= amount;
+                }
+            }
+
+            std::vector<size_t> pairableDemands(passengerDemands.size());
+            std::vector<uint32_t> remaining(passengerDemands.size());
+            for (size_t demand = 0; demand < passengerDemands.size(); ++demand)
+            {
+                pairableDemands[demand] = demand;
+                remaining[demand] = passengerDemands[demand].amount;
+            }
+
+            std::vector<PassengerPair> pairs;
+            for (size_t first = 0; first < pairableDemands.size(); ++first)
+            {
+                const auto firstDemand = pairableDemands[first];
+                for (size_t second = first + 1; second < pairableDemands.size(); ++second)
+                {
+                    const auto secondDemand = pairableDemands[second];
+                    const auto& firstSinks = passengerDemands[firstDemand].sinks;
+                    const auto& secondSinks = passengerDemands[secondDemand].sinks;
+                    if (std::binary_search(firstSinks.begin(), firstSinks.end(), passengerDemands[secondDemand].sourceNode)
+                        && std::binary_search(secondSinks.begin(), secondSinks.end(), passengerDemands[firstDemand].sourceNode))
+                    {
+                        pairs.push_back({ firstDemand, secondDemand });
+                    }
+                }
+            }
+
+            std::vector<std::vector<size_t>> demandPairs(passengerDemands.size());
+            for (size_t pairIndex = 0; pairIndex < pairs.size(); ++pairIndex)
+            {
+                const auto& pair = pairs[pairIndex];
+                demandPairs[pair.first].push_back(pairIndex);
+                demandPairs[pair.second].push_back(pairIndex);
+            }
+            std::vector<size_t> componentOf(passengerDemands.size(), kNoIndex);
+            std::vector<std::vector<size_t>> components;
+            for (const auto start : pairableDemands)
+            {
+                if (componentOf[start] != kNoIndex)
+                {
+                    continue;
+                }
+                const auto component = components.size();
+                components.push_back({ start });
+                componentOf[start] = component;
+                for (size_t i = 0; i < components.back().size(); ++i)
+                {
+                    const auto current = components.back()[i];
+                    for (const auto pairIndex : demandPairs[current])
+                    {
+                        const auto& pair = pairs[pairIndex];
+                        const auto next = pair.first == current ? pair.second : pair.first;
+                        if (componentOf[next] == kNoIndex)
+                        {
+                            componentOf[next] = component;
+                            components.back().push_back(next);
+                        }
+                    }
+                }
+            }
+
+            const auto demandPrecedes = [&](size_t lhs, size_t rhs) {
+                return remaining[lhs] != remaining[rhs]
+                    ? remaining[lhs] > remaining[rhs]
+                    : stationValue(passengerDemands[lhs].origin) < stationValue(passengerDemands[rhs].origin);
+            };
+            // Mutual reachability partitions platform origins into cliques. Removing the unavoidable
+            // largest-origin excess leaves each component with enough other demand to pair every unit.
+            for (const auto& component : components)
+            {
+                uint64_t total = 0;
+                auto largest = component.front();
+                for (const auto demand : component)
+                {
+                    total += remaining[demand];
+                    if (demandPrecedes(demand, largest))
+                    {
+                        largest = demand;
+                    }
+                }
+                const auto others = total - remaining[largest];
+                const auto excess = remaining[largest] > others ? remaining[largest] - others : total % 2;
+                remaining[largest] -= static_cast<uint32_t>(excess);
+                if (excess != 0)
+                {
+                    routeAmount(passengerDemands[largest], passengerDemands[largest].sourceNode, static_cast<uint32_t>(excess));
+                }
+            }
+
+            struct ComponentState
+            {
+                uint64_t total{};
+                std::array<size_t, 3> largest{ kNoIndex, kNoIndex, kNoIndex };
+            };
+            std::vector<ComponentState> componentStates(components.size());
+            const auto updateComponent = [&](size_t component) {
+                auto& state = componentStates[component];
+                state = {};
+                for (const auto demand : components[component])
+                {
+                    state.total += remaining[demand];
+                    auto candidate = demand;
+                    for (auto& largest : state.largest)
+                    {
+                        if (largest == kNoIndex || demandPrecedes(candidate, largest))
+                        {
+                            std::swap(largest, candidate);
+                        }
+                    }
+                }
+            };
+            for (size_t component = 0; component < components.size(); ++component)
+            {
+                updateComponent(component);
+            }
+
+            std::vector<std::vector<uint64_t>> journeyCosts(passengerDemands.size());
+            std::vector<uint64_t> cachedEdgeCosts(edges.size());
+            std::vector<bool> cachedActiveDemands(passengerDemands.size());
+            bool pairWeightsCurrent = false;
+            const auto updatePairWeights = [&](const std::vector<uint32_t>& budgets) {
+                auto unchanged = pairWeightsCurrent;
+                for (size_t edgeIndex = 0; edgeIndex < edges.size(); ++edgeIndex)
+                {
+                    const auto cost = edgeCost(edgeIndex, edges, nodes, planned.nodeStations, graph.timeSensitive, settings.saturation);
+                    unchanged = unchanged && cost == cachedEdgeCosts[edgeIndex];
+                    cachedEdgeCosts[edgeIndex] = cost;
+                }
+                for (const auto demand : pairableDemands)
+                {
+                    const auto active = budgets[demand] != 0;
+                    unchanged = unchanged && active == cachedActiveDemands[demand];
+                    cachedActiveDemands[demand] = active;
+                }
+                if (unchanged)
+                {
+                    return;
+                }
+                pairWeightsCurrent = true;
+
+                for (const auto demand : pairableDemands)
+                {
+                    if (!cachedActiveDemands[demand] || demandPairs[demand].empty())
+                    {
+                        continue;
+                    }
+                    shortestPath(passengerDemands[demand].sourceNode, kNoIndex, nodes, planned.nodeStations, edges, adjacency, graph.timeSensitive, settings.saturation, passengerDemands[demand].visitedNode, planned.nodeStations[passengerDemands[demand].sourceNode], shortestPathScratch);
+                    journeyCosts[demand].assign(shortestPathScratch.distance.begin(), shortestPathScratch.distance.begin() + nodes.size());
+                }
+                updatePassengerPairWeights(pairs, passengerDemands, nodes, journeyCosts, budgets, componentOf, settings.distanceEffect);
+            };
+
+            const auto maximumPairAmount = [&](const PassengerPair& pair) {
+                const auto component = componentOf[pair.first];
+                const auto& state = componentStates[component];
+                uint64_t amount = std::min(remaining[pair.first], remaining[pair.second]);
+                auto largestOther = kNoIndex;
+                for (const auto candidate : state.largest)
+                {
+                    if (candidate != kNoIndex && candidate != pair.first && candidate != pair.second)
+                    {
+                        largestOther = candidate;
+                        break;
+                    }
+                }
+                if (largestOther != kNoIndex)
+                {
+                    const auto doubled = static_cast<uint64_t>(remaining[largestOther]) * 2;
+                    amount = doubled > state.total ? 0 : std::min(amount, (state.total - doubled) / 2);
+                }
+                return static_cast<uint32_t>(amount);
+            };
+
+            const auto allocatePairs = [&](std::vector<uint32_t>& budgets) {
+                updatePairWeights(budgets);
+                auto demandOrder = pairableDemands;
+                std::sort(demandOrder.begin(), demandOrder.end(), demandPrecedes);
+
+                bool progress = false;
+                for (const auto demand : demandOrder)
+                {
+                    while (budgets[demand] != 0)
+                    {
+                        auto chosen = kNoIndex;
+                        uint64_t totalWeight = 0;
+                        for (const auto pairIndex : demandPairs[demand])
+                        {
+                            auto& pair = pairs[pairIndex];
+                            const auto partner = pair.first == demand ? pair.second : pair.first;
+                            if (pair.weight == 0 || budgets[partner] == 0 || maximumPairAmount(pair) == 0)
+                            {
+                                continue;
+                            }
+                            pair.credit += static_cast<int64_t>(pair.weight);
+                            totalWeight += pair.weight;
+                            if (chosen == kNoIndex || pair.credit > pairs[chosen].credit
+                                || (pair.credit == pairs[chosen].credit
+                                    && std::tie(passengerDemands[pair.first].origin, passengerDemands[pair.second].origin)
+                                        < std::tie(passengerDemands[pairs[chosen].first].origin, passengerDemands[pairs[chosen].second].origin)))
+                            {
+                                chosen = pairIndex;
+                            }
+                        }
+                        if (chosen == kNoIndex)
+                        {
+                            break;
+                        }
+
+                        auto& pair = pairs[chosen];
+                        const auto amount = std::min({ budgets[pair.first], budgets[pair.second], maximumPairAmount(pair) });
+                        pair.credit -= static_cast<int64_t>(totalWeight);
+                        const auto routeFirst = [&](size_t from, size_t to) {
+                            routeAmount(passengerDemands[from], passengerDemands[to].sourceNode, amount);
+                        };
+                        if (pair.reverseFirst)
+                        {
+                            routeFirst(pair.second, pair.first);
+                            routeFirst(pair.first, pair.second);
+                        }
+                        else
+                        {
+                            routeFirst(pair.first, pair.second);
+                            routeFirst(pair.second, pair.first);
+                        }
+                        pair.reverseFirst = !pair.reverseFirst;
+                        remaining[pair.first] -= amount;
+                        remaining[pair.second] -= amount;
+                        budgets[pair.first] -= amount;
+                        budgets[pair.second] -= amount;
+                        updateComponent(componentOf[pair.first]);
+                        progress = true;
+                    }
+                }
+                return progress;
+            };
+
+            std::vector<uint32_t> budgets(passengerDemands.size());
+            for (uint32_t round = 0; round < accuracy; ++round)
+            {
+                for (const auto demand : pairableDemands)
+                {
+                    const auto chunk = passengerDemands[demand].amount / accuracy + (passengerDemands[demand].amount % accuracy != 0);
+                    budgets[demand] = std::min(remaining[demand], chunk);
+                }
+                if (!allocatePairs(budgets))
+                {
+                    break;
+                }
+            }
+            for (const auto demand : pairableDemands)
+            {
+                budgets[demand] = remaining[demand];
+            }
+            allocatePairs(budgets);
+            for (const auto demand : pairableDemands)
+            {
+                if (remaining[demand] != 0)
+                {
+                    routeAmount(passengerDemands[demand], passengerDemands[demand].sourceNode, remaining[demand]);
                 }
             }
         }

@@ -732,6 +732,10 @@ namespace OpenLoco::CargoDist
             return {};
         }
 
+        const auto flexibleOrigin = destination == StationId::null && station == origin && incoming.empty();
+        const auto isOutsideOption = [&](StationId selectedDestination) {
+            return flexibleOrigin && selectedDestination == station;
+        };
         std::vector<std::pair<StationId, uint32_t>> destinations;
         if (destination == StationId::null)
         {
@@ -753,9 +757,10 @@ namespace OpenLoco::CargoDist
                 auto& options = updateCursors ? choices->second : optionsCopy;
                 const auto allocated = allocateWeighted(options, quantity, [&](const auto& option) {
                     const auto flow = _state.flows.find({ cargo, station, origin, incoming, option.destination });
-                    return option.destination != excluded && option.destination != excluded2
-                        && flow != _state.flows.end() && std::any_of(flow->second.begin(), flow->second.end(), [&](const auto& route) {
-                        return route.via != excluded && route.via != excluded2;
+                    return flow != _state.flows.end() && std::any_of(flow->second.begin(), flow->second.end(), [&](const auto& route) {
+                        return isOutsideOption(option.destination)
+                            ? route.via == station
+                            : option.destination != excluded && option.destination != excluded2 && route.via != excluded && route.via != excluded2;
                     }); }, [](const auto& option) { return option.destination; });
                 for (const auto& choice : allocated)
                 {
@@ -774,6 +779,11 @@ namespace OpenLoco::CargoDist
         std::vector<ViaShare> result;
         for (const auto& [selectedDestination, amount] : destinations)
         {
+            if (isOutsideOption(selectedDestination))
+            {
+                result.push_back({ StationId::null, amount });
+                continue;
+            }
             const auto flow = _state.flows.find({ cargo, station, origin, incoming, selectedDestination });
             if (flow == _state.flows.end())
             {

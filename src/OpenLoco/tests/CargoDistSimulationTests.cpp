@@ -1095,6 +1095,33 @@ TEST(CargoDistSimulation, SplitsProducedCargoByFlowQuantity)
     EXPECT_EQ(packets->quantityFor(station(3)), 10);
 }
 
+TEST(CargoDistSimulation, KeepsUnmatchedProducedPassengersUnrouted)
+{
+    reset();
+    RoutingGraph graph{
+        {
+            { station(1), 0, 0, 40, true },
+            { station(2), 10, 0, 10, true },
+        },
+        {
+            { station(1), station(2), 100, 1 },
+            { station(2), station(1), 100, 1 },
+        },
+        false,
+        {},
+    };
+    graph.passengerRouting = true;
+    setFlows(0, calculateAsymmetricFlows(graph));
+    StationCargoStats cargo{};
+
+    addProducedCargo(station(1), 0, cargo, 40);
+
+    const auto* packets = getStationCargoConst(station(1), 0);
+    ASSERT_NE(packets, nullptr);
+    EXPECT_EQ(packets->quantityFor(StationId::null), 30U);
+    EXPECT_EQ(packets->quantityFor(station(2)), 10U);
+}
+
 TEST(CargoDistSimulation, StoresProducedCargoAboveNativeStationLimit)
 {
     reset();
