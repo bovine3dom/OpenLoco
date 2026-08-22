@@ -22,9 +22,16 @@ namespace
         return { static_cast<ServiceId>(service), occurrence };
     }
 
-    RoutingNode node(uint16_t id, int16_t x, int16_t y, uint32_t supply = 0, bool accepts = false, uint32_t attraction = 1)
+    RoutingNode node(
+        uint16_t id,
+        int16_t x,
+        int16_t y,
+        uint32_t supply = 0,
+        bool accepts = false,
+        uint32_t attraction = 1,
+        bool passengerSink = false)
     {
-        return { station(id), x, y, supply, accepts, attraction };
+        return { station(id), x, y, supply, accepts, attraction, passengerSink };
     }
 
     RoutingEdge edge(uint16_t from, uint16_t to, uint32_t capacity = 100, uint32_t travelTime = 1)
@@ -349,6 +356,55 @@ TEST(CargoDistRouting, SymmetricPassengerDemandPairsProductionDemands)
     std::reverse(graph.edges.begin(), graph.edges.end());
     std::reverse(graph.demands.begin(), graph.demands.end());
     expectSameFlows(expected, calculateAsymmetricFlows(graph));
+}
+
+TEST(CargoDistRouting, PassengerIndustrySinkReceivesWithoutProducing)
+{
+    RoutingGraph graph{
+        { node(1, 0, 0, 40, true), node(2, 20, 0, 40, true), node(3, 10, 20, 0, true, 100, true) },
+        {
+            edge(1, 2),
+            edge(2, 1),
+            edge(1, 3),
+            edge(3, 1),
+            edge(2, 3),
+            edge(3, 2),
+        },
+        false,
+        {},
+    };
+    graph.passengerRouting = true;
+
+    const auto flows = calculateAsymmetricFlows(graph);
+
+    EXPECT_GT(amountToDestination(flows, 1, 3), 0U);
+    EXPECT_GT(amountToDestination(flows, 2, 3), 0U);
+    EXPECT_EQ(amountToDestination(flows, 3, 1), 0U);
+    EXPECT_EQ(amountToDestination(flows, 3, 2), 0U);
+}
+
+TEST(CargoDistRouting, PassengerIndustrySinkSupplyJoinsSymmetricPairing)
+{
+    RoutingGraph graph{
+        { node(1, 0, 0, 40, true), node(2, 20, 0, 40, true), node(3, 10, 20, 40, true, 100, true) },
+        {
+            edge(1, 2),
+            edge(2, 1),
+            edge(1, 3),
+            edge(3, 1),
+            edge(2, 3),
+            edge(3, 2),
+        },
+        false,
+        {},
+    };
+    graph.passengerRouting = true;
+
+    const auto flows = calculateAsymmetricFlows(graph);
+
+    EXPECT_GT(amountToDestination(flows, 1, 3), 0U);
+    EXPECT_GT(amountToDestination(flows, 2, 3), 0U);
+    EXPECT_GT(amountToDestination(flows, 3, 1) + amountToDestination(flows, 3, 2), 0U);
 }
 
 TEST(CargoDistRouting, SymmetricGravityUsesBothEndpointAttractions)

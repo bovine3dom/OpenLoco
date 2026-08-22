@@ -116,6 +116,7 @@ namespace OpenLoco::CargoDist
         {
             uint32_t amount;
             std::vector<size_t> sinks;
+            std::vector<size_t> passengerSinks;
             std::vector<uint64_t> costs;
             size_t sourceNode;
             size_t visitedNode;
@@ -130,6 +131,14 @@ namespace OpenLoco::CargoDist
             int64_t credit{};
             uint64_t weight{};
             bool reverseFirst{};
+        };
+
+        struct PassengerSink
+        {
+            size_t demand;
+            size_t destination;
+            int64_t credit{};
+            uint64_t weight{};
         };
 
         class CapacityNetwork
@@ -931,6 +940,29 @@ namespace OpenLoco::CargoDist
             }
         }
 
+        void updatePassengerSinkWeights(
+            std::vector<PassengerSink>& sinks,
+            const std::vector<PreparedDemand>& demands,
+            const std::vector<RoutingNode>& nodes,
+            const std::vector<std::vector<uint64_t>>& journeyCosts,
+            const std::vector<uint32_t>& budgets,
+            const std::vector<std::vector<size_t>>& demandSinks,
+            uint8_t distanceEffect)
+        {
+            for (size_t demand = 0; demand < demands.size(); ++demand)
+            {
+                if (budgets[demand] == 0 || demandSinks[demand].empty())
+                {
+                    continue;
+                }
+                const auto weights = destinationWeights(demands[demand].passengerSinks, nodes, journeyCosts[demand], distanceEffect);
+                for (size_t i = 0; i < demandSinks[demand].size(); ++i)
+                {
+                    sinks[demandSinks[demand][i]].weight = weights[i];
+                }
+            }
+        }
+
         std::vector<uint64_t> weightedTargets(uint64_t total, const std::vector<size_t>& sinks, const std::vector<RoutingNode>& nodes)
         {
             uint64_t weightTotal = 0;
@@ -1220,18 +1252,22 @@ namespace OpenLoco::CargoDist
                 const auto sink = findNode(nodes, fixedDestination);
                 if (sink != kNoIndex && reachable[sink] && nodes[sink].accepts)
                 {
-                    fixedDemands.push_back({ amount, { sink }, {}, sourceNode, visitedNode, origin, initialIncoming });
+                    fixedDemands.push_back({ amount, { sink }, {}, {}, sourceNode, visitedNode, origin, initialIncoming });
                 }
                 continue;
             }
 
             const auto pairablePassenger = graph.passengerRouting && platformDemand && origin == nodes[sourceIndex].station;
-            PreparedDemand prepared{ amount, {}, {}, sourceNode, visitedNode, origin, initialIncoming };
+            PreparedDemand prepared{ amount, {}, {}, {}, sourceNode, visitedNode, origin, initialIncoming };
             for (size_t sink = 0; sink < nodes.size(); ++sink)
             {
                 if ((sink != sourceIndex || !platformDemand) && reachable[sink] && nodes[sink].accepts)
                 {
                     prepared.sinks.push_back(sink);
+                    if (nodes[sink].passengerSink)
+                    {
+                        prepared.passengerSinks.push_back(sink);
+                    }
                 }
             }
             if (pairablePassenger)
@@ -1444,6 +1480,16 @@ namespace OpenLoco::CargoDist
                 updateComponent(component);
             }
 
+            std::vector<PassengerSink> passengerSinks;
+            std::vector<std::vector<size_t>> demandSinks(passengerDemands.size());
+            for (size_t demand = 0; demand < passengerDemands.size(); ++demand)
+            {
+                for (const auto destination : passengerDemands[demand].passengerSinks)
+                {
+                    demandSinks[demand].push_back(passengerSinks.size());
+                    passengerSinks.push_back({ demand, destination });
+                }
+            }
             std::vector<std::vector<uint64_t>> journeyCosts(passengerDemands.size());
             std::vector<uint64_t> cachedEdgeCosts(edges.size());
             std::vector<bool> cachedActiveDemands(passengerDemands.size());
@@ -1470,7 +1516,7 @@ namespace OpenLoco::CargoDist
 
                 for (const auto demand : pairableDemands)
                 {
-                    if (!cachedActiveDemands[demand] || demandPairs[demand].empty())
+                    if (!cachedActiveDemands[demand] || (demandPairs[demand].empty() && demandSinks[demand].empty()))
                     {
                         continue;
                     }
@@ -1478,6 +1524,7 @@ namespace OpenLoco::CargoDist
                     journeyCosts[demand].assign(shortestPathScratch.distance.begin(), shortestPathScratch.distance.begin() + nodes.size());
                 }
                 updatePassengerPairWeights(pairs, passengerDemands, nodes, journeyCosts, budgets, componentOf, settings.distanceEffect);
+                updatePassengerSinkWeights(passengerSinks, passengerDemands, nodes, journeyCosts, budgets, demandSinks, settings.distanceEffect);
             };
 
             const auto maximumPairAmount = [&](const PassengerPair& pair) {
@@ -1512,7 +1559,28 @@ namespace OpenLoco::CargoDist
                     while (budgets[demand] != 0)
                     {
                         auto chosen = kNoIndex;
+                        bool chosenSink = false;
+                        int64_t chosenCredit = std::numeric_limits<int64_t>::min();
                         uint64_t totalWeight = 0;
+                        const auto isBetter = [&](int64_t credit, bool sink, size_t index) {
+                            if (chosen == kNoIndex || credit != chosenCredit)
+                            {
+                                return chosen == kNoIndex || credit > chosenCredit;
+                            }
+                            if (sink != chosenSink)
+                            {
+                                return sink;
+                            }
+                            if (sink)
+                            {
+                                return stationValue(nodes[passengerSinks[index].destination].station)
+                                    < stationValue(nodes[passengerSinks[chosen].destination].station);
+                            }
+                            const auto& lhs = pairs[index];
+                            const auto& rhs = pairs[chosen];
+                            return std::tie(passengerDemands[lhs.first].origin, passengerDemands[lhs.second].origin)
+                                < std::tie(passengerDemands[rhs.first].origin, passengerDemands[rhs.second].origin);
+                        };
                         for (const auto pairIndex : demandPairs[demand])
                         {
                             auto& pair = pairs[pairIndex];
@@ -1523,17 +1591,46 @@ namespace OpenLoco::CargoDist
                             }
                             pair.credit += static_cast<int64_t>(pair.weight);
                             totalWeight += pair.weight;
-                            if (chosen == kNoIndex || pair.credit > pairs[chosen].credit
-                                || (pair.credit == pairs[chosen].credit
-                                    && std::tie(passengerDemands[pair.first].origin, passengerDemands[pair.second].origin)
-                                        < std::tie(passengerDemands[pairs[chosen].first].origin, passengerDemands[pairs[chosen].second].origin)))
+                            if (isBetter(pair.credit, false, pairIndex))
                             {
                                 chosen = pairIndex;
+                                chosenSink = false;
+                                chosenCredit = pair.credit;
+                            }
+                        }
+                        for (const auto sinkIndex : demandSinks[demand])
+                        {
+                            auto& sink = passengerSinks[sinkIndex];
+                            if (sink.weight == 0)
+                            {
+                                continue;
+                            }
+                            sink.credit += static_cast<int64_t>(sink.weight);
+                            totalWeight += sink.weight;
+                            if (isBetter(sink.credit, true, sinkIndex))
+                            {
+                                chosen = sinkIndex;
+                                chosenSink = true;
+                                chosenCredit = sink.credit;
                             }
                         }
                         if (chosen == kNoIndex)
                         {
                             break;
+                        }
+
+                        if (chosenSink)
+                        {
+                            auto& sink = passengerSinks[chosen];
+                            const auto chunk = passengerDemands[demand].amount / accuracy + (passengerDemands[demand].amount % accuracy != 0);
+                            const auto amount = std::min(budgets[demand], std::max<uint32_t>(1, chunk));
+                            sink.credit -= static_cast<int64_t>(totalWeight);
+                            routeAmount(passengerDemands[demand], sink.destination, amount);
+                            remaining[demand] -= amount;
+                            budgets[demand] -= amount;
+                            updateComponent(componentOf[demand]);
+                            progress = true;
+                            continue;
                         }
 
                         auto& pair = pairs[chosen];

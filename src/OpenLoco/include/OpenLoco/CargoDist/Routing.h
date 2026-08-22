@@ -37,6 +37,7 @@ namespace OpenLoco::CargoDist
         uint32_t supply;
         bool accepts;
         uint32_t attraction = 1;
+        bool passengerSink = false;
     };
 
     struct RoutingEdge

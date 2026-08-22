@@ -980,6 +980,7 @@ namespace OpenLoco::CargoDist
                     0,
                     accepts,
                     attraction,
+                    graph.passengerRouting && station.cargoStats[cargo].industryId != IndustryId::null,
                 });
             }
             if (includeDemands)
@@ -2037,8 +2038,9 @@ namespace OpenLoco::CargoDist
     {
         const auto& stationCargo = getStateConst().stationCargo;
         return std::none_of(stationCargo.begin(), stationCargo.end(), [cargo](const auto& item) {
-            return item.first.cargo == cargo && item.second.quantity() > std::numeric_limits<uint16_t>::max();
-        }) && !hasOutstandingTransferCredits(cargo);
+                   return item.first.cargo == cargo && item.second.quantity() > std::numeric_limits<uint16_t>::max();
+               })
+            && !hasOutstandingTransferCredits(cargo);
     }
 
     void setMode(uint8_t cargo, DistributionMode mode)
