@@ -4,6 +4,7 @@
 #include "Localisation/StringIds.h"
 #include "Localisation/StringManager.h"
 #include "Objects/ObjectManager.h"
+#include <OpenLoco/Core/Exception.hpp>
 
 namespace OpenLoco::ObjectManager
 {
@@ -26,7 +27,7 @@ namespace OpenLoco::ObjectManager
         StringIds::temporary_object_load_str_15,
     };
 
-    constexpr std::array<uint8_t, 34> kNumStringsPerObjectType = {
+    constexpr std::array<uint8_t, kMaxObjectTypes> kNumStringsPerObjectType = {
         1, // interface,
         1, // sound,
         3, // currency,
@@ -63,9 +64,33 @@ namespace OpenLoco::ObjectManager
         2, // scenarioText,
     };
 
+    constexpr size_t getLegacyMaxObjects(const ObjectType type)
+    {
+        return type == ObjectType::vehicle ? S5::Limits::kMaxVehicleObjects : getMaxObjects(type);
+    }
+
+    constexpr size_t getNumLegacyObjectStrings()
+    {
+        size_t count = 0;
+        for (uint8_t type = 0; type < kMaxObjectTypes; ++type)
+        {
+            count += getLegacyMaxObjects(static_cast<ObjectType>(type)) * kNumStringsPerObjectType[type];
+        }
+        return count;
+    }
+    static_assert(StringIds::object_strings_begin + getNumLegacyObjectStrings() == StringManager::kLegacyNumStringPointers);
+
     // 0x00472172
     StringTableResult loadStringTable(std::span<const std::byte> data, const LoadedObjectHandle& handle, uint8_t index)
     {
+        const auto objectType = enumValue(handle.type);
+        if (objectType >= kNumStringsPerObjectType.size()
+            || index >= kNumStringsPerObjectType[objectType]
+            || handle.id >= getMaxObjects(handle.type))
+        {
+            throw Exception::OutOfRange();
+        }
+
         StringTableResult res;
         auto iter = data.begin();
         const char* engBackupStr = nullptr;
@@ -115,12 +140,25 @@ namespace OpenLoco::ObjectManager
             return res;
         }
 
-        res.str = StringIds::object_strings_begin + index;
-        for (auto objType = ObjectType::interfaceSkin; enumValue(objType) < enumValue(handle.type); objType = static_cast<ObjectType>(enumValue(objType) + 1))
+        size_t stringId;
+        if (handle.type == ObjectType::vehicle && handle.id >= S5::Limits::kMaxVehicleObjects)
         {
-            res.str += static_cast<uint16_t>(getMaxObjects(objType)) * kNumStringsPerObjectType[enumValue(objType)];
+            stringId = StringManager::kLegacyNumStringPointers + (handle.id - S5::Limits::kMaxVehicleObjects) * kNumStringsPerObjectType[objectType] + index;
         }
-        res.str += kNumStringsPerObjectType[enumValue(handle.type)] * handle.id;
+        else
+        {
+            stringId = StringIds::object_strings_begin + index;
+            for (auto objType = ObjectType::interfaceSkin; enumValue(objType) < enumValue(handle.type); objType = static_cast<ObjectType>(enumValue(objType) + 1))
+            {
+                stringId += getLegacyMaxObjects(objType) * kNumStringsPerObjectType[enumValue(objType)];
+            }
+            stringId += kNumStringsPerObjectType[objectType] * handle.id;
+        }
+        if (stringId >= StringManager::kNumStringPointers)
+        {
+            throw Exception::OutOfRange();
+        }
+        res.str = static_cast<StringId>(stringId);
 
         StringManager::swapString(res.str, chosenStr);
         return res;

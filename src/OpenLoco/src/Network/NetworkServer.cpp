@@ -200,6 +200,10 @@ void NetworkServer::onReceiveSendChatMessagePacket(Client& client, const SendCha
 
 void NetworkServer::onReceiveGameCommandPacket([[maybe_unused]] Client& client, const GameCommandPacket& packet)
 {
+    if (packet.regs.esi == enumValue(GameCommands::GameCommand::setVehiclesNeverExpire))
+    {
+        return;
+    }
     queueGameCommand(packet.company, packet.regs, packet.flags);
 }
 

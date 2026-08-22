@@ -2,6 +2,8 @@
 #include "Date.h"
 #include "GameCommands/Cheats/Cheat.h"
 #include "GameCommands/GameCommands.h"
+#include "GameCommands/General/SetVehiclesNeverExpire.h"
+#include "GameRules.h"
 #include "Graphics/Colour.h"
 #include "Graphics/Gfx.h"
 #include "Graphics/ImageIds.h"
@@ -12,6 +14,7 @@
 #include "Localisation/StringManager.h"
 #include "Objects/InterfaceSkinObject.h"
 #include "Objects/ObjectManager.h"
+#include "SceneManager.h"
 #include "Scenario/Scenario.h"
 #include "Ui/Dropdown.h"
 #include "Ui/Widget.h"
@@ -622,7 +625,7 @@ namespace OpenLoco::Ui::Windows::Cheats
 
     namespace Vehicles
     {
-        static constexpr Ui::Size kWindowSize = { 250, 188 };
+        static constexpr Ui::Size kWindowSize = { 250, 202 };
 
         enum widx
         {
@@ -632,6 +635,7 @@ namespace OpenLoco::Ui::Windows::Cheats
             vehicle_locked_group,
             checkbox_display_locked_vehicles,
             checkbox_build_locked_vehicles,
+            checkbox_vehicles_never_expire,
             vehicle_cargo_group,
             checkbox_keep_cargo_modify_pickup,
         };
@@ -642,6 +646,7 @@ namespace OpenLoco::Ui::Windows::Cheats
             constexpr WidgetId kReliablityAllToHundred{ "reliablity_all_to_hundred" };
             constexpr WidgetId kCheckboxDisplayLockedVehicles{ "checkbox_display_locked_vehicles" };
             constexpr WidgetId kCheckboxBuildLockedVehicles{ "checkbox_build_locked_vehicles" };
+            constexpr WidgetId kCheckboxVehiclesNeverExpire{ "checkbox_vehicles_never_expire" };
             constexpr WidgetId kCheckboxKeepCargoModifyPickup{ "checkbox_keep_cargo_modify_pickup" };
         }
 
@@ -650,11 +655,12 @@ namespace OpenLoco::Ui::Windows::Cheats
             Widgets::GroupBox({ 4, 48 }, { kWindowSize.width - 8, 49 }, WindowColour::secondary, StringIds::cheat_set_vehicle_reliability),
             Widgets::Button(Widx::kReliablityAllToZero, { 10, 62 }, { kWindowSize.width - 20, 12 }, WindowColour::secondary, StringIds::cheat_reliability_zero),
             Widgets::Button(Widx::kReliablityAllToHundred, { 10, 78 }, { kWindowSize.width - 20, 12 }, WindowColour::secondary, StringIds::cheat_reliability_hundred),
-            Widgets::GroupBox({ 4, 102 }, { kWindowSize.width - 8, 45 }, WindowColour::secondary, StringIds::cheat_build_vehicle_window),
+            Widgets::GroupBox({ 4, 102 }, { kWindowSize.width - 8, 59 }, WindowColour::secondary, StringIds::cheat_build_vehicle_window),
             Widgets::Checkbox(Widx::kCheckboxDisplayLockedVehicles, { 10, 116 }, { kWindowSize.width - 20, 12 }, WindowColour::secondary, StringIds::display_locked_vehicles, StringIds::tooltip_display_locked_vehicles),
             Widgets::Checkbox(Widx::kCheckboxBuildLockedVehicles, { 25, 130 }, { kWindowSize.width - 35, 12 }, WindowColour::secondary, StringIds::allow_building_locked_vehicles, StringIds::tooltip_build_locked_vehicles),
-            Widgets::GroupBox({ 4, 152 }, { kWindowSize.width - 8, 30 }, WindowColour::secondary, StringIds::cheat_vehicle_cargo),
-            Widgets::Checkbox(Widx::kCheckboxKeepCargoModifyPickup, { 10, 166 }, { kWindowSize.width - 20, 12 }, WindowColour::secondary, StringIds::cheat_keep_cargo_modify_pickup, StringIds::tooltip_keep_cargo_modify_pickup));
+            Widgets::Checkbox(Widx::kCheckboxVehiclesNeverExpire, { 10, 144 }, { kWindowSize.width - 20, 12 }, WindowColour::secondary, StringIds::vehicles_never_expire, StringIds::tooltip_vehicles_never_expire),
+            Widgets::GroupBox({ 4, 166 }, { kWindowSize.width - 8, 30 }, WindowColour::secondary, StringIds::cheat_vehicle_cargo),
+            Widgets::Checkbox(Widx::kCheckboxKeepCargoModifyPickup, { 10, 180 }, { kWindowSize.width - 20, 12 }, WindowColour::secondary, StringIds::cheat_keep_cargo_modify_pickup, StringIds::tooltip_keep_cargo_modify_pickup));
 
         static void prepareDraw(Window& self)
         {
@@ -687,6 +693,23 @@ namespace OpenLoco::Ui::Windows::Cheats
             else
             {
                 self.activatedWidgets &= ~(1 << widx::checkbox_keep_cargo_modify_pickup);
+            }
+
+            if (GameRules::vehiclesNeverExpire())
+            {
+                self.activatedWidgets |= 1 << widx::checkbox_vehicles_never_expire;
+            }
+            else
+            {
+                self.activatedWidgets &= ~(1 << widx::checkbox_vehicles_never_expire);
+            }
+            if (SceneManager::isNetworked() && !SceneManager::isNetworkHost())
+            {
+                self.disabledWidgets |= 1 << widx::checkbox_vehicles_never_expire;
+            }
+            else
+            {
+                self.disabledWidgets &= ~(1 << widx::checkbox_vehicles_never_expire);
             }
         }
 
@@ -767,6 +790,13 @@ namespace OpenLoco::Ui::Windows::Cheats
                         WindowManager::invalidateWidget(self.type, self.number, widx::checkbox_build_locked_vehicles);
                         WindowManager::invalidate(WindowType::buildVehicle);
                     }
+                    break;
+                }
+
+                case Widx::kCheckboxVehiclesNeverExpire:
+                {
+                    const GameCommands::SetVehiclesNeverExpireArgs args(!GameRules::vehiclesNeverExpire());
+                    GameCommands::doCommand(args, GameCommands::Flags::apply);
                     break;
                 }
 

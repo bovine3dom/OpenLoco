@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Economy/Currency.h"
+#include "S5/Limits.h"
 #include <OpenLoco/Engine/World.hpp>
 
 namespace OpenLoco
@@ -79,7 +80,7 @@ namespace OpenLoco::S5
         uint8_t mainColours[2];            // 0x1A
         uint8_t vehicleColours[10][2];     // 0x1C
         uint32_t customVehicleColoursSet;  // 0x30
-        uint32_t unlockedVehicles[7];      // 0x34
+        uint32_t unlockedVehicles[Limits::kMaxVehicleObjects / 32]; // 0x34
         uint16_t availableVehicles;        // 0x50
         uint32_t aiPlaystyleFlags;         // 0x52
         uint8_t aiPlaystyleTownId;         // 0x56
@@ -183,7 +184,7 @@ namespace OpenLoco::S5
         uint8_t mainColours[2];            // 0x1A
         uint8_t vehicleColours[10][2];     // 0x1C
         uint32_t customVehicleColoursSet;  // 0x30
-        uint32_t unlockedVehicles[7];      // 0x34
+        uint32_t unlockedVehicles[Limits::kMaxVehicleObjects / 32]; // 0x34
         uint16_t availableVehicles;        // 0x50
         uint32_t aiPlaystyleFlags;         // 0x52
         uint8_t aiPlaystyleTownId;         // 0x56

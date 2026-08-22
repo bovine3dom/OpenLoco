@@ -2,6 +2,7 @@
 #include <OpenLoco/S5/SaveExtension.h>
 
 #include <OpenLoco/CargoDist/Save.h>
+#include <OpenLoco/GameRules.h>
 #include <OpenLoco/Vehicles/RailTraffic.h>
 #include <OpenLoco/Vehicles/VehicleAutoRenewal.h>
 #include <algorithm>
@@ -11,6 +12,7 @@
 #include <limits>
 #include <span>
 #include <stdexcept>
+#include <string_view>
 #include <vector>
 
 using namespace OpenLoco;
@@ -89,6 +91,27 @@ namespace
             entry.stationTiles.emplace_back(64, 64 + i, 0);
         }
         return result;
+    }
+
+    ObjectHeader vehicleHeader(uint32_t checksum)
+    {
+        ObjectHeader header{};
+        header.flags = enumValue(ObjectType::vehicle);
+        std::ranges::copy(std::string_view("VEHICLE "), header.name);
+        header.checksum = checksum;
+        return header;
+    }
+
+    S5::SaveExtension::VehicleObjectState vehicleObjectState()
+    {
+        S5::SaveExtension::VehicleObjectState state;
+        state.objects = {
+            { 999, vehicleHeader(2) },
+            { 224, vehicleHeader(1) },
+        };
+        state.companyUnlocks[0].set(0, true);
+        state.companyUnlocks.back().set(S5::SaveExtension::kExtendedVehicleObjectCount - 1, true);
+        return state;
     }
 
     uint16_t readU16(const std::span<const std::byte> data, size_t offset)
@@ -283,6 +306,173 @@ TEST(SaveExtension, RoundTripsRailTraffic)
     EXPECT_EQ(readU16(encoded, 22), 1);
 }
 
+TEST(SaveExtension, RoundTripsRequiredGameRules)
+{
+    const GameRules::State rules{ .vehiclesNeverExpire = true, .extendedVehicleObjects = true };
+    const auto encoded = S5::SaveExtension::encode({ .gameRulesState = &rules });
+    const auto decoded = S5::SaveExtension::decode(encoded);
+
+    ASSERT_TRUE(decoded.gameRulesState.has_value());
+    EXPECT_EQ(*decoded.gameRulesState, rules);
+    EXPECT_EQ(S5::SaveExtension::encode(decoded), encoded);
+    expectTag(encoded, 16, "RULE");
+    EXPECT_EQ(readU16(encoded, 20), 1);
+    EXPECT_EQ(readU16(encoded, 22), 1);
+    EXPECT_EQ(readU32(encoded, 24), 1);
+    EXPECT_EQ(encoded[28], std::byte{ 3 });
+}
+
+TEST(SaveExtension, EncodesGameRuleBitsIndependently)
+{
+    const GameRules::State neverExpire{ .vehiclesNeverExpire = true };
+    const auto neverExpireData = S5::SaveExtension::encode({ .gameRulesState = &neverExpire });
+    EXPECT_EQ(neverExpireData[28], std::byte{ 1 });
+
+    const GameRules::State extendedObjects{ .extendedVehicleObjects = true };
+    const auto extendedObjectsData = S5::SaveExtension::encode({ .gameRulesState = &extendedObjects });
+    EXPECT_EQ(extendedObjectsData[28], std::byte{ 2 });
+}
+
+TEST(SaveExtension, RejectsInvalidGameRules)
+{
+    const GameRules::State rules{};
+
+    auto unsupportedVersion = S5::SaveExtension::encode({ .gameRulesState = &rules });
+    writeU16(unsupportedVersion, 20, 2);
+    EXPECT_THROW(S5::SaveExtension::decode(unsupportedVersion), std::runtime_error);
+
+    auto unknownBits = S5::SaveExtension::encode({ .gameRulesState = &rules });
+    unknownBits[28] = std::byte{ 4 };
+    EXPECT_THROW(S5::SaveExtension::decode(unknownBits), std::runtime_error);
+
+    auto optionalSection = S5::SaveExtension::encode({ .gameRulesState = &rules });
+    writeU16(optionalSection, 22, 0);
+    EXPECT_THROW(S5::SaveExtension::decode(optionalSection), std::runtime_error);
+
+    auto duplicate = S5::SaveExtension::encode({ .gameRulesState = &rules });
+    const std::vector duplicateSection(duplicate.begin() + 16, duplicate.end());
+    duplicate.insert(duplicate.end(), duplicateSection.begin(), duplicateSection.end());
+    writeU32(duplicate, 12, static_cast<uint32_t>(duplicate.size() - 16));
+    EXPECT_THROW(S5::SaveExtension::decode(duplicate), std::runtime_error);
+}
+
+TEST(SaveExtension, RoundTripsCanonicalExtendedVehicleObjects)
+{
+    const auto state = vehicleObjectState();
+    const auto encoded = S5::SaveExtension::encode({ .vehicleObjectState = &state });
+    const auto decoded = S5::SaveExtension::decode(encoded);
+
+    ASSERT_TRUE(decoded.vehicleObjectState.has_value());
+    auto expected = state;
+    std::ranges::sort(expected.objects, {}, &S5::SaveExtension::VehicleObjectSlot::slot);
+    EXPECT_EQ(*decoded.vehicleObjectState, expected);
+    EXPECT_EQ(S5::SaveExtension::encode(decoded), encoded);
+    EXPECT_FALSE(decoded.gameRulesState.has_value());
+    EXPECT_EQ(decoded.gameRulesState.value_or(GameRules::kDefaultState), GameRules::kDefaultState);
+
+    expectTag(encoded, 16, "VOBJ");
+    EXPECT_EQ(readU16(encoded, 20), 1);
+    EXPECT_EQ(readU16(encoded, 22), 1);
+    EXPECT_EQ(readU16(encoded, 28), 2);
+    EXPECT_EQ(readU16(encoded, 30), S5::Limits::kMaxCompanies);
+    EXPECT_EQ(readU16(encoded, 32), 13);
+    EXPECT_EQ(readU16(encoded, 34), 224);
+    EXPECT_EQ(readU16(encoded, 52), 999);
+}
+
+TEST(SaveExtension, RejectsInvalidExtendedVehicleObjectEntries)
+{
+    auto invalidSlot = vehicleObjectState();
+    invalidSlot.objects[0].slot = 1000;
+    EXPECT_THROW(S5::SaveExtension::encode({ .vehicleObjectState = &invalidSlot }), std::runtime_error);
+
+    auto invalidType = vehicleObjectState();
+    invalidType.objects[0].header.flags = enumValue(ObjectType::road);
+    EXPECT_THROW(S5::SaveExtension::encode({ .vehicleObjectState = &invalidType }), std::runtime_error);
+
+    auto duplicate = vehicleObjectState();
+    duplicate.objects[0].slot = duplicate.objects[1].slot;
+    EXPECT_THROW(S5::SaveExtension::encode({ .vehicleObjectState = &duplicate }), std::runtime_error);
+
+    const S5::SaveExtension::VehicleObjectState empty;
+    EXPECT_THROW(S5::SaveExtension::encode({ .vehicleObjectState = &empty }), std::runtime_error);
+}
+
+TEST(SaveExtension, RejectsMalformedExtendedVehicleObjectEntries)
+{
+    const auto state = vehicleObjectState();
+
+    auto nonCanonical = S5::SaveExtension::encode({ .vehicleObjectState = &state });
+    writeU16(nonCanonical, 52, 224);
+    EXPECT_THROW(S5::SaveExtension::decode(nonCanonical), std::runtime_error);
+
+    auto outOfBounds = S5::SaveExtension::encode({ .vehicleObjectState = &state });
+    writeU16(outOfBounds, 34, 223);
+    EXPECT_THROW(S5::SaveExtension::decode(outOfBounds), std::runtime_error);
+
+    auto invalidType = S5::SaveExtension::encode({ .vehicleObjectState = &state });
+    writeU32(invalidType, 36, enumValue(ObjectType::road));
+    EXPECT_THROW(S5::SaveExtension::decode(invalidType), std::runtime_error);
+
+    auto unsupportedVersion = S5::SaveExtension::encode({ .vehicleObjectState = &state });
+    writeU16(unsupportedVersion, 20, 2);
+    EXPECT_THROW(S5::SaveExtension::decode(unsupportedVersion), std::runtime_error);
+
+    auto optionalSection = S5::SaveExtension::encode({ .vehicleObjectState = &state });
+    writeU16(optionalSection, 22, 0);
+    EXPECT_THROW(S5::SaveExtension::decode(optionalSection), std::runtime_error);
+}
+
+TEST(SaveExtension, RejectsInvalidExtendedVehicleUnlockDimensions)
+{
+    const auto state = vehicleObjectState();
+
+    auto companyCount = S5::SaveExtension::encode({ .vehicleObjectState = &state });
+    writeU16(companyCount, 30, S5::Limits::kMaxCompanies - 1);
+    EXPECT_THROW(S5::SaveExtension::decode(companyCount), std::runtime_error);
+
+    auto wordCount = S5::SaveExtension::encode({ .vehicleObjectState = &state });
+    writeU16(wordCount, 32, 12);
+    EXPECT_THROW(S5::SaveExtension::decode(wordCount), std::runtime_error);
+}
+
+TEST(SaveExtension, RejectsUnlocksForEmptyVehicleSlotsAndPadding)
+{
+    auto emptySlot = vehicleObjectState();
+    emptySlot.companyUnlocks[0].set(1, true);
+    EXPECT_THROW(S5::SaveExtension::encode({ .vehicleObjectState = &emptySlot }), std::runtime_error);
+
+    const auto state = vehicleObjectState();
+    constexpr size_t kUnlockDataOffset = 34 + 2 * (sizeof(uint16_t) + sizeof(ObjectHeader));
+    auto decodedEmptySlot = S5::SaveExtension::encode({ .vehicleObjectState = &state });
+    decodedEmptySlot[kUnlockDataOffset] |= std::byte{ 2 };
+    EXPECT_THROW(S5::SaveExtension::decode(decodedEmptySlot), std::runtime_error);
+
+    auto padding = S5::SaveExtension::encode({ .vehicleObjectState = &state });
+    padding[kUnlockDataOffset + 12 * sizeof(uint64_t) + 1] = std::byte{ 1 };
+    EXPECT_THROW(S5::SaveExtension::decode(padding), std::runtime_error);
+}
+
+TEST(SaveExtension, RejectsTruncatedExtendedVehicleObjects)
+{
+    const auto state = vehicleObjectState();
+    auto encoded = S5::SaveExtension::encode({ .vehicleObjectState = &state });
+    encoded.pop_back();
+
+    EXPECT_THROW(S5::SaveExtension::decode(encoded), std::runtime_error);
+}
+
+TEST(SaveExtension, RejectsDuplicateExtendedVehicleObjectSection)
+{
+    const auto state = vehicleObjectState();
+    auto encoded = S5::SaveExtension::encode({ .vehicleObjectState = &state });
+    const std::vector duplicate(encoded.begin() + 16, encoded.end());
+    encoded.insert(encoded.end(), duplicate.begin(), duplicate.end());
+    writeU32(encoded, 12, static_cast<uint32_t>(encoded.size() - 16));
+
+    EXPECT_THROW(S5::SaveExtension::decode(encoded), std::runtime_error);
+}
+
 TEST(SaveExtension, RailTrafficEncodingIsDeterministic)
 {
     auto first = railTrafficState();
@@ -394,6 +584,7 @@ TEST(SaveExtension, DecodesLegacyCargoDist)
     EXPECT_EQ(CargoDist::encodeState(*decoded.cargoDistState), encoded);
     EXPECT_FALSE(decoded.sharedOrderState.has_value());
     EXPECT_FALSE(decoded.vehicleAutoRenewalState.has_value());
+    EXPECT_FALSE(decoded.gameRulesState.has_value());
 
     auto versionOne = CargoDist::encodeState(CargoDist::State{});
     versionOne[8] = std::byte{ 1 };
@@ -403,6 +594,7 @@ TEST(SaveExtension, DecodesLegacyCargoDist)
     ASSERT_TRUE(decodedVersionOne.cargoDistState.has_value());
     EXPECT_FALSE(decodedVersionOne.sharedOrderState.has_value());
     EXPECT_FALSE(decodedVersionOne.vehicleAutoRenewalState.has_value());
+    EXPECT_FALSE(decodedVersionOne.gameRulesState.has_value());
 }
 
 TEST(SaveExtension, RejectsInvalidVehicleAutoRenewalState)

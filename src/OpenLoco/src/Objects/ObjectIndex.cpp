@@ -2,6 +2,7 @@
 #include "Environment.h"
 #include "Game.h"
 #include "GameCommands/GameCommands.h"
+#include "GameRules.h"
 #include "GameState.h"
 #include "GameStateFlags.h"
 #include "Graphics/Gfx.h"
@@ -40,6 +41,7 @@
 #include <OpenLoco/Utility/String.hpp>
 #include <cstdint>
 #include <fstream>
+#include <utility>
 
 using namespace OpenLoco::Diagnostics;
 
@@ -56,6 +58,15 @@ namespace OpenLoco::ObjectManager
 
     static constexpr uint8_t kCurrentIndexVersion = 5;
     static constexpr uint32_t kMaxStringLength = 1024;
+
+    size_t getMaxSelectableObjects(const ObjectType type)
+    {
+        if (type == ObjectType::vehicle && !GameRules::extendedVehicleObjects())
+        {
+            return S5::Limits::kMaxVehicleObjects;
+        }
+        return getMaxObjects(type);
+    }
 
     struct ObjectFolderState
     {
@@ -718,7 +729,7 @@ namespace OpenLoco::ObjectManager
         }
 
         // If this was selected too many objects would be selected
-        if (selection.selectionMetaData.numSelectedObjects[enumValue(objHeader.getType())] >= getMaxObjects(objHeader.getType()))
+        if (selection.selectionMetaData.numSelectedObjects[enumValue(objHeader.getType())] >= getMaxSelectableObjects(objHeader.getType()))
         {
             GameCommands::setErrorText(StringIds::too_many_objects_of_this_type_selected);
             return false;
@@ -762,7 +773,7 @@ namespace OpenLoco::ObjectManager
         }
 
         // Its possible that we have loaded other objects so check again that we haven't exceeded object counts
-        if (selection.selectionMetaData.numSelectedObjects[enumValue(objHeader.getType())] >= getMaxObjects(objHeader.getType()))
+        if (selection.selectionMetaData.numSelectedObjects[enumValue(objHeader.getType())] >= getMaxSelectableObjects(objHeader.getType()))
         {
             GameCommands::setErrorText(StringIds::too_many_objects_of_this_type_selected);
             return false;
@@ -861,6 +872,52 @@ namespace OpenLoco::ObjectManager
     bool ObjectIndexSelection::selectObject(SelectObjectModes mode, const ObjectHeader& objHeader)
     {
         return selectObjectFromIndexInternal(mode, false, objHeader, *this);
+    }
+
+    bool ObjectIndexSelection::selectVehicleObjects(SelectObjectModes mode, VehicleType vehicleType)
+    {
+        auto pendingSelection = *this;
+        for (const auto& entry : _installedObjectList)
+        {
+            if (entry._header.getType() != ObjectType::vehicle || entry._displayData.vehicleSubType != enumValue(vehicleType))
+            {
+                continue;
+            }
+
+            if (!pendingSelection.selectObject(mode, entry._header))
+            {
+                return false;
+            }
+        }
+
+        *this = std::move(pendingSelection);
+        return true;
+    }
+
+    bool ObjectIndexSelection::hasExtendedVehicleObjectsSelected() const
+    {
+        if (selectionMetaData.numSelectedObjects[enumValue(ObjectType::vehicle)] > S5::Limits::kMaxVehicleObjects)
+        {
+            return true;
+        }
+
+        const auto selectedOrInUse = SelectedObjectsFlags::selected | SelectedObjectsFlags::inUse;
+        for (size_t index = 0; index < std::min(objectFlags.size(), _installedObjectList.size()); ++index)
+        {
+            const auto& entry = _installedObjectList[index];
+            if (entry._header.getType() != ObjectType::vehicle
+                || (objectFlags[index] & selectedOrInUse) == SelectedObjectsFlags::none)
+            {
+                continue;
+            }
+
+            const auto handle = findObjectHandle(entry._header);
+            if (handle.has_value() && handle->id >= S5::Limits::kMaxVehicleObjects)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     // 0x00472DA1

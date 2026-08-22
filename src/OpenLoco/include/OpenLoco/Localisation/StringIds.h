@@ -2251,6 +2251,13 @@ namespace OpenLoco::StringIds
     constexpr StringId station_cargo_groups_omitted = 2539;
     constexpr StringId tooltip_cargo_group_by = 2540;
     constexpr StringId tooltip_cargo_sort_by = 2541;
+    constexpr StringId select_all = 2542;
+    constexpr StringId deselect_all = 2543;
+    constexpr StringId vehicles_never_expire = 2544;
+    constexpr StringId tooltip_vehicles_never_expire = 2545;
+    constexpr StringId extended_vehicle_objects = 2546;
+    constexpr StringId tooltip_extended_vehicle_objects = 2547;
+    constexpr StringId extended_vehicle_objects_in_use = 2548;
 
     constexpr StringId temporary_object_load_str_0 = 8192;
     constexpr StringId temporary_object_load_str_1 = 8193;

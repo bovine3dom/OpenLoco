@@ -47,7 +47,7 @@ namespace OpenLoco::Scenario
                 continue;
             }
             uint32_t requiredMods = 0xFFFFFFFFU;
-            for (uint8_t vehicleObjId = 0; vehicleObjId < ObjectManager::getMaxObjects(ObjectType::vehicle); ++vehicleObjId)
+            for (LoadedObjectId vehicleObjId = 0; vehicleObjId < ObjectManager::getMaxObjects(ObjectType::vehicle); ++vehicleObjId)
             {
                 auto* vehObj = ObjectManager::get<VehicleObject>(vehicleObjId);
                 if (vehObj == nullptr)
@@ -107,7 +107,7 @@ namespace OpenLoco::Scenario
                 continue;
             }
             uint32_t requiredMods = 0xFFFFFFFFU;
-            for (uint8_t vehicleObjId = 0; vehicleObjId < ObjectManager::getMaxObjects(ObjectType::vehicle); ++vehicleObjId)
+            for (LoadedObjectId vehicleObjId = 0; vehicleObjId < ObjectManager::getMaxObjects(ObjectType::vehicle); ++vehicleObjId)
             {
                 auto* vehObj = ObjectManager::get<VehicleObject>(vehicleObjId);
                 if (vehObj == nullptr)

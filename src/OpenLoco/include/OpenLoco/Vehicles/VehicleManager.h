@@ -5,6 +5,7 @@
 namespace OpenLoco
 {
     struct Company;
+    struct VehicleObject;
 }
 
 namespace OpenLoco::Vehicles
@@ -21,6 +22,7 @@ namespace OpenLoco::VehicleManager
     void tick();
     void updateMonthly();
     void updateDaily();
+    bool isVehicleObjectAvailable(const VehicleObject& vehicleObject, uint16_t currentYear);
     void determineAvailableVehicles(Company& company);
     uint16_t determineAvailableVehicleTypes(const Company& company);
     void resetIfHeadingForStation(const StationId stationId);

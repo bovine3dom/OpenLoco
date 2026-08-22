@@ -486,7 +486,7 @@ namespace OpenLoco
         company.numExpenditureYears = std::min<uint8_t>(company.numExpenditureYears + 1, kExpenditureHistoryCapacity);
     }
 
-    bool Company::isVehicleIndexUnlocked(const uint8_t vehicleIndex) const
+    bool Company::isVehicleIndexUnlocked(const uint16_t vehicleIndex) const
     {
         return unlockedVehicles[vehicleIndex];
     }

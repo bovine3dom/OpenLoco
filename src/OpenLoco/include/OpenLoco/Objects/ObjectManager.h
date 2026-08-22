@@ -69,10 +69,11 @@ namespace OpenLoco::ObjectManager
             Limits::kMaxCompetitorObjects,
             Limits::kMaxScenarioTextObjects
         };
+        static_assert(std::size(counts) == kMaxObjectTypes);
         return counts[(size_t)type];
     };
 
-    constexpr size_t kMaxObjects = 859;
+    constexpr size_t kMaxObjects = S5::Limits::kMaxObjectHeaders + Limits::kMaxVehicleObjects - S5::Limits::kMaxVehicleObjects;
 
     Object* getAny(const LoadedObjectHandle& handle);
 

@@ -25,7 +25,7 @@ namespace OpenLoco::S5
             dst.vehicleColours[i][1] = enumValue(src.vehicleColours[i].secondary);
         }
         dst.customVehicleColoursSet = src.customVehicleColoursSet;
-        for (auto i = 0U; i < 224; ++i)
+        for (size_t i = 0; i < S5::Limits::kMaxVehicleObjects; ++i)
         {
             dst.unlockedVehicles[i / 32] |= src.unlockedVehicles[i] << static_cast<uint32_t>((i % 32));
         }
@@ -320,7 +320,7 @@ namespace OpenLoco::S5
             dst.vehicleColours[i].secondary = static_cast<Colour>(src.vehicleColours[i][1]);
         }
         dst.customVehicleColoursSet = src.customVehicleColoursSet;
-        for (auto i = 0U; i < 224; ++i)
+        for (size_t i = 0; i < S5::Limits::kMaxVehicleObjects; ++i)
         {
             dst.unlockedVehicles[i] = (src.unlockedVehicles[i / 32] >> static_cast<uint32_t>(i % 32)) & 0x1;
         }

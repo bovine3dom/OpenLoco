@@ -1,5 +1,7 @@
 #include "Scenario/ScenarioOptions.h"
 #include "Economy/Economy.h"
+#include "GameCommands/General/SetVehiclesNeverExpire.h"
+#include "GameRules.h"
 #include "GameState.h"
 #include "Graphics/Colour.h"
 #include "Graphics/ImageIds.h"
@@ -34,7 +36,7 @@
 namespace OpenLoco::Ui::Windows::ScenarioOptions
 {
     static constexpr Ui::Size kChallengeWindowSize = { 366, 197 };
-    static constexpr Ui::Size kCompaniesWindowSize = { 366, 260 };
+    static constexpr Ui::Size kCompaniesWindowSize = { 366, 297 };
     static constexpr Ui::Size kOtherWindowSize = { 366, 217 };
 
     namespace Common
@@ -619,6 +621,8 @@ namespace OpenLoco::Ui::Windows::ScenarioOptions
             player_forbid_trams,
             player_forbid_aircraft,
             player_forbid_ships,
+            groupbox_gameplay_tweaks,
+            vehicles_never_expire,
         };
 
         namespace Widx
@@ -647,6 +651,7 @@ namespace OpenLoco::Ui::Windows::ScenarioOptions
             constexpr WidgetId kPlayerForbidTrams{ "player_forbid_trams" };
             constexpr WidgetId kPlayerForbidAircraft{ "player_forbid_aircraft" };
             constexpr WidgetId kPlayerForbidShips{ "player_forbid_ships" };
+            constexpr WidgetId kVehiclesNeverExpire{ "vehicles_never_expire" };
         }
 
         static constexpr auto widgets = makeWidgets(
@@ -670,7 +675,9 @@ namespace OpenLoco::Ui::Windows::ScenarioOptions
             Widgets::Checkbox(Widx::kPlayerForbidTrucks, { 15 + 113 * 1, 233 }, { 110, 12 }, WindowColour::secondary, StringIds::forbid_trucks),
             Widgets::Checkbox(Widx::kPlayerForbidTrams, { 15 + 113 * 0, 233 }, { 110, 12 }, WindowColour::secondary, StringIds::forbid_trams),
             Widgets::Checkbox(Widx::kPlayerForbidAircraft, { 15 + 113 * 2, 219 }, { 110, 12 }, WindowColour::secondary, StringIds::forbid_aircraft),
-            Widgets::Checkbox(Widx::kPlayerForbidShips, { 15 + 113 * 2, 233 }, { 110, 12 }, WindowColour::secondary, StringIds::forbid_ships)
+            Widgets::Checkbox(Widx::kPlayerForbidShips, { 15 + 113 * 2, 233 }, { 110, 12 }, WindowColour::secondary, StringIds::forbid_ships),
+            Widgets::GroupBox({ 5, 254 }, { 356, 35 }, WindowColour::secondary, StringIds::gameplay_tweaks),
+            Widgets::Checkbox(Widx::kVehiclesNeverExpire, { 15, 270 }, { 336, 12 }, WindowColour::secondary, StringIds::vehicles_never_expire, StringIds::tooltip_vehicles_never_expire)
 
         );
 
@@ -869,6 +876,13 @@ namespace OpenLoco::Ui::Windows::ScenarioOptions
                     }
                     break;
                 }
+
+                case Widx::kVehiclesNeverExpire:
+                {
+                    const GameCommands::SetVehiclesNeverExpireArgs args(!GameRules::vehiclesNeverExpire());
+                    GameCommands::doCommand(args, GameCommands::Flags::apply);
+                    break;
+                }
             }
         }
 
@@ -898,6 +912,23 @@ namespace OpenLoco::Ui::Windows::ScenarioOptions
             // TODO(avgeffen): replace with wicked smart widget-id kerfuffle, someday.
             self.activatedWidgets |= static_cast<uint64_t>(state.forbiddenVehiclesCompetitors) << widx::competitor_forbid_trains;
             self.activatedWidgets |= static_cast<uint64_t>(state.forbiddenVehiclesPlayers) << widx::player_forbid_trains;
+
+            if (GameRules::vehiclesNeverExpire())
+            {
+                self.activatedWidgets |= 1ULL << widx::vehicles_never_expire;
+            }
+            else
+            {
+                self.activatedWidgets &= ~(1ULL << widx::vehicles_never_expire);
+            }
+            if (SceneManager::isNetworked() && !SceneManager::isNetworkHost())
+            {
+                self.disabledWidgets |= 1ULL << widx::vehicles_never_expire;
+            }
+            else
+            {
+                self.disabledWidgets &= ~(1ULL << widx::vehicles_never_expire);
+            }
         }
 
         static constexpr WindowEventList kEvents = {

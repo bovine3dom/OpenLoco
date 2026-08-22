@@ -9,6 +9,7 @@
 #include "EditorController.h"
 #include "Entities/EntityManager.h"
 #include "Game.h"
+#include "GameRules.h"
 #include "GameState.h"
 #include "GameStateFlags.h"
 #include "Gui.h"
@@ -78,6 +79,93 @@ namespace OpenLoco::S5
     static LoadError _lastLoadError;
 
     static bool exportGameState(Stream& stream, const S5File& file, const std::vector<ObjectHeader>& packedObjects);
+
+    static constexpr size_t kVehicleObjectOffset = [] {
+        size_t offset = 0;
+        for (uint8_t type = 0; type < enumValue(ObjectType::vehicle); ++type)
+        {
+            offset += ObjectManager::getMaxObjects(static_cast<ObjectType>(type));
+        }
+        return offset;
+    }();
+    static constexpr size_t kLegacyPostVehicleObjectOffset = kVehicleObjectOffset + S5::Limits::kMaxVehicleObjects;
+    static constexpr size_t kRuntimePostVehicleObjectOffset = kVehicleObjectOffset + OpenLoco::Limits::kMaxVehicleObjects;
+
+    static_assert(kLegacyPostVehicleObjectOffset + ObjectManager::kMaxObjects - kRuntimePostVehicleObjectOffset == S5::Limits::kMaxObjectHeaders);
+
+    RequiredObjectHeaders exportRequiredObjectHeaders(const std::span<const ObjectHeader> objects)
+    {
+        if (objects.size() != ObjectManager::kMaxObjects)
+        {
+            throw Exception::InvalidArgument("Invalid runtime required object table size");
+        }
+
+        RequiredObjectHeaders result{};
+        std::copy_n(objects.begin(), kLegacyPostVehicleObjectOffset, result.begin());
+        std::copy(objects.begin() + kRuntimePostVehicleObjectOffset, objects.end(), result.begin() + kLegacyPostVehicleObjectOffset);
+        return result;
+    }
+
+    std::vector<ObjectHeader> importRequiredObjectHeaders(const std::span<const ObjectHeader> objects, const SaveExtension::VehicleObjectState* vehicleObjectState)
+    {
+        if (objects.size() != S5::Limits::kMaxObjectHeaders)
+        {
+            throw Exception::InvalidArgument("Invalid legacy required object table size");
+        }
+
+        std::vector<ObjectHeader> result(ObjectManager::kMaxObjects, kEmptyObjectHeader);
+        std::copy_n(objects.begin(), kLegacyPostVehicleObjectOffset, result.begin());
+        std::copy(objects.begin() + kLegacyPostVehicleObjectOffset, objects.end(), result.begin() + kRuntimePostVehicleObjectOffset);
+
+        if (vehicleObjectState != nullptr)
+        {
+            uint16_t previousSlot{};
+            for (size_t i = 0; i < vehicleObjectState->objects.size(); ++i)
+            {
+                const auto& object = vehicleObjectState->objects[i];
+                if (object.slot < SaveExtension::kExtendedVehicleObjectStart || object.slot >= OpenLoco::Limits::kMaxVehicleObjects
+                    || (i != 0 && previousSlot >= object.slot)
+                    || object.header.isEmpty() || object.header.getType() != ObjectType::vehicle)
+                {
+                    throw Exception::InvalidArgument("Invalid extended vehicle object state");
+                }
+                result[kVehicleObjectOffset + object.slot] = object.header;
+                previousSlot = object.slot;
+            }
+        }
+        return result;
+    }
+
+    static std::optional<SaveExtension::VehicleObjectState> captureExtendedVehicleObjects(const std::span<const ObjectHeader> objects)
+    {
+        SaveExtension::VehicleObjectState state;
+        for (size_t slot = SaveExtension::kExtendedVehicleObjectStart; slot < OpenLoco::Limits::kMaxVehicleObjects; ++slot)
+        {
+            const auto& header = objects[kVehicleObjectOffset + slot];
+            if (header.isEmpty())
+            {
+                continue;
+            }
+            state.objects.push_back({ static_cast<uint16_t>(slot), header });
+        }
+        if (state.objects.empty())
+        {
+            return std::nullopt;
+        }
+
+        const auto& companies = getGameState().companies;
+        for (const auto& object : state.objects)
+        {
+            for (size_t company = 0; company < std::size(companies); ++company)
+            {
+                if (companies[company].unlockedVehicles[object.slot])
+                {
+                    state.companyUnlocks[company].set(object.slot - SaveExtension::kExtendedVehicleObjectStart, true);
+                }
+            }
+        }
+        return state;
+    }
 
     constexpr bool hasSaveFlags(SaveFlags flags, SaveFlags flagsToTest)
     {
@@ -542,7 +630,7 @@ namespace OpenLoco::S5
         }
     }
 
-    static std::unique_ptr<S5File> prepareGameState(SaveFlags flags, const std::vector<ObjectHeader>& requiredObjects, const std::vector<ObjectHeader>& packedObjects)
+    static std::unique_ptr<S5File> prepareGameState(SaveFlags flags, const RequiredObjectHeaders& requiredObjects, const std::vector<ObjectHeader>& packedObjects)
     {
         // Set saved view from main viewport
         auto mainWindow = WindowManager::getMainWindow();
@@ -553,7 +641,7 @@ namespace OpenLoco::S5
 
         // Prepare header, scenario or save details
         file->header = prepareHeader(flags, packedObjects.size());
-        if (file->header.type == S5Type::scenario || file->header.type == S5Type::landscape)
+        if (file->header.type == S5Type::scenario)
         {
             file->scenarioOptions = std::make_unique<Options>(exportOptions(Scenario::getOptions()));
         }
@@ -632,16 +720,19 @@ namespace OpenLoco::S5
 
         bool saveResult;
         {
-            auto requiredObjects = ObjectManager::getHeaders();
+            const auto runtimeRequiredObjects = ObjectManager::getHeaders();
+            const auto requiredObjects = exportRequiredObjectHeaders(runtimeRequiredObjects);
+            auto vehicleObjectState = captureExtendedVehicleObjects(runtimeRequiredObjects);
             std::vector<ObjectHeader> packedObjects;
             if (shouldPackObjects(flags))
             {
-                std::copy_if(requiredObjects.begin(), requiredObjects.end(), std::back_inserter(packedObjects), [](ObjectHeader& header) {
+                std::copy_if(runtimeRequiredObjects.begin(), runtimeRequiredObjects.end(), std::back_inserter(packedObjects), [](const ObjectHeader& header) {
                     return !header.isEmpty() && !header.isVanilla();
                 });
             }
 
             auto file = prepareGameState(flags, requiredObjects, packedObjects);
+            file->vehicleObjectState = std::move(vehicleObjectState);
             saveResult = exportGameState(stream, *file, packedObjects);
         }
 
@@ -680,8 +771,18 @@ namespace OpenLoco::S5
         try
         {
             std::vector<std::byte> extensionData;
-            if (file.header.type == S5Type::savedGame
-                && !file.header.hasFlags(HeaderFlags::isRaw | HeaderFlags::isDump | HeaderFlags::isTitleSequence))
+            const auto supportsRuleExtension = (file.header.type == S5Type::savedGame || file.header.type == S5Type::scenario || file.header.type == S5Type::landscape)
+                && !file.header.hasFlags(HeaderFlags::isRaw | HeaderFlags::isTitleSequence);
+            const auto supportsGameplayExtension = (file.header.type == S5Type::savedGame || file.header.type == S5Type::landscape)
+                && !file.header.hasFlags(HeaderFlags::isRaw | HeaderFlags::isDump | HeaderFlags::isTitleSequence);
+            const auto gameRulesState = GameRules::captureState();
+            const auto* gameRules = gameRulesState == GameRules::kDefaultState ? nullptr : &gameRulesState;
+            const auto* vehicleObjects = file.vehicleObjectState ? &*file.vehicleObjectState : nullptr;
+            if (vehicleObjects != nullptr && !gameRulesState.extendedVehicleObjects)
+            {
+                throw Exception::RuntimeError("Extended vehicle objects require the extended-object game rule");
+            }
+            if (supportsGameplayExtension)
             {
                 const auto sharedOrderState = Vehicles::SharedOrderManager::captureState();
                 if (!Vehicles::SharedOrderManager::validateState(sharedOrderState))
@@ -726,7 +827,9 @@ namespace OpenLoco::S5
                     entry.stationTiles.assign(std::begin(station.stationTiles), std::begin(station.stationTiles) + station.stationTileSize);
                 }
                 const auto hasStationTileOverflow = !stationTileOverflow.empty();
-                extensionData = sharedOrderState.groups.empty() && !hasPathReservations && !hasVehicleAutoRenewal && !hasVehicleReplacement && !hasRailTraffic && !hasStationTileOverflow
+                const auto hasModernState = !sharedOrderState.groups.empty() || hasPathReservations || hasVehicleAutoRenewal
+                    || hasVehicleReplacement || hasRailTraffic || hasStationTileOverflow || gameRules != nullptr || vehicleObjects != nullptr;
+                extensionData = !hasModernState
                     ? CargoDist::encodeState(CargoDist::getStateConst())
                     : SaveExtension::encode({
                           .cargoDistState = &CargoDist::getStateConst(),
@@ -736,18 +839,27 @@ namespace OpenLoco::S5
                           .vehicleReplacementState = hasVehicleReplacement ? &vehicleReplacementState : nullptr,
                           .railTrafficState = hasRailTraffic ? &railTrafficState : nullptr,
                           .stationTileOverflowState = hasStationTileOverflow ? &stationTileOverflow : nullptr,
+                          .gameRulesState = gameRules,
+                          .vehicleObjectState = vehicleObjects,
                       });
+            }
+            else if (supportsRuleExtension && (gameRules != nullptr || vehicleObjects != nullptr))
+            {
+                extensionData = SaveExtension::encode({
+                    .gameRulesState = gameRules,
+                    .vehicleObjectState = vehicleObjects,
+                });
             }
 
             SawyerStreamWriter fs(stream);
             fs.writeChunk(SawyerEncoding::rotate, file.header);
-            if (file.header.type == S5Type::scenario || file.header.type == S5Type::landscape)
-            {
-                fs.writeChunk(SawyerEncoding::rotate, *file.scenarioOptions);
-            }
             if (file.header.hasFlags(HeaderFlags::hasSaveDetails))
             {
                 fs.writeChunk(SawyerEncoding::rotate, *file.saveDetails);
+            }
+            if (file.header.type == S5Type::scenario)
+            {
+                fs.writeChunk(SawyerEncoding::rotate, *file.scenarioOptions);
             }
             if (file.header.numPackedObjects != 0)
             {
@@ -766,11 +878,13 @@ namespace OpenLoco::S5
                 fs.writeChunk(SawyerEncoding::runLengthSingle, file.gameState);
             }
 
+            const auto hasScenarioTiles = file.header.type != S5Type::scenario
+                || (static_cast<GameStateFlags>(file.gameState.general.flags) & GameStateFlags::tileManagerLoaded) != GameStateFlags::none;
             if (file.header.hasFlags(HeaderFlags::isRaw))
             {
                 throw Exception::NotImplemented();
             }
-            else
+            else if (hasScenarioTiles)
             {
                 fs.writeChunk(SawyerEncoding::runLengthMulti, file.tileElements.data(), file.tileElements.size() * sizeof(TileElement));
             }
@@ -882,7 +996,9 @@ namespace OpenLoco::S5
             std::memcpy(file->tileElements.data(), tileElements.data(), numTileElements * sizeof(TileElement));
         }
 
-        if (file->header.type == S5Type::savedGame)
+        const auto supportsExtension = (file->header.type == S5Type::savedGame || file->header.type == S5Type::scenario || file->header.type == S5Type::landscape)
+            && !file->header.hasFlags(HeaderFlags::isRaw | HeaderFlags::isTitleSequence);
+        if (supportsExtension)
         {
             const auto checksumPosition = stream.getLength() - sizeof(uint32_t);
             if (stream.getPosition() < checksumPosition)
@@ -914,6 +1030,13 @@ namespace OpenLoco::S5
                 file->vehicleReplacementState = std::move(extensionState.vehicleReplacementState);
                 file->railTrafficState = std::move(extensionState.railTrafficState);
                 file->stationTileOverflowState = std::move(extensionState.stationTileOverflowState);
+                file->gameRulesState = std::move(extensionState.gameRulesState);
+                file->vehicleObjectState = std::move(extensionState.vehicleObjectState);
+                if (file->vehicleObjectState.has_value()
+                    && (!file->gameRulesState.has_value() || !file->gameRulesState->extendedVehicleObjects))
+                {
+                    throw Exception::RuntimeError("Extended vehicle objects require the extended-object game rule");
+                }
             }
             if (stream.getPosition() != checksumPosition)
             {
@@ -1099,6 +1222,18 @@ namespace OpenLoco::S5
             }
 
             auto importedGameState = importGameState(file->gameState);
+            if (file->vehicleObjectState.has_value())
+            {
+                for (size_t company = 0; company < Limits::kMaxCompanies; ++company)
+                {
+                    for (const auto& object : file->vehicleObjectState->objects)
+                    {
+                        importedGameState->companies[company].unlockedVehicles.set(
+                            object.slot,
+                            file->vehicleObjectState->companyUnlocks[company][object.slot - SaveExtension::kExtendedVehicleObjectStart]);
+                    }
+                }
+            }
             if (file->stationTileOverflowState.has_value())
             {
                 for (const auto& overflow : *file->stationTileOverflowState)
@@ -1140,7 +1275,8 @@ namespace OpenLoco::S5
             }
 
             // Load required objects
-            auto loadObjectResult = ObjectManager::loadAll(file->requiredObjects);
+            auto requiredObjects = importRequiredObjectHeaders(file->requiredObjects, file->vehicleObjectState ? &*file->vehicleObjectState : nullptr);
+            auto loadObjectResult = ObjectManager::loadAll(requiredObjects);
             if (!loadObjectResult.success)
             {
                 _lastLoadError = LoadError{
@@ -1172,6 +1308,7 @@ namespace OpenLoco::S5
 
             // Copy the S5 gamestate contents to the destination gamestate, field by field
             dst = std::move(*importedGameState);
+            GameRules::restoreState(file->gameRulesState.value_or(GameRules::kDefaultState));
             auto* cargoDistState = file->cargoDistState.has_value() && !hasLoadFlags(flags, LoadFlags::titleSequence)
                 ? &*file->cargoDistState
                 : nullptr;

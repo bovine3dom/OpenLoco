@@ -173,6 +173,7 @@ namespace OpenLoco
             constexpr uint16_t calculateHash() const;
         };
 
+        // Offset comments refer to the legacy S5::Company layout.
         StringId name;
         StringId ownerName;
         CompanyFlags challengeFlags;                                                    // 0x04
@@ -185,7 +186,7 @@ namespace OpenLoco
         ColourScheme mainColours;                                                       // 0x1A
         ColourScheme vehicleColours[10];                                                // 0x1C
         uint32_t customVehicleColoursSet;                                               // 0x30
-        BitSet<224> unlockedVehicles;                                                   // 0x34
+        BitSet<Limits::kMaxVehicleObjects> unlockedVehicles;                            // 0x34 in S5::Company
         uint16_t availableVehicles;                                                     // 0x50
         AiPlaystyleFlags aiPlaystyleFlags;                                              // 0x52
         uint8_t aiPlaystyleTownId;                                                      // 0x56
@@ -267,7 +268,7 @@ namespace OpenLoco
 
         CompanyId id() const;
         bool empty() const;
-        bool isVehicleIndexUnlocked(const uint8_t vehicleIndex) const;
+        bool isVehicleIndexUnlocked(const uint16_t vehicleIndex) const;
         void recalculateTransportCounts();
         void clearOwnerStatusForDeletedVehicle(EntityId vehicleId);
         void updateDaily();

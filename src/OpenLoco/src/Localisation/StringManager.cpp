@@ -8,9 +8,6 @@
 
 namespace OpenLoco::StringManager
 {
-    // 0x2000 lang strings, 0x10 temp obj strings, 0x45E loaded obj strings
-    constexpr size_t kNumStringPointers = 0x246E; // 9326 strings
-
     // Size for buffer strings that are used for temporary text storage
     static constexpr size_t kBufferStringSize = 512;
 

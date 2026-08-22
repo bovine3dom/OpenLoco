@@ -8,6 +8,7 @@
 #include <OpenLoco/World/Station.h>
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <limits>
 #include <ranges>
 #include <stdexcept>
@@ -17,6 +18,27 @@
 
 namespace OpenLoco::S5::SaveExtension
 {
+    bool VehicleObjectSlot::operator==(const VehicleObjectSlot& rhs) const
+    {
+        return slot == rhs.slot && std::memcmp(&header, &rhs.header, sizeof(header)) == 0;
+    }
+
+    bool VehicleObjectState::operator==(const VehicleObjectState& rhs) const
+    {
+        if (objects != rhs.objects)
+        {
+            return false;
+        }
+        for (size_t company = 0; company < companyUnlocks.size(); ++company)
+        {
+            if (companyUnlocks[company].data() != rhs.companyUnlocks[company].data())
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
     namespace
     {
         constexpr std::array<std::byte, 8> kMagic = {
@@ -81,6 +103,18 @@ namespace OpenLoco::S5::SaveExtension
             std::byte{ 'N' },
             std::byte{ 'S' },
         };
+        constexpr std::array<std::byte, 4> kGameRulesTag = {
+            std::byte{ 'R' },
+            std::byte{ 'U' },
+            std::byte{ 'L' },
+            std::byte{ 'E' },
+        };
+        constexpr std::array<std::byte, 4> kVehicleObjectsTag = {
+            std::byte{ 'V' },
+            std::byte{ 'O' },
+            std::byte{ 'B' },
+            std::byte{ 'J' },
+        };
         constexpr uint16_t kVersion = 1;
         constexpr uint16_t kHeaderSize = 16;
         constexpr uint16_t kSectionVersion = 1;
@@ -94,6 +128,10 @@ namespace OpenLoco::S5::SaveExtension
         constexpr uint16_t kSectionRequired = 1U << 0;
         constexpr uint16_t kKnownSectionFlags = kSectionRequired;
         constexpr size_t kSectionHeaderSize = 12;
+        constexpr size_t kVehicleUnlockWordBits = 64;
+        constexpr size_t kVehicleUnlockWordCount = (kExtendedVehicleObjectCount + kVehicleUnlockWordBits - 1) / kVehicleUnlockWordBits;
+
+        static_assert(kVehicleUnlockWordCount == 13);
 
         void require(bool condition, const char* message)
         {
@@ -596,6 +634,153 @@ namespace OpenLoco::S5::SaveExtension
             return stations;
         }
 
+        std::vector<std::byte> encodeGameRules(const GameRules::State& state)
+        {
+            constexpr uint8_t kVehiclesNeverExpire = 1U << 0;
+            constexpr uint8_t kExtendedVehicleObjects = 1U << 1;
+            Writer payload;
+            const auto rules = static_cast<uint8_t>((state.vehiclesNeverExpire ? kVehiclesNeverExpire : 0)
+                | (state.extendedVehicleObjects ? kExtendedVehicleObjects : 0));
+            payload.write(rules);
+            return payload.take();
+        }
+
+        GameRules::State decodeGameRules(std::span<const std::byte> data)
+        {
+            constexpr uint8_t kVehiclesNeverExpire = 1U << 0;
+            constexpr uint8_t kExtendedVehicleObjects = 1U << 1;
+            constexpr uint8_t kKnownRules = kVehiclesNeverExpire | kExtendedVehicleObjects;
+            require(data.size() == sizeof(uint8_t), "Invalid game rules data size");
+            Reader input(data);
+            const auto rules = input.read<uint8_t>();
+            require((rules & ~kKnownRules) == 0, "Unknown game rule bits");
+            return {
+                .vehiclesNeverExpire = (rules & kVehiclesNeverExpire) != 0,
+                .extendedVehicleObjects = (rules & kExtendedVehicleObjects) != 0,
+            };
+        }
+
+        std::vector<std::byte> encodeVehicleObjects(const VehicleObjectState& state)
+        {
+            require(!state.objects.empty() && state.objects.size() <= kExtendedVehicleObjectCount, "Invalid extended vehicle object count");
+            auto objects = state.objects;
+            std::ranges::sort(objects, {}, &VehicleObjectSlot::slot);
+
+            std::array<bool, kExtendedVehicleObjectCount> occupied{};
+            uint16_t previousSlot{};
+            bool hasPreviousSlot = false;
+            for (const auto& object : objects)
+            {
+                require(object.slot >= kExtendedVehicleObjectStart && object.slot < OpenLoco::Limits::kMaxVehicleObjects, "Invalid extended vehicle object slot");
+                require(!hasPreviousSlot || previousSlot < object.slot, "Duplicate extended vehicle object slot");
+                require(!object.header.isEmpty() && object.header.getType() == ObjectType::vehicle, "Invalid extended vehicle object header");
+                occupied[object.slot - kExtendedVehicleObjectStart] = true;
+                previousSlot = object.slot;
+                hasPreviousSlot = true;
+            }
+
+            for (const auto& unlocks : state.companyUnlocks)
+            {
+                size_t validBitCount = 0;
+                for (size_t vehicle = 0; vehicle < kExtendedVehicleObjectCount; ++vehicle)
+                {
+                    if (!unlocks[vehicle])
+                    {
+                        continue;
+                    }
+                    ++validBitCount;
+                    require(occupied[vehicle], "Extended vehicle unlock refers to an empty slot");
+                }
+                require(unlocks.count() == validBitCount, "Non-zero extended vehicle unlock padding");
+            }
+
+            Writer payload;
+            payload.write(static_cast<uint16_t>(objects.size()));
+            payload.write(static_cast<uint16_t>(state.companyUnlocks.size()));
+            payload.write(static_cast<uint16_t>(kVehicleUnlockWordCount));
+            for (const auto& object : objects)
+            {
+                payload.write(object.slot);
+                payload.write(object.header.flags);
+                payload.writeBytes(std::as_bytes(std::span(object.header.name)));
+                payload.write(object.header.checksum);
+            }
+            for (const auto& unlocks : state.companyUnlocks)
+            {
+                for (size_t wordIndex = 0; wordIndex < kVehicleUnlockWordCount; ++wordIndex)
+                {
+                    uint64_t word = 0;
+                    for (size_t bit = 0; bit < kVehicleUnlockWordBits; ++bit)
+                    {
+                        const auto vehicle = wordIndex * kVehicleUnlockWordBits + bit;
+                        if (vehicle < kExtendedVehicleObjectCount && unlocks[vehicle])
+                        {
+                            word |= uint64_t{ 1 } << bit;
+                        }
+                    }
+                    payload.write(word);
+                }
+            }
+            return payload.take();
+        }
+
+        VehicleObjectState decodeVehicleObjects(std::span<const std::byte> data)
+        {
+            Reader input(data);
+            const auto objectCount = input.read<uint16_t>();
+            const auto companyCount = input.read<uint16_t>();
+            const auto unlockWordCount = input.read<uint16_t>();
+            require(objectCount != 0 && objectCount <= kExtendedVehicleObjectCount, "Invalid extended vehicle object count");
+            require(companyCount == OpenLoco::S5::Limits::kMaxCompanies, "Invalid extended vehicle company count");
+            require(unlockWordCount == kVehicleUnlockWordCount, "Invalid extended vehicle unlock dimensions");
+
+            VehicleObjectState state;
+            state.objects.reserve(objectCount);
+            std::array<bool, kExtendedVehicleObjectCount> occupied{};
+            uint16_t previousSlot{};
+            for (uint16_t i = 0; i < objectCount; ++i)
+            {
+                VehicleObjectSlot object;
+                object.slot = input.read<uint16_t>();
+                object.header.flags = input.read<uint32_t>();
+                const auto name = input.readBytes(std::size(object.header.name));
+                std::memcpy(object.header.name, name.data(), name.size());
+                object.header.checksum = input.read<uint32_t>();
+                require(object.slot >= kExtendedVehicleObjectStart && object.slot < OpenLoco::Limits::kMaxVehicleObjects, "Invalid extended vehicle object slot");
+                require(i == 0 || previousSlot < object.slot, "Non-canonical extended vehicle object order");
+                require(!object.header.isEmpty() && object.header.getType() == ObjectType::vehicle, "Invalid extended vehicle object header");
+                occupied[object.slot - kExtendedVehicleObjectStart] = true;
+                previousSlot = object.slot;
+                state.objects.push_back(object);
+            }
+
+            constexpr auto kLastWordBits = kExtendedVehicleObjectCount % kVehicleUnlockWordBits;
+            constexpr auto kLastWordMask = (uint64_t{ 1 } << kLastWordBits) - 1;
+            for (auto& unlocks : state.companyUnlocks)
+            {
+                for (size_t wordIndex = 0; wordIndex < kVehicleUnlockWordCount; ++wordIndex)
+                {
+                    const auto word = input.read<uint64_t>();
+                    if (wordIndex == kVehicleUnlockWordCount - 1)
+                    {
+                        require((word & ~kLastWordMask) == 0, "Non-zero extended vehicle unlock padding");
+                    }
+                    for (size_t bit = 0; bit < kVehicleUnlockWordBits; ++bit)
+                    {
+                        const auto vehicle = wordIndex * kVehicleUnlockWordBits + bit;
+                        if (vehicle >= kExtendedVehicleObjectCount || (word & (uint64_t{ 1 } << bit)) == 0)
+                        {
+                            continue;
+                        }
+                        require(occupied[vehicle], "Extended vehicle unlock refers to an empty slot");
+                        unlocks.set(vehicle, true);
+                    }
+                }
+            }
+            require(input.empty(), "Trailing extended vehicle object data");
+            return state;
+        }
+
         bool hasMagic(std::span<const std::byte> data, std::span<const std::byte, 8> magic)
         {
             return data.size() >= magic.size() && std::ranges::equal(data.first(magic.size()), magic);
@@ -613,6 +798,8 @@ namespace OpenLoco::S5::SaveExtension
             .discardPathReservationsOnLoad = state.discardPathReservationsOnLoad,
             .railTrafficState = state.railTrafficState ? &*state.railTrafficState : nullptr,
             .stationTileOverflowState = state.stationTileOverflowState ? &*state.stationTileOverflowState : nullptr,
+            .gameRulesState = state.gameRulesState ? &*state.gameRulesState : nullptr,
+            .vehicleObjectState = state.vehicleObjectState ? &*state.vehicleObjectState : nullptr,
         });
     }
 
@@ -659,6 +846,14 @@ namespace OpenLoco::S5::SaveExtension
             const auto stationTileOverflow = encodeStationTileOverflow(*state.stationTileOverflowState);
             appendSection(payload, kStationTileOverflowTag, stationTileOverflow, kSectionRequired);
         }
+        if (state.gameRulesState != nullptr)
+        {
+            appendSection(payload, kGameRulesTag, encodeGameRules(*state.gameRulesState), kSectionRequired);
+        }
+        if (state.vehicleObjectState != nullptr)
+        {
+            appendSection(payload, kVehicleObjectsTag, encodeVehicleObjects(*state.vehicleObjectState), kSectionRequired);
+        }
 
         require(payload.size() <= std::numeric_limits<uint32_t>::max(), "Save extension is too large");
         Writer output;
@@ -697,6 +892,8 @@ namespace OpenLoco::S5::SaveExtension
         bool hasRailTraffic = false;
         bool hasVehicleReplacement = false;
         bool hasStationTileOverflow = false;
+        bool hasGameRules = false;
+        bool hasVehicleObjects = false;
         while (!sections.empty())
         {
             const auto tag = sections.readBytes(4);
@@ -759,6 +956,22 @@ namespace OpenLoco::S5::SaveExtension
                 hasStationTileOverflow = true;
                 require(version == kSectionVersion, "Unsupported station tile overflow section version");
                 state.stationTileOverflowState = decodeStationTileOverflow(sectionData);
+            }
+            else if (std::ranges::equal(tag, kGameRulesTag))
+            {
+                require(flags == kSectionRequired, "Invalid game rules section flags");
+                require(!hasGameRules, "Duplicate game rules save extension section");
+                hasGameRules = true;
+                require(version == kSectionVersion, "Unsupported game rules section version");
+                state.gameRulesState = decodeGameRules(sectionData);
+            }
+            else if (std::ranges::equal(tag, kVehicleObjectsTag))
+            {
+                require(flags == kSectionRequired, "Invalid extended vehicle object section flags");
+                require(!hasVehicleObjects, "Duplicate extended vehicle object save extension section");
+                hasVehicleObjects = true;
+                require(version == kSectionVersion, "Unsupported extended vehicle object section version");
+                state.vehicleObjectState = decodeVehicleObjects(sectionData);
             }
             else
             {

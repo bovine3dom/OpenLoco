@@ -3,6 +3,7 @@
 #include "GameCommands/Buildings/CreateBuilding.h"
 #include "GameCommands/GameCommands.h"
 #include "GameCommands/Town/CreateTown.h"
+#include "GameRules.h"
 #include "GameState.h"
 #include "Input.h"
 #include "Localisation/StringIds.h"
@@ -1083,7 +1084,9 @@ namespace OpenLoco::World::MapGenerator
         Ui::ProgressBar::begin(StringIds::generating_landscape);
 
         auto rotation = WindowManager::getCurrentRotation();
+        const auto gameRules = GameRules::captureState();
         Scenario::reset();
+        GameRules::restoreState(gameRules);
         WindowManager::setCurrentRotation(rotation);
 
         updateProgress(5);

@@ -4,6 +4,7 @@
 #include <OpenLoco/Engine/Limits.h>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string_view>
 #include <utility>
 
@@ -13,6 +14,11 @@
 
 namespace OpenLoco::StringManager
 {
+    // Language strings, temporary object strings, and loaded object strings.
+    constexpr size_t kLegacyNumStringPointers = 0x246E;
+    constexpr size_t kNumStringPointers = kLegacyNumStringPointers + (Limits::kMaxVehicleObjects - S5::Limits::kMaxVehicleObjects);
+    static_assert(kNumStringPointers <= static_cast<size_t>(std::numeric_limits<StringId>::max()) + 1);
+
     constexpr uint8_t kUserStringSize = 32;
     constexpr uint16_t kUserStringsStart = 0x8000;
     constexpr uint16_t kUserStringsEnd = kUserStringsStart + Limits::kMaxUserStrings;

@@ -47,6 +47,8 @@
 #include <OpenLoco/Engine/World.hpp>
 #include <OpenLoco/Math/Trigonometry.hpp>
 #include <algorithm>
+#include <limits>
+#include <type_traits>
 
 namespace OpenLoco::Ui::Windows::BuildVehicle
 {
@@ -335,6 +337,8 @@ namespace OpenLoco::Ui::Windows::BuildVehicle
     // Array of types if 0xFF then no type, flag (1<<7) as well
     static uint8_t _trackTypesForTab[widxToTrackTypeTab(widx::tab_track_type_7) + 1];      // 0x011364F0
     static uint16_t _availableVehicles[ObjectManager::getMaxObjects(ObjectType::vehicle)]; // 0x0113626A
+    static_assert(std::size(_availableVehicles) <= std::numeric_limits<int16_t>::max());
+    static_assert(std::size(_availableVehicles) <= std::extent_v<decltype(Window::rowInfo)>);
 
     static int32_t _buildTargetVehicle; // 0x011364E8; -1 for no target VehicleHead
 
@@ -562,6 +566,7 @@ namespace OpenLoco::Ui::Windows::BuildVehicle
 
         _numAvailableVehicles = 0;
         std::vector<BuildableVehicle> buildableVehicles;
+        buildableVehicles.reserve(ObjectManager::getMaxObjects(ObjectType::vehicle));
 
         const bool showUnpoweredVehicles = (_vehicleFilterFlags & VehicleFilterFlags::unpowered) != VehicleFilterFlags::none;
         const bool showPoweredVehicles = (_vehicleFilterFlags & VehicleFilterFlags::powered) != VehicleFilterFlags::none;
@@ -798,6 +803,8 @@ namespace OpenLoco::Ui::Windows::BuildVehicle
         }
 
         window->rowCount = _numAvailableVehicles;
+        const auto maxRowHeight = std::numeric_limits<int16_t>::max() / std::max<uint16_t>(window->rowCount, 1);
+        window->rowHeight = std::min<uint16_t>(kScrollRowHeight[window->currentTab], maxRowHeight);
         window->rowHover = -1;
         window->invalidate();
     }
@@ -1192,7 +1199,7 @@ namespace OpenLoco::Ui::Windows::BuildVehicle
     // 0x4C384B
     static void onScrollMouseDown(Ui::Window& window, [[maybe_unused]] int16_t x, int16_t y, uint8_t scroll_index)
     {
-        if (scroll_index != scrollIdx::vehicle_selection)
+        if (scroll_index != scrollIdx::vehicle_selection || y < 0)
         {
             return;
         }
@@ -1633,7 +1640,7 @@ namespace OpenLoco::Ui::Windows::BuildVehicle
                 }
                 else
                 {
-                    int16_t y = 0;
+                    int32_t y = 0;
                     for (auto i = 0; i < window.rowCount; ++i, y += window.rowHeight)
                     {
                         if (y + window.rowHeight + 30 <= rt.y)
@@ -1682,7 +1689,7 @@ namespace OpenLoco::Ui::Windows::BuildVehicle
                             }
                         }
 
-                        int16_t half = (window.rowHeight - 22) / 2;
+                        int32_t half = (window.rowHeight - 22) / 2;
                         auto x = drawVehicleInline(drawingCtx, vehicleType, CompanyManager::getControllingId(), { 0, static_cast<int16_t>(y + half) });
 
                         auto vehicleObj = ObjectManager::get<VehicleObject>(vehicleType);

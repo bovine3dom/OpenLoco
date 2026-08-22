@@ -137,6 +137,7 @@ namespace OpenLoco::GameCommands
         vehicleOrderToggleUnbunching = 86,
         vehicleOrderShare = 87,
         setVehicleAutoRenewal = 88,
+        setVehiclesNeverExpire = 89,
     };
 
     constexpr int32_t kDefaultRegValue = 0xCCCCCCCC;

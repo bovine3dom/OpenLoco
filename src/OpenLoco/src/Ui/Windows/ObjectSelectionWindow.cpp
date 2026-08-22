@@ -1,6 +1,7 @@
 #include "Audio/Audio.h"
 #include "Config.h"
 #include "GameCommands/GameCommands.h"
+#include "GameRules.h"
 #include "Graphics/Colour.h"
 #include "Graphics/Gfx.h"
 #include "Graphics/ImageIds.h"
@@ -48,6 +49,7 @@
 #include "Ui/Widget.h"
 #include "Ui/Widgets/ButtonWidget.h"
 #include "Ui/Widgets/CaptionWidget.h"
+#include "Ui/Widgets/CheckboxWidget.h"
 #include "Ui/Widgets/DropdownWidget.h"
 #include "Ui/Widgets/FrameWidget.h"
 #include "Ui/Widgets/ImageButtonWidget.h"
@@ -76,6 +78,7 @@ namespace OpenLoco::Ui::Windows::ObjectSelectionWindow
     static constexpr Ui::Point kObjectPreviewOffset = { 56, 56 };
     static constexpr Ui::Size kObjectPreviewSize = { 114, 114 };
     static constexpr uint8_t kDescriptionRowHeight = 10;
+    static constexpr int16_t kBulkSelectionButtonWidth = 84;
 
     enum class ObjectTabFlags : uint8_t
     {
@@ -248,6 +251,8 @@ namespace OpenLoco::Ui::Windows::ObjectSelectionWindow
         filterDropdown,
         textInput,
         clearButton,
+        selectAllButton,
+        deselectAllButton,
 
         secondaryTab1,
         secondaryTab2,
@@ -261,6 +266,7 @@ namespace OpenLoco::Ui::Windows::ObjectSelectionWindow
         scrollviewFrame,
         scrollview,
         objectImage,
+        extendedVehicleObjects,
     };
 
     namespace Widx
@@ -285,6 +291,8 @@ namespace OpenLoco::Ui::Windows::ObjectSelectionWindow
         constexpr WidgetId kFilterDropdown{ "filterDropdown" };
         constexpr WidgetId kTextInput{ "textInput" };
         constexpr WidgetId kClearButton{ "clearButton" };
+        constexpr WidgetId kSelectAllButton{ "selectAllButton" };
+        constexpr WidgetId kDeselectAllButton{ "deselectAllButton" };
         constexpr WidgetId kSecondaryTab1{ "secondaryTab1" };
         constexpr WidgetId kSecondaryTab2{ "secondaryTab2" };
         constexpr WidgetId kSecondaryTab3{ "secondaryTab3" };
@@ -296,6 +304,7 @@ namespace OpenLoco::Ui::Windows::ObjectSelectionWindow
         constexpr WidgetId kScrollviewFrame{ "scrollviewFrame" };
         constexpr WidgetId kScrollview{ "scrollview" };
         constexpr WidgetId kObjectImage{ "objectImage" };
+        constexpr WidgetId kExtendedVehicleObjects{ "extendedVehicleObjects" };
     }
 
     static constexpr uint8_t kMaxNumPrimaryTabs = 12;
@@ -325,6 +334,8 @@ namespace OpenLoco::Ui::Windows::ObjectSelectionWindow
         Widgets::dropdownWidgets(Widx::kFilterLabel, Widx::kFilterDropdown, { 492, 20 }, { 100, 12 }, WindowColour::primary, StringIds::wcolour2_stringid),
         Widgets::TextBox(Widx::kTextInput, { 4, 45 }, { 246, 14 }, WindowColour::secondary),
         Widgets::Button(Widx::kClearButton, { 254, 45 }, { 38, 14 }, WindowColour::secondary, StringIds::clearInput),
+        Widgets::Button(Widx::kSelectAllButton, { 304, 45 }, { kBulkSelectionButtonWidth, 14 }, WindowColour::secondary, StringIds::select_all),
+        Widgets::Button(Widx::kDeselectAllButton, { 304, 61 }, { kBulkSelectionButtonWidth, 14 }, WindowColour::secondary, StringIds::deselect_all),
 
         // Secondary tabs
         Widgets::Tab(Widx::kSecondaryTab1, { 3, 62 }, { 31, 27 }, WindowColour::secondary, ImageIds::tab),
@@ -339,7 +350,8 @@ namespace OpenLoco::Ui::Windows::ObjectSelectionWindow
         // Scroll and preview areas
         Widgets::Panel(Widx::kScrollviewFrame, { 3, 83 }, { 290, 303 }, WindowColour::secondary),
         Widgets::ScrollView(Widx::kScrollview, { 4, 85 }, { 288, 300 }, WindowColour::secondary, Scrollbars::vertical),
-        Widgets::ImageButton(Widx::kObjectImage, { 391, 45 }, kObjectPreviewSize, WindowColour::secondary)
+        Widgets::ImageButton(Widx::kObjectImage, { 391, 45 }, kObjectPreviewSize, WindowColour::secondary),
+        Widgets::Checkbox(Widx::kExtendedVehicleObjects, { 304, 383 }, { 290, 12 }, WindowColour::secondary, StringIds::extended_vehicle_objects, StringIds::tooltip_extended_vehicle_objects)
 
     );
 
@@ -632,6 +644,11 @@ namespace OpenLoco::Ui::Windows::ObjectSelectionWindow
         self.widgets[widx::clearButton].left = self.widgets[widx::textInput].right + 4;
         self.widgets[widx::clearButton].right = self.widgets[widx::clearButton].left + 38;
 
+        self.widgets[widx::selectAllButton].left = self.width / 2 + 4;
+        self.widgets[widx::selectAllButton].right = self.widgets[widx::selectAllButton].left + kBulkSelectionButtonWidth - 1;
+        self.widgets[widx::deselectAllButton].left = self.widgets[widx::selectAllButton].left;
+        self.widgets[widx::deselectAllButton].right = self.widgets[widx::selectAllButton].right;
+
         Widget::leftAlignTabs(self, widx::secondaryTab1, widx::secondaryTab8, 30);
 
         // Resize scroll view to take up the full window height, leaving room for a status line
@@ -643,17 +660,27 @@ namespace OpenLoco::Ui::Windows::ObjectSelectionWindow
         // Reposition preview area in the centre of the second half
         self.widgets[widx::objectImage].left = self.width / 4 * 3 - kObjectPreviewSize.width / 2;
         self.widgets[widx::objectImage].right = self.widgets[widx::objectImage].left + kObjectPreviewSize.width;
+
+        self.widgets[widx::extendedVehicleObjects].left = self.width / 2 + 4;
+        self.widgets[widx::extendedVehicleObjects].right = self.width - 4;
+        self.widgets[widx::extendedVehicleObjects].top = self.height - 14;
+        self.widgets[widx::extendedVehicleObjects].bottom = self.height - 3;
     }
 
     // 0x004733AC
     static void prepareDraw(Ui::Window& self)
     {
-        self.activatedWidgets = (1 << widx::objectImage);
+        self.activatedWidgets = (1ULL << widx::objectImage);
 
         self.widgets[widx::closeButton].hidden = false;
+        self.widgets[widx::extendedVehicleObjects].hidden = !SceneManager::isEditorMode();
         if (SceneManager::isEditorMode())
         {
             self.widgets[widx::closeButton].hidden = true;
+        }
+        if (GameRules::extendedVehicleObjects())
+        {
+            self.activatedWidgets |= 1ULL << widx::extendedVehicleObjects;
         }
 
         static constexpr std::array<StringId, 3> kFilterLevelStringIds = {
@@ -672,6 +699,9 @@ namespace OpenLoco::Ui::Windows::ObjectSelectionWindow
         const auto& currentTab = kMainTabInfo[self.currentTab];
         const auto& subTabs = currentTab.subTabs;
         const bool showSecondaryTabs = !subTabs.empty() && FilterLevel(self.filterLevel) != FilterLevel::beginner;
+        const bool showBulkSelectionButtons = showSecondaryTabs && currentTab.objectType == ObjectType::vehicle;
+        self.widgets[widx::selectAllButton].hidden = !showBulkSelectionButtons;
+        self.widgets[widx::deselectAllButton].hidden = !showBulkSelectionButtons;
 
         // Update page title
         auto args = FormatArguments(self.widgets[widx::caption].textArgs);
@@ -1082,7 +1112,7 @@ namespace OpenLoco::Ui::Windows::ObjectSelectionWindow
         auto& selection = ObjectManager::getCurrentSelectionList();
         auto args = FormatArguments();
         args.push(selection.selectionMetaData.numSelectedObjects[enumValue(type)]);
-        args.push(ObjectManager::getMaxObjects(type));
+        args.push(ObjectManager::getMaxSelectableObjects(type));
 
         {
             auto point = Point(3, self.height - 12);
@@ -1285,6 +1315,13 @@ namespace OpenLoco::Ui::Windows::ObjectSelectionWindow
         self.currentTab = targetTab;
         self.currentSecondaryTab = targetSubTab;
 
+        const auto& currentTab = kMainTabInfo[self.currentTab];
+        _filterByVehicleType = currentTab.objectType == ObjectType::vehicle;
+        if (_filterByVehicleType)
+        {
+            _currentVehicleType = currentTab.subTabs[self.currentSecondaryTab].vehicleType;
+        }
+
         populateTabObjectList(targetType, FilterFlags(self.var_858));
     }
 
@@ -1343,7 +1380,10 @@ namespace OpenLoco::Ui::Windows::ObjectSelectionWindow
 
         const auto& currentTab = kMainTabInfo[self.currentTab];
         _filterByVehicleType = currentTab.objectType == ObjectType::vehicle;
-        _currentVehicleType = VehicleType::train;
+        if (_filterByVehicleType)
+        {
+            _currentVehicleType = currentTab.subTabs[self.currentSecondaryTab].vehicleType;
+        }
 
         auto objectType = kMainTabInfo[tabIndex].objectType;
         populateTabObjectList(objectType, FilterFlags(self.var_858));
@@ -1404,6 +1444,41 @@ namespace OpenLoco::Ui::Windows::ObjectSelectionWindow
                 break;
             }
 
+            case Widx::kSelectAllButton:
+            case Widx::kDeselectAllButton:
+            {
+                const auto& currentTab = kMainTabInfo[self.currentTab];
+                if (currentTab.objectType != ObjectType::vehicle || currentTab.subTabs.empty())
+                {
+                    break;
+                }
+
+                const bool select = id == Widx::kSelectAllButton;
+                const auto mode = select ? ObjectManager::SelectObjectModes::defaultSelect : ObjectManager::SelectObjectModes::defaultDeselect;
+                auto& selection = ObjectManager::getCurrentSelectionList();
+                if (!selection.selectVehicleObjects(mode, currentTab.subTabs[self.currentSecondaryTab].vehicleType))
+                {
+                    const auto errorTitle = select ? StringIds::error_unable_to_select_object : StringIds::error_unable_to_deselect_object;
+                    Ui::Windows::Error::open(errorTitle, GameCommands::getErrorText());
+                }
+                self.invalidate();
+                break;
+            }
+
+            case Widx::kExtendedVehicleObjects:
+            {
+                const auto enabled = GameRules::extendedVehicleObjects();
+                auto& selection = ObjectManager::getCurrentSelectionList();
+                if (enabled && selection.hasExtendedVehicleObjectsSelected())
+                {
+                    Ui::Windows::Error::open(StringIds::error_unable_to_deselect_object, StringIds::extended_vehicle_objects_in_use);
+                    break;
+                }
+                GameRules::setExtendedVehicleObjects(!enabled);
+                self.invalidate();
+                break;
+            }
+
             case Widx::kSecondaryTab1:
             case Widx::kSecondaryTab2:
             case Widx::kSecondaryTab3:
@@ -1418,7 +1493,10 @@ namespace OpenLoco::Ui::Windows::ObjectSelectionWindow
 
                 self.currentSecondaryTab = widgetIndex - widx::secondaryTab1;
                 auto currentSubType = subTabs[self.currentSecondaryTab].objectType;
-                _currentVehicleType = static_cast<VehicleType>(self.currentSecondaryTab);
+                if (kMainTabInfo[self.currentTab].objectType == ObjectType::vehicle)
+                {
+                    _currentVehicleType = subTabs[self.currentSecondaryTab].vehicleType;
+                }
 
                 // Do we need to reload the object list?
                 auto flags = FilterFlags(self.var_858);

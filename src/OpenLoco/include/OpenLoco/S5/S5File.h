@@ -6,6 +6,7 @@
 #include "S5/S5TileElement.h"
 #include "S5/SaveExtension.h"
 #include <OpenLoco/CargoDist/CargoDist.h>
+#include <OpenLoco/GameRules.h>
 #include <OpenLoco/Vehicles/RailTraffic.h>
 #include <OpenLoco/Vehicles/RoutingManager.h>
 #include <OpenLoco/Vehicles/SharedOrderManager.h>
@@ -20,7 +21,7 @@ namespace OpenLoco::S5
         Header header;
         std::unique_ptr<Options> scenarioOptions;
         std::unique_ptr<SaveDetails> saveDetails;
-        ObjectHeader requiredObjects[859];
+        ObjectHeader requiredObjects[Limits::kMaxObjectHeaders];
         GameState gameState;
         std::vector<TileElement> tileElements;
         std::vector<std::pair<ObjectHeader, std::vector<std::byte>>> packedObjects;
@@ -32,5 +33,7 @@ namespace OpenLoco::S5
         std::optional<Vehicles::VehicleReplacement::State> vehicleReplacementState;
         std::optional<Vehicles::RailTraffic::State> railTrafficState;
         std::optional<std::vector<SaveExtension::StationTileOverflow>> stationTileOverflowState;
+        std::optional<GameRules::State> gameRulesState;
+        std::optional<SaveExtension::VehicleObjectState> vehicleObjectState;
     };
 }

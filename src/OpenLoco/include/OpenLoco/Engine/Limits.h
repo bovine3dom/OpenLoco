@@ -4,4 +4,6 @@
 namespace OpenLoco::Limits
 {
     using namespace OpenLoco::S5::Limits;
+
+    constexpr size_t kMaxVehicleObjects = 1000;
 }

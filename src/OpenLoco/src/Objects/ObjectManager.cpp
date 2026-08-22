@@ -1,6 +1,7 @@
 #include "Objects/ObjectManager.h"
 #include "Date.h"
 #include "Environment.h"
+#include "GameRules.h"
 #include "GameState.h"
 #include "Graphics/Colour.h"
 #include "Graphics/DrawingContext.h"
@@ -1074,7 +1075,7 @@ namespace OpenLoco::ObjectManager
                     MessageManager::post(MessageType::newVehicle, CompanyId::null, vehicleObjId, 0xFFFF);
                 }
             }
-            if (currentYear == vehicleObject->obsolete)
+            if (!GameRules::vehiclesNeverExpire() && currentYear == vehicleObject->obsolete)
             {
                 for (Company& company : CompanyManager::companies())
                 {

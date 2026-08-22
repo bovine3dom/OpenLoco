@@ -88,6 +88,28 @@ namespace OpenLoco::GameSaveCompare
         return matches;
     }
 
+    static bool compareGameRules(const S5::S5File& lhs, const S5::S5File& rhs)
+    {
+        const auto& lhsState = lhs.gameRulesState.has_value() ? *lhs.gameRulesState : GameRules::kDefaultState;
+        const auto& rhsState = rhs.gameRulesState.has_value() ? *rhs.gameRulesState : GameRules::kDefaultState;
+        const auto matches = lhsState == rhsState;
+        if (!matches)
+        {
+            Logging::info("Game rules differ");
+        }
+        return matches;
+    }
+
+    static bool compareVehicleObjects(const S5::S5File& lhs, const S5::S5File& rhs)
+    {
+        const auto matches = lhs.vehicleObjectState == rhs.vehicleObjectState;
+        if (!matches)
+        {
+            Logging::info("Extended vehicle object state differs");
+        }
+        return matches;
+    }
+
     template<typename T>
     std::span<const std::byte> getBytesSpan(const T& item)
     {
@@ -763,6 +785,8 @@ namespace OpenLoco::GameSaveCompare
         matches &= comparePathReservations(*currentGameState, *referenceGameState);
         matches &= compareVehicleAutoRenewal(*currentGameState, *referenceGameState);
         matches &= compareRailTraffic(*currentGameState, *referenceGameState);
+        matches &= compareGameRules(*currentGameState, *referenceGameState);
+        matches &= compareVehicleObjects(*currentGameState, *referenceGameState);
         return matches;
     }
 
@@ -783,6 +807,8 @@ namespace OpenLoco::GameSaveCompare
         match &= comparePathReservations(*state1, *state2);
         match &= compareVehicleAutoRenewal(*state1, *state2);
         match &= compareRailTraffic(*state1, *state2);
+        match &= compareGameRules(*state1, *state2);
+        match &= compareVehicleObjects(*state1, *state2);
         return match;
     }
 }

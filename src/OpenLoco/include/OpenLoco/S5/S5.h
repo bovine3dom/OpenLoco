@@ -3,9 +3,12 @@
 #include <OpenLoco/Core/EnumFlags.hpp>
 #include <OpenLoco/Core/FileSystem.hpp>
 #include <OpenLoco/Objects/Object.h>
+#include <OpenLoco/S5/Limits.h>
 #include <OpenLoco/Types.hpp>
+#include <array>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <vector>
 
 namespace OpenLoco
@@ -23,6 +26,15 @@ namespace OpenLoco::Scenario
 namespace OpenLoco::S5
 {
     struct Options;
+    namespace SaveExtension
+    {
+        struct VehicleObjectState;
+    }
+
+    using RequiredObjectHeaders = std::array<ObjectHeader, Limits::kMaxObjectHeaders>;
+
+    RequiredObjectHeaders exportRequiredObjectHeaders(std::span<const ObjectHeader> objects);
+    std::vector<ObjectHeader> importRequiredObjectHeaders(std::span<const ObjectHeader> objects, const SaveExtension::VehicleObjectState* vehicleObjectState = nullptr);
 
     enum class S5Type : uint8_t
     {

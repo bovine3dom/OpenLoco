@@ -283,7 +283,7 @@ namespace OpenLoco
         std::array<uint8_t, 4> modList = { 0xFF, 0xFF, 0xFF, 0xFF };
         auto flags = 0;
 
-        for (uint8_t vehicle = 0; vehicle < ObjectManager::getMaxObjects(ObjectType::vehicle); vehicle++)
+        for (LoadedObjectId vehicle = 0; vehicle < ObjectManager::getMaxObjects(ObjectType::vehicle); vehicle++)
         {
             auto vehicleObj = ObjectManager::get<VehicleObject>(vehicle);
 

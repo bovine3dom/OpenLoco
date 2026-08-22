@@ -3,6 +3,7 @@
 #include "Object.h"
 #include "ObjectManager.h" // TODO: Split off entry def to different header
 #include <OpenLoco/Core/EnumFlags.hpp>
+#include <OpenLoco/Types.hpp>
 #include <array>
 #include <optional>
 #include <span>
@@ -84,7 +85,11 @@ namespace OpenLoco::ObjectManager
         ObjectSelectionMeta selectionMetaData;
         std::vector<SelectedObjectsFlags> objectFlags;
         bool selectObject(SelectObjectModes mode, const ObjectHeader& objHeader);
+        bool selectVehicleObjects(SelectObjectModes mode, VehicleType vehicleType);
+        bool hasExtendedVehicleObjectsSelected() const;
     };
+
+    size_t getMaxSelectableObjects(ObjectType type);
 
     ObjectIndexSelection& prepareSelectionList(bool markInUse);
     ObjectIndexSelection& getCurrentSelectionList();

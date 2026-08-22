@@ -9,6 +9,7 @@
 #include "Vehicles/Vehicle.h"
 #include <OpenLoco/CargoDist/Simulation.h>
 #include <OpenLoco/Core/MemoryStream.h>
+#include <OpenLoco/GameRules.h>
 #include <OpenLoco/S5/SaveExtension.h>
 #include <algorithm>
 #include <array>
@@ -230,14 +231,16 @@ namespace
         const Vehicles::RoutingManager::State* pathReservationState = nullptr,
         const Vehicles::VehicleAutoRenewal::State* vehicleAutoRenewalState = nullptr,
         bool legacyPathReservations = false,
-        const Vehicles::RailTraffic::State* railTrafficState = nullptr)
+        const Vehicles::RailTraffic::State* railTrafficState = nullptr,
+        const GameRules::State* gameRulesState = nullptr,
+        const S5::SaveExtension::VehicleObjectState* vehicleObjectState = nullptr)
     {
         SawyerStreamWriter writer(stream);
         S5::Header header{};
         header.type = S5::S5Type::savedGame;
         writer.writeChunk(SawyerEncoding::uncompressed, header);
 
-        std::array<ObjectHeader, 859> requiredObjects{};
+        std::array<ObjectHeader, S5::Limits::kMaxObjectHeaders> requiredObjects{};
         writer.writeChunk(SawyerEncoding::uncompressed, requiredObjects.data(), sizeof(requiredObjects));
 
         auto gameState = std::make_unique<S5::GameState>();
@@ -246,7 +249,8 @@ namespace
 
         std::array<std::byte, sizeof(S5::TileElement)> tile{};
         writer.writeChunk(SawyerEncoding::uncompressed, tile.data(), tile.size());
-        if (cargoDistState != nullptr || sharedOrderState != nullptr || pathReservationState != nullptr || vehicleAutoRenewalState != nullptr || railTrafficState != nullptr)
+        if (cargoDistState != nullptr || sharedOrderState != nullptr || pathReservationState != nullptr
+            || vehicleAutoRenewalState != nullptr || railTrafficState != nullptr || gameRulesState != nullptr || vehicleObjectState != nullptr)
         {
             auto encoded = legacyExtension
                 ? encodeState(*cargoDistState)
@@ -256,6 +260,8 @@ namespace
                       .pathReservationState = pathReservationState,
                       .vehicleAutoRenewalState = vehicleAutoRenewalState,
                       .railTrafficState = railTrafficState,
+                      .gameRulesState = gameRulesState,
+                      .vehicleObjectState = vehicleObjectState,
                   });
             if (legacyPathReservations)
             {
@@ -266,6 +272,61 @@ namespace
                 section[5] = std::byte{ 0 };
             }
             writer.writeChunk(SawyerEncoding::uncompressed, encoded.data(), encoded.size());
+        }
+        writer.writeChecksum();
+        stream.setPosition(0);
+    }
+
+    void writeMinimalScenarioOrLandscape(
+        MemoryStream& stream,
+        S5::S5Type type,
+        const GameRules::State* gameRulesState = nullptr,
+        const S5::SaveExtension::VehicleObjectState* vehicleObjectState = nullptr)
+    {
+        SawyerStreamWriter writer(stream);
+        S5::Header header{};
+        header.type = type;
+        if (type == S5::S5Type::landscape)
+        {
+            header.flags = S5::HeaderFlags::hasSaveDetails;
+        }
+        writer.writeChunk(SawyerEncoding::uncompressed, header);
+
+        if (type == S5::S5Type::scenario)
+        {
+            S5::Options options{};
+            writer.writeChunk(SawyerEncoding::uncompressed, options);
+        }
+        else
+        {
+            S5::SaveDetails details{};
+            writer.writeChunk(SawyerEncoding::uncompressed, details);
+        }
+        std::array<ObjectHeader, S5::Limits::kMaxObjectHeaders> requiredObjects{};
+        writer.writeChunk(SawyerEncoding::uncompressed, requiredObjects.data(), sizeof(requiredObjects));
+
+        auto gameState = std::make_unique<S5::GameState>();
+        gameState->general.fixFlags = enumValue(S5::S5FixFlags::fixFlag1);
+        if (type == S5::S5Type::scenario)
+        {
+            writer.writeChunk(SawyerEncoding::uncompressed, &gameState->general, sizeof(S5::GeneralState));
+            writer.writeChunk(SawyerEncoding::uncompressed, gameState->towns, 0x123480);
+            writer.writeChunk(SawyerEncoding::uncompressed, gameState->animations, 0x79D80);
+        }
+        else
+        {
+            writer.writeChunk(SawyerEncoding::uncompressed, *gameState);
+            std::array<std::byte, sizeof(S5::TileElement)> tile{};
+            writer.writeChunk(SawyerEncoding::uncompressed, tile.data(), tile.size());
+        }
+
+        if (gameRulesState != nullptr || vehicleObjectState != nullptr)
+        {
+            const auto extension = S5::SaveExtension::encode({
+                .gameRulesState = gameRulesState,
+                .vehicleObjectState = vehicleObjectState,
+            });
+            writer.writeChunk(SawyerEncoding::uncompressed, extension.data(), extension.size());
         }
         writer.writeChecksum();
         stream.setPosition(0);
@@ -558,8 +619,9 @@ TEST(CargoDistSave, S5TailRoundTripsExtension)
     vehicleAutoRenewal.companies[3] = { true, 40 };
     Vehicles::RailTraffic::State railTraffic;
     railTraffic.history.push_back({ { 320, 352, 32, 0, 0 }, 12 * Vehicles::RailTraffic::kOneTick, 0, 7 });
+    const GameRules::State gameRules{ .vehiclesNeverExpire = true };
     MemoryStream stream;
-    writeMinimalSave(stream, &original, false, &sharedOrders, &pathReservations, &vehicleAutoRenewal, false, &railTraffic);
+    writeMinimalSave(stream, &original, false, &sharedOrders, &pathReservations, &vehicleAutoRenewal, false, &railTraffic, &gameRules);
 
     const auto save = S5::loadSave(stream);
 
@@ -574,6 +636,97 @@ TEST(CargoDistSave, S5TailRoundTripsExtension)
     EXPECT_EQ(*save->vehicleAutoRenewalState, vehicleAutoRenewal);
     ASSERT_TRUE(save->railTrafficState.has_value());
     EXPECT_EQ(*save->railTrafficState, railTraffic);
+    ASSERT_TRUE(save->gameRulesState.has_value());
+    EXPECT_EQ(*save->gameRulesState, gameRules);
+}
+
+TEST(CargoDistSave, ScenarioTailRoundTripsRulesAndExtendedVehicleObjects)
+{
+    const GameRules::State gameRules{ .vehiclesNeverExpire = true, .extendedVehicleObjects = true };
+    S5::SaveExtension::VehicleObjectState vehicleObjects;
+    ObjectHeader header{};
+    header.flags = enumValue(ObjectType::vehicle);
+    header.checksum = 999;
+    vehicleObjects.objects.push_back({ 999, header });
+    vehicleObjects.companyUnlocks[3].set(S5::SaveExtension::kExtendedVehicleObjectCount - 1, true);
+    MemoryStream stream;
+    writeMinimalScenarioOrLandscape(stream, S5::S5Type::scenario, &gameRules, &vehicleObjects);
+
+    const auto save = S5::loadSave(stream);
+
+    ASSERT_EQ(save->header.type, S5::S5Type::scenario);
+    ASSERT_TRUE(save->gameRulesState.has_value());
+    EXPECT_EQ(*save->gameRulesState, gameRules);
+    ASSERT_TRUE(save->vehicleObjectState.has_value());
+    EXPECT_EQ(*save->vehicleObjectState, vehicleObjects);
+    EXPECT_TRUE(save->vehicleObjectState->companyUnlocks[3][S5::SaveExtension::kExtendedVehicleObjectCount - 1]);
+
+    const auto runtimeHeaders = S5::importRequiredObjectHeaders(save->requiredObjects, &*save->vehicleObjectState);
+    constexpr size_t kVehicleObjectOffset = 389;
+    EXPECT_EQ(runtimeHeaders[kVehicleObjectOffset + 999].checksum, 999);
+}
+
+TEST(CargoDistSave, LegacyMaplessScenarioWithoutExtensionStillLoads)
+{
+    MemoryStream stream;
+    writeMinimalScenarioOrLandscape(stream, S5::S5Type::scenario);
+
+    const auto save = S5::loadSave(stream);
+
+    ASSERT_EQ(save->header.type, S5::S5Type::scenario);
+    ASSERT_TRUE(save->scenarioOptions != nullptr);
+    EXPECT_TRUE(save->tileElements.empty());
+    EXPECT_FALSE(save->gameRulesState.has_value());
+    EXPECT_FALSE(save->vehicleObjectState.has_value());
+}
+
+TEST(CargoDistSave, RejectsExtendedVehicleObjectsWithoutRule)
+{
+    S5::SaveExtension::VehicleObjectState vehicleObjects;
+    ObjectHeader header{};
+    header.flags = enumValue(ObjectType::vehicle);
+    vehicleObjects.objects.push_back({ 224, header });
+    MemoryStream stream;
+    writeMinimalSave(stream, nullptr, false, nullptr, nullptr, nullptr, false, nullptr, nullptr, &vehicleObjects);
+
+    EXPECT_ANY_THROW(S5::loadSave(stream));
+}
+
+TEST(CargoDistSave, LandscapeTailRoundTripsRulesAndExtendedVehicleObjects)
+{
+    const GameRules::State gameRules{ .extendedVehicleObjects = true };
+    S5::SaveExtension::VehicleObjectState vehicleObjects;
+    ObjectHeader header{};
+    header.flags = enumValue(ObjectType::vehicle);
+    header.checksum = 224;
+    vehicleObjects.objects.push_back({ 224, header });
+    vehicleObjects.companyUnlocks[0].set(0, true);
+    MemoryStream stream;
+    writeMinimalScenarioOrLandscape(stream, S5::S5Type::landscape, &gameRules, &vehicleObjects);
+
+    const auto save = S5::loadSave(stream);
+
+    ASSERT_EQ(save->header.type, S5::S5Type::landscape);
+    EXPECT_EQ(save->scenarioOptions, nullptr);
+    ASSERT_TRUE(save->saveDetails != nullptr);
+    ASSERT_TRUE(save->gameRulesState.has_value());
+    EXPECT_EQ(*save->gameRulesState, gameRules);
+    ASSERT_TRUE(save->vehicleObjectState.has_value());
+    EXPECT_EQ(*save->vehicleObjectState, vehicleObjects);
+}
+
+TEST(CargoDistSave, LegacyLandscapeWithoutExtensionStillLoads)
+{
+    MemoryStream stream;
+    writeMinimalScenarioOrLandscape(stream, S5::S5Type::landscape);
+
+    const auto save = S5::loadSave(stream);
+
+    ASSERT_EQ(save->header.type, S5::S5Type::landscape);
+    EXPECT_EQ(save->scenarioOptions, nullptr);
+    ASSERT_TRUE(save->saveDetails != nullptr);
+    EXPECT_FALSE(save->gameRulesState.has_value());
+    EXPECT_FALSE(save->vehicleObjectState.has_value());
 }
 
 TEST(CargoDistSave, MarksVersionOnePathReservationsForRecalculation)
@@ -600,6 +753,7 @@ TEST(CargoDistSave, LegacyS5WithoutExtensionStillLoads)
     EXPECT_FALSE(save->cargoDistState.has_value());
     EXPECT_FALSE(save->sharedOrderState.has_value());
     EXPECT_FALSE(save->vehicleAutoRenewalState.has_value());
+    EXPECT_FALSE(save->gameRulesState.has_value());
 }
 
 TEST(CargoDistSave, LegacyDirectExtensionStillLoads)
@@ -614,4 +768,5 @@ TEST(CargoDistSave, LegacyDirectExtensionStillLoads)
     expectStatesEqual(original, *save->cargoDistState);
     EXPECT_FALSE(save->sharedOrderState.has_value());
     EXPECT_FALSE(save->vehicleAutoRenewalState.has_value());
+    EXPECT_FALSE(save->gameRulesState.has_value());
 }

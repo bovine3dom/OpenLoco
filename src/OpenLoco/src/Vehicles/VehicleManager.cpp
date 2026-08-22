@@ -6,6 +6,7 @@
 #include "GameCommands/GameCommands.h"
 #include "GameCommands/Vehicles/VehiclePickupAir.h"
 #include "GameCommands/Vehicles/VehiclePickupWater.h"
+#include "GameRules.h"
 #include "GameState.h"
 #include "GameStateFlags.h"
 #include "Map/Track/SubpositionData.h"
@@ -99,10 +100,16 @@ namespace OpenLoco::VehicleManager
         return availableTypes;
     }
 
-    static BitSet<224> determineUnlockedVehicles(const Company& company)
+    bool isVehicleObjectAvailable(const VehicleObject& vehicleObject, const uint16_t currentYear)
+    {
+        return currentYear >= vehicleObject.designed
+            && (GameRules::vehiclesNeverExpire() || currentYear < vehicleObject.obsolete);
+    }
+
+    static BitSet<Limits::kMaxVehicleObjects> determineUnlockedVehicles(const Company& company)
     {
         const auto curYear = getCurrentYear();
-        BitSet<224> unlockedVehicles{};
+        BitSet<Limits::kMaxVehicleObjects> unlockedVehicles{};
         for (uint32_t i = 0; i < ObjectManager::getMaxObjects(ObjectType::vehicle); ++i)
         {
             const auto* vehObj = ObjectManager::get<VehicleObject>(i);
@@ -111,11 +118,7 @@ namespace OpenLoco::VehicleManager
                 continue;
             }
 
-            if (curYear < vehObj->designed)
-            {
-                continue;
-            }
-            if (curYear >= vehObj->obsolete)
+            if (!isVehicleObjectAvailable(*vehObj, curYear))
             {
                 continue;
             }

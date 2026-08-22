@@ -27,6 +27,8 @@ namespace OpenLoco::S5::Limits
     constexpr size_t kMaxMiscEntities = 4000;
     constexpr size_t kMaxStationCargoDensity = 15;
 
+    constexpr size_t kMaxObjectHeaders = 859;
+
     constexpr size_t kMaxInterfaceObjects = 1;
     constexpr size_t kMaxSoundObjects = 128;
     constexpr size_t kMaxCurrencyObjects = 1;
@@ -62,4 +64,5 @@ namespace OpenLoco::S5::Limits
     constexpr size_t kMaxCompetitorObjects = 32;
     constexpr size_t kMaxScenarioTextObjects = 1;
 
+    static_assert(kMaxVehicleObjects % 32 == 0);
 }

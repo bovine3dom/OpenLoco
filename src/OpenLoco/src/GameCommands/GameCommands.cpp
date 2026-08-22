@@ -24,6 +24,7 @@
 #include "GameCommands/General/RenameStation.h"
 #include "GameCommands/General/SetCargoDistMode.h"
 #include "GameCommands/General/SetGameSpeed.h"
+#include "GameCommands/General/SetVehiclesNeverExpire.h"
 #include "GameCommands/General/TogglePause.h"
 #include "GameCommands/Industries/CreateIndustry.h"
 #include "GameCommands/Industries/RemoveIndustry.h"
@@ -150,7 +151,7 @@ namespace OpenLoco::GameCommands
     static constexpr StringId kErrorBelongsToOther = 0xFFFEU;
 
     // clang-format off
-    static constexpr GameCommandInfo kGameCommandDefinitions[89] = {
+    static constexpr GameCommandInfo kGameCommandDefinitions[90] = {
         { GameCommand::vehicleRearrange,             vehicleRearrange,          0x004AF1DF, true  },
         { GameCommand::vehiclePlace,                 vehiclePlace,              0x004B01B6, true  },
         { GameCommand::vehiclePickup,                vehiclePickup,             0x004B0826, true  },
@@ -240,6 +241,7 @@ namespace OpenLoco::GameCommands
         { GameCommand::vehicleOrderToggleUnbunching, vehicleOrderToggleUnbunching, 0,       false },
         { GameCommand::vehicleOrderShare,            vehicleOrderShare,         0,          false },
         { GameCommand::setVehicleAutoRenewal,        setVehicleAutoRenewal,     0,          false },
+        { GameCommand::setVehiclesNeverExpire,       setVehiclesNeverExpire,    0,          false },
     };
     // clang-format on
 

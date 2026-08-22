@@ -7,6 +7,7 @@
 #include "Environment.h"
 #include "Game.h"
 #include "GameCommands/GameCommands.h"
+#include "GameRules.h"
 #include "GameState.h"
 #include "GameStateFlags.h"
 #include "Graphics/Gfx.h"
@@ -203,6 +204,7 @@ namespace OpenLoco::Scenario
         WindowManager::setCurrentRotation(0);
 
         CompanyManager::reset();
+        GameRules::reset();
         StringManager::reset();
         EntityManager::reset();
 
