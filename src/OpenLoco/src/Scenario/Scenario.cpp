@@ -245,7 +245,9 @@ namespace OpenLoco::Scenario
     {
         Scenario::getOptions().scenarioFlags &= ~(ScenarioFlags::landscapeGenerationDone);
         Ui::WindowManager::invalidate(Ui::WindowType::landscapeGeneration, 0);
+        const auto gameRules = GameRules::captureState();
         reset();
+        GameRules::restoreState(gameRules);
         Scenario::getOptions().madeAnyChanges = 0;
         Gfx::invalidateScreen();
     }

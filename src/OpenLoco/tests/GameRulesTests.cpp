@@ -5,6 +5,7 @@
 #include "GameState.h"
 #include "Localisation/StringIds.h"
 #include "Objects/VehicleObject.h"
+#include "Scenario/Scenario.h"
 #include "SceneManager.h"
 #include "Vehicles/VehicleManager.h"
 #include <gtest/gtest.h>
@@ -109,6 +110,16 @@ TEST_F(GameRulesTest, VehicleAvailabilityAlwaysHonoursDesignedYear)
     GameRules::setVehiclesNeverExpire(true);
     EXPECT_FALSE(VehicleManager::isVehicleObjectAvailable(vehicle, 1949));
     EXPECT_TRUE(VehicleManager::isVehicleObjectAvailable(vehicle, 2000));
+}
+
+TEST_F(GameRulesTest, ErasingLandscapePreservesRules)
+{
+    const GameRules::State rules{ .vehiclesNeverExpire = true, .extendedVehicleObjects = true };
+    GameRules::restoreState(rules);
+
+    Scenario::eraseLandscape();
+
+    EXPECT_EQ(GameRules::captureState(), rules);
 }
 
 TEST_F(GameRulesTest, CommandArgumentsRoundTripThroughRegisters)
