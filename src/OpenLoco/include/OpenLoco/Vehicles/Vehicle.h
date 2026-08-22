@@ -249,6 +249,11 @@ namespace OpenLoco::Vehicles
     };
     OPENLOCO_ENABLE_ENUM_OPERATORS(RoadOccupationFlags);
     RoadOccupationFlags getRoadOccupation(const World::Pos3 pos, const TrackAndDirection::_RoadAndDirection tad);
+    constexpr bool isRoadStationStoppingPosition(StationId currentStation, StationId nextStation, RoadOccupationFlags nextOccupation)
+    {
+        return currentStation != StationId::null
+            && (currentStation != nextStation || (nextOccupation & RoadOccupationFlags::isLaneOccupied) != RoadOccupationFlags::none);
+    }
 
     EntityId checkForCollisions(VehicleBogie& bogie, World::Pos3& loc);
     void playPickupSound(Vehicles::Vehicle2* veh2);

@@ -93,3 +93,14 @@ TEST_F(VehicleMovementTest, StationaryLandBodySkipsGeometryButAdvancesAnimation)
     EXPECT_EQ(body->spriteLeft, 12345);
     EXPECT_NE(body->var_44, initialAnimationProgress);
 }
+
+TEST(VehicleMovement, OccupiedContinuationCreatesAnotherRoadStationStoppingPosition)
+{
+    constexpr auto currentStation = StationId(1);
+
+    EXPECT_FALSE(isRoadStationStoppingPosition(currentStation, currentStation, RoadOccupationFlags::none));
+    EXPECT_FALSE(isRoadStationStoppingPosition(currentStation, currentStation, RoadOccupationFlags::isLevelCrossingClosed));
+    EXPECT_TRUE(isRoadStationStoppingPosition(currentStation, currentStation, RoadOccupationFlags::isLaneOccupied));
+    EXPECT_TRUE(isRoadStationStoppingPosition(currentStation, StationId(2), RoadOccupationFlags::none));
+    EXPECT_FALSE(isRoadStationStoppingPosition(StationId::null, StationId::null, RoadOccupationFlags::isLaneOccupied));
+}

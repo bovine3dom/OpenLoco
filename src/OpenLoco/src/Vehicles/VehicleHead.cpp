@@ -4339,9 +4339,57 @@ namespace OpenLoco::Vehicles
         auto tc = isOneWay ? World::Track::getRoadConnectionsOneWay(nextPos, nextRotation, head.owner, head.trackType, requiredMods, queryMods)
                            : World::Track::getRoadConnections(nextPos, nextRotation, head.owner, head.trackType, requiredMods, queryMods);
 
+        // Keep pathing lazy so a normal station stop does not consume RNG, then reuse its choice for occupancy and routing.
+        std::optional<uint16_t> selectedConnection;
+        const auto getSelectedConnection = [&]() {
+            if (selectedConnection.has_value())
+            {
+                return *selectedConnection;
+            }
+
+            uint16_t connection = tc.connections[0];
+            if (tc.connections.size() > 1)
+            {
+                if (head.var_52 == 1)
+                {
+                    connection = roadLongestPathing(head, nextPos, tc, requiredMods, queryMods);
+                }
+                else
+                {
+                    Sub4AC3D3State state{};
+                    connection = roadPathing(head, nextPos, tc, requiredMods, queryMods, compatibleStations, false, state);
+                }
+                connection |= (1U << 14);
+            }
+            if (head.trackAndDirection.road.isOvertaking() ^ head.trackAndDirection.road.isChangingLane())
+            {
+                connection ^= World::Track::AdditionalTaDFlags::isOvertaking;
+                if (head.var_52 != 1)
+                {
+                    if (head.trackType == 0xFFU || ObjectManager::get<RoadObject>(head.trackType)->hasFlags(RoadObjectFlags::isRoad))
+                    {
+                        connection ^= World::Track::AdditionalTaDFlags::isChangingLane;
+                    }
+                }
+            }
+            selectedConnection = connection;
+            return connection;
+        };
+
+        auto nextOccupation = RoadOccupationFlags::none;
         if (head.var_52 != 1
             && tileStationId != StationId::null
-            && tileStationId != tc.stationId
+            && tileStationId == tc.stationId
+            && compatibleStations & (1U << stationObjId)
+            && !tc.connections.empty())
+        {
+            TrackAndDirection::_RoadAndDirection nextTad{ 0, 0 };
+            nextTad._data = getSelectedConnection() & 0x1FFU;
+            nextOccupation = getRoadOccupation(nextPos, nextTad);
+        }
+
+        if (head.var_52 != 1
+            && isRoadStationStoppingPosition(tileStationId, tc.stationId, nextOccupation)
             && compatibleStations & (1U << stationObjId))
         {
             auto orders = OrderRingView(head.orderTableOffset, head.currentOrder);
@@ -4361,10 +4409,13 @@ namespace OpenLoco::Vehicles
                 {
                     if (tileStationId == stationOrder->getStation())
                     {
-                        curOrder++;
-                        head.currentOrder = curOrder->getOffset() - head.orderTableOffset;
-                        Ui::WindowManager::invalidateOrderPageByVehicleNumber(enumValue(head.id));
                         stationProcessed = true;
+                        if (tileStationId != tc.stationId)
+                        {
+                            curOrder++;
+                            head.currentOrder = curOrder->getOffset() - head.orderTableOffset;
+                            Ui::WindowManager::invalidateOrderPageByVehicleNumber(enumValue(head.id));
+                        }
                     }
                 }
             }
@@ -4388,39 +4439,7 @@ namespace OpenLoco::Vehicles
             return Sub4ACEE7Result{ 2, 0, StationId::null };
         }
         // 0x0047DD74
-        uint16_t connection = tc.connections[0];
-        if (tc.connections.size() > 1)
-        {
-            if (head.var_52 == 1)
-            {
-                connection = roadLongestPathing(head, nextPos, tc, requiredMods, queryMods);
-            }
-            else
-            {
-                Sub4AC3D3State state{};
-                connection = roadPathing(head, nextPos, tc, requiredMods, queryMods, compatibleStations, false, state);
-            }
-            connection |= (1U << 14);
-        }
-        if (head.trackAndDirection.road.isOvertaking() ^ head.trackAndDirection.road.isChangingLane())
-        {
-            connection ^= World::Track::AdditionalTaDFlags::isOvertaking;
-            if (head.var_52 != 1)
-            {
-                if (head.trackType != 0xFFU)
-                {
-                    auto* roadObj = ObjectManager::get<RoadObject>(head.trackType);
-                    if (roadObj->hasFlags(RoadObjectFlags::isRoad))
-                    {
-                        connection ^= World::Track::AdditionalTaDFlags::isChangingLane;
-                    }
-                }
-                else
-                {
-                    connection ^= World::Track::AdditionalTaDFlags::isChangingLane;
-                }
-            }
-        }
+        const auto connection = getSelectedConnection();
         // 0x0047DDFB
         auto routings = RoutingManager::RingView(head.routingHandle);
         const auto nextHandle = *++(routings.begin());
