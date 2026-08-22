@@ -48,6 +48,10 @@ namespace OpenLoco::CargoDist
 
     void synchroniseStationCargo(StationId station, uint8_t cargo, StationCargoStats& nativeCargo);
     void synchroniseVehicleCargo(VehicleCargoKey key, Vehicles::VehicleCargo& nativeCargo);
+    constexpr uint32_t getRoutingAttraction(bool passengerRouting, bool industryDestination, uint32_t recordedAttraction)
+    {
+        return recordedAttraction != 0 && (passengerRouting || !industryDestination) ? recordedAttraction : 8;
+    }
     void setStationAttraction(StationId station, uint8_t cargo, uint32_t attraction);
 
     void addProducedCargo(StationId station, uint8_t cargo, StationCargoStats& nativeCargo, uint16_t quantity);

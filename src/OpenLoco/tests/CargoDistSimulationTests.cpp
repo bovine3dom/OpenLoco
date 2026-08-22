@@ -256,6 +256,26 @@ TEST_F(CargoDistServiceSimulationTest, IndustryAndBuildingSinksUseSemanticTarget
     EXPECT_EQ(building->weight, 24U);
 }
 
+TEST(CargoDistSimulation, PassengerIndustryUsesRecordedAttraction)
+{
+    EXPECT_EQ(getRoutingAttraction(true, true, 96), 96U);
+    EXPECT_EQ(getRoutingAttraction(false, true, 96), 8U);
+    EXPECT_EQ(getRoutingAttraction(true, true, 0), 8U);
+    EXPECT_EQ(getRoutingAttraction(false, false, 24), 24U);
+}
+
+TEST_F(CargoDistServiceSimulationTest, ZeroProductionIsANoOp)
+{
+    ASSERT_FALSE(getStateConst().graphDirty);
+
+    StationCargoStats cargo{};
+    addProducedCargo(station(1), 0, cargo, 0);
+
+    EXPECT_FALSE(getStateConst().graphDirty);
+    EXPECT_FALSE(getStateConst().stationCargo.contains({ station(1), 0 }));
+    EXPECT_FALSE(getStateConst().supply.contains({ 0, station(1) }));
+}
+
 TEST_F(CargoDistServiceSimulationTest, RoutingMetadataRefreshPreservesCargoAcceptance)
 {
     auto& destination = getGameState().stations[2];
@@ -601,6 +621,28 @@ TEST_F(CargoDistServiceSimulationTest, AsyncRecalculationRoutesProducedCargo)
     ASSERT_FALSE(packets->packets().empty());
     EXPECT_EQ(packets->packets().front().destination, station(2));
     EXPECT_EQ(packets->packets().front().nextHop, station(2));
+}
+
+TEST_F(CargoDistServiceSimulationTest, NewProductionDirtiesCleanGraphAndBecomesRoutable)
+{
+    createVehicle();
+    recalculateNow();
+    ASSERT_FALSE(getStateConst().graphDirty);
+    ASSERT_FALSE(getStateConst().supply.contains({ 0, station(1) }));
+
+    StationCargoStats cargo{};
+    addProducedCargo(station(1), 0, cargo, 20);
+
+    EXPECT_TRUE(getStateConst().graphDirty);
+    recalculateNow();
+    const auto* packets = getStationCargoConst(station(1), 0);
+    ASSERT_NE(packets, nullptr);
+    ASSERT_FALSE(packets->packets().empty());
+    EXPECT_EQ(packets->packets().front().destination, station(2));
+    EXPECT_EQ(packets->packets().front().nextHop, station(2));
+
+    addProducedCargo(station(1), 0, cargo, 20);
+    EXPECT_FALSE(getStateConst().graphDirty);
 }
 
 TEST_F(CargoDistServiceSimulationTest, AsyncCommitKeepsCargoProducedAfterCaptureRoutable)

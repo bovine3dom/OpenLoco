@@ -969,15 +969,9 @@ namespace OpenLoco::CargoDist
                 uint32_t attraction = 1;
                 if (accepts)
                 {
-                    attraction = 8;
-                    if (station.cargoStats[cargo].industryId == IndustryId::null)
-                    {
-                        const auto found = state.stationAttraction.find({ station.id(), cargo });
-                        if (found != state.stationAttraction.end() && found->second != 0)
-                        {
-                            attraction = found->second;
-                        }
-                    }
+                    const auto found = state.stationAttraction.find({ station.id(), cargo });
+                    const auto recordedAttraction = found == state.stationAttraction.end() ? 0 : found->second;
+                    attraction = getRoutingAttraction(graph.passengerRouting, station.cargoStats[cargo].industryId != IndustryId::null, recordedAttraction);
                 }
                 graph.nodes.push_back({
                     station.id(),
@@ -1452,10 +1446,10 @@ namespace OpenLoco::CargoDist
 
             std::mutex _mutex;
             std::condition_variable _condition;
-            std::thread _thread;
             std::optional<Request> _request;
             std::optional<Result> _result;
             bool _stopping{};
+            std::thread _thread;
         };
 
         struct PendingFlowCalculation
@@ -1605,6 +1599,10 @@ namespace OpenLoco::CargoDist
 
     void addProducedCargo(StationId station, uint8_t cargo, StationCargoStats& nativeCargo, uint16_t quantity)
     {
+        if (quantity == 0)
+        {
+            return;
+        }
         auto& packets = getOrCreateStationCargo(station, cargo);
         const auto room = std::numeric_limits<uint32_t>::max() - packets.quantity();
         const auto added = static_cast<uint16_t>(std::min<uint32_t>(quantity, room));
@@ -1625,7 +1623,12 @@ namespace OpenLoco::CargoDist
             markCargoChanged();
         }
         auto& supply = getState().supply[{ cargo, station }];
+        const auto isNewSource = supply == 0;
         supply = saturatedAdd(supply, quantity);
+        if (isNewSource)
+        {
+            markGraphDirty();
+        }
         invalidateJourneyGraph(cargo);
         synchroniseStationCargo(station, cargo, nativeCargo);
     }
