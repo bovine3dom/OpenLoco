@@ -66,6 +66,7 @@ namespace OpenLoco::CargoDist
         std::vector<RoutingEdge> edges;
         bool timeSensitive;
         std::vector<RoutingDemand> demands;
+        bool passengerRouting = false;
     };
 
     struct RoutingSettings

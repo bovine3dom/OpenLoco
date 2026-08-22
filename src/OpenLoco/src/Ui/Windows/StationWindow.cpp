@@ -746,8 +746,10 @@ namespace OpenLoco::Ui::Windows::Station
         static void drawCargoHeader(Window& self, Gfx::DrawingContext& drawingCtx, const CargoListRow& row, const StationCargoStats& cargo)
         {
             auto tr = Gfx::TextRenderer(drawingCtx);
-            auto quantity = std::min<int32_t>(cargo.quantity, 400);
-            auto units = (quantity + 9) / 10;
+            const auto stationId = StationId(self.number);
+            const auto* packets = CargoDist::getStationCargoConst(stationId, row.cargo);
+            const auto totalQuantity = packets == nullptr ? static_cast<uint32_t>(cargo.quantity) : packets->quantity();
+            auto units = (std::min<uint32_t>(totalQuantity, 400) + 9) / 10;
             const auto* cargoObj = ObjectManager::get<CargoObject>(row.cargo);
             auto xPos = static_cast<int16_t>(row.expandable ? 10 : 1);
             if (row.expandable)
@@ -760,12 +762,11 @@ namespace OpenLoco::Ui::Windows::Station
                 xPos += 10;
             }
 
-            const auto cargoName = cargo.quantity == 1 ? cargoObj->unitNameSingular : cargoObj->unitNamePlural;
+            const auto cargoName = totalQuantity == 1 ? cargoObj->unitNameSingular : cargoObj->unitNamePlural;
             const auto textRight = self.widgets[widx::scrollview].width() - 14;
             FormatArguments args{};
             args.push(cargoName);
-            args.push<uint32_t>(cargo.quantity);
-            const auto stationId = StationId(self.number);
+            args.push<int32_t>(static_cast<int32_t>(std::min<uint32_t>(totalQuantity, std::numeric_limits<int32_t>::max())));
             const auto showOrigin = cargo.origin != stationId && cargo.origin != StationId::null;
             const auto cargoString = showOrigin ? StringIds::station_cargo_en_route_start : StringIds::station_cargo;
             tr.drawStringRight({ textRight, static_cast<int16_t>(row.y + 1) }, AdvancedColour(Colour::black).outline(), cargoString, args);

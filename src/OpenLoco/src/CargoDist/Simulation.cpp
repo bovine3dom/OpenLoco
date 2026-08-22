@@ -167,6 +167,12 @@ namespace OpenLoco::CargoDist
             ++getState().cargoRevision;
         }
 
+        bool isPassengerCargo(uint8_t cargo)
+        {
+            const auto* cargoObject = ObjectManager::get<CargoObject>(cargo);
+            return cargoObject != nullptr && cargoObject->cargoCategory == CargoCategory::passengers;
+        }
+
         uint32_t saturatedAdd(uint32_t lhs, uint32_t rhs)
         {
             return rhs > std::numeric_limits<uint32_t>::max() - lhs
@@ -877,7 +883,7 @@ namespace OpenLoco::CargoDist
             using DemandKey = std::tuple<StationId, StationId, ServicePoint, StationId>;
             std::map<DemandKey, uint32_t> demands;
             std::map<DemandKey, uint32_t> outstanding;
-            const auto addPackets = [&outstanding](StationId source, const PacketList* packets) {
+            const auto addPackets = [&outstanding, releaseDestinations = isPassengerCargo(cargo)](StationId source, const PacketList* packets) {
                 if (packets == nullptr)
                 {
                     return;
@@ -886,7 +892,8 @@ namespace OpenLoco::CargoDist
                 {
                     if (packet.origin != StationId::null)
                     {
-                        auto& amount = outstanding[{ source, packet.origin, {}, packet.destination }];
+                        const auto destination = releaseDestinations && packet.origin == source ? StationId::null : packet.destination;
+                        auto& amount = outstanding[{ source, packet.origin, {}, destination }];
                         amount = saturatedAdd(amount, packet.quantity);
                     }
                 }
@@ -950,6 +957,7 @@ namespace OpenLoco::CargoDist
         {
             RoutingGraph graph;
             graph.timeSensitive = true;
+            graph.passengerRouting = isPassengerCargo(cargo);
             const auto& state = getStateConst();
             for (const auto& station : StationManager::stations())
             {
@@ -1216,7 +1224,9 @@ namespace OpenLoco::CargoDist
                 for (auto packet : packets.packets())
                 {
                     const auto requested = packet.quantity;
-                    const auto shares = allocateVia(cargo, key.station, packet.origin, packet.destination, packet.quantity, ServicePoint{}, key.station);
+                    const auto releaseDestination = isPassengerCargo(cargo) && packet.origin == key.station;
+                    const auto destination = releaseDestination ? StationId::null : packet.destination;
+                    const auto shares = allocateVia(cargo, key.station, packet.origin, destination, packet.quantity, ServicePoint{}, key.station);
                     if (shares.empty())
                     {
                         const auto existingRoute = ServiceEdgeKey{ cargo, key.station, packet.nextHop, packet.departure, packet.arrival };
@@ -1228,6 +1238,7 @@ namespace OpenLoco::CargoDist
                             rerouted.push_back(packet);
                             continue;
                         }
+                        packet.destination = destination;
                         packet.nextHop = StationId::null;
                         packet.departure = {};
                         packet.arrival = {};
@@ -1248,6 +1259,7 @@ namespace OpenLoco::CargoDist
                     }
                     if (allocated < requested)
                     {
+                        remainingPacket.destination = destination;
                         remainingPacket.nextHop = StationId::null;
                         remainingPacket.departure = {};
                         remainingPacket.arrival = {};
@@ -1521,11 +1533,12 @@ namespace OpenLoco::CargoDist
             auto& state = getState();
             state.flows = std::move(result.flows);
             state.destinationFlows = std::move(result.destinationFlows);
+            ++state.routingRevision;
             for (const auto cargo : result.computedCargoes)
             {
                 rerouteWaitingCargo(cargo);
+                invalidateJourneyGraph(cargo);
             }
-            ++state.routingRevision;
         }
 
         void recalculateFlows()
@@ -1593,7 +1606,7 @@ namespace OpenLoco::CargoDist
     void addProducedCargo(StationId station, uint8_t cargo, StationCargoStats& nativeCargo, uint16_t quantity)
     {
         auto& packets = getOrCreateStationCargo(station, cargo);
-        const auto room = std::numeric_limits<uint16_t>::max() - std::min<uint32_t>(packets.quantity(), std::numeric_limits<uint16_t>::max());
+        const auto room = std::numeric_limits<uint32_t>::max() - packets.quantity();
         const auto added = static_cast<uint16_t>(std::min<uint32_t>(quantity, room));
         if (added != 0)
         {
@@ -1941,7 +1954,7 @@ namespace OpenLoco::CargoDist
         if (!transferred.empty())
         {
             auto& stationPackets = getOrCreateStationCargo(station, nativeCargo.type);
-            const auto room = std::numeric_limits<uint16_t>::max() - std::min<uint32_t>(stationPackets.quantity(), std::numeric_limits<uint16_t>::max());
+            const auto room = std::numeric_limits<uint32_t>::max() - stationPackets.quantity();
             auto retained = transferred.take(room);
             result.transferred = static_cast<uint16_t>(retained.quantity());
             if (transferPayment)
@@ -2017,6 +2030,14 @@ namespace OpenLoco::CargoDist
         return found;
     }
 
+    bool canDisableDistribution(const uint8_t cargo)
+    {
+        const auto& stationCargo = getStateConst().stationCargo;
+        return std::none_of(stationCargo.begin(), stationCargo.end(), [cargo](const auto& item) {
+            return item.first.cargo == cargo && item.second.quantity() > std::numeric_limits<uint16_t>::max();
+        }) && !hasOutstandingTransferCredits(cargo);
+    }
+
     void setMode(uint8_t cargo, DistributionMode mode)
     {
         auto& state = getState();
@@ -2024,7 +2045,7 @@ namespace OpenLoco::CargoDist
         {
             return;
         }
-        if (mode == DistributionMode::manual && hasOutstandingTransferCredits(cargo))
+        if (mode == DistributionMode::manual && !canDisableDistribution(cargo))
         {
             return;
         }
@@ -2269,7 +2290,8 @@ namespace OpenLoco::CargoDist
                 {
                     const auto quantity = packets == state.stationCargo.end() ? 0 : packets->second.quantity();
                     const auto& nativeCargo = station.cargoStats[cargo];
-                    if (nativeCargo.quantity != quantity
+                    const auto nativeQuantity = static_cast<uint16_t>(std::min<uint32_t>(quantity, std::numeric_limits<uint16_t>::max()));
+                    if (nativeCargo.quantity != nativeQuantity
                         || (quantity != 0 && (nativeCargo.origin != packets->second.representativeOrigin() || nativeCargo.enrouteAge != packets->second.averageAge())))
                     {
                         throw std::runtime_error("CargoDist station cargo does not match native state");

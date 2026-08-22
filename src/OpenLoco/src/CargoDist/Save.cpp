@@ -23,7 +23,7 @@ namespace OpenLoco::CargoDist
             std::byte{ 'T' },
             std::byte{ 0 },
         };
-        constexpr uint16_t kVersion = 5;
+        constexpr uint16_t kVersion = 6;
         constexpr uint16_t kHeaderSize = 16;
         constexpr uint32_t kMaxStationLists = S5::Limits::kMaxStations * S5::Limits::kMaxCargoObjects;
         constexpr uint32_t kMaxVehicleLists = S5::Limits::kMaxEntities * 2;
@@ -177,8 +177,8 @@ namespace OpenLoco::CargoDist
         void encodePackets(Encoder& encoder, const PacketList& packets, uint32_t maxQuantity)
         {
             require(packets.size() <= std::numeric_limits<uint32_t>::max(), "Too many CargoDist packets");
-            require(packets.quantity() <= maxQuantity, "CargoDist packet quantity exceeds native capacity");
             encoder.write(static_cast<uint32_t>(packets.size()));
+            uint64_t quantity = 0;
             for (const auto& packet : packets.packets())
             {
                 require(packet.quantity != 0, "CargoDist packet has zero quantity");
@@ -187,6 +187,8 @@ namespace OpenLoco::CargoDist
                 require(isValidStation(packet.nextHop, true), "CargoDist packet has invalid next hop");
                 require(isValidStation(packet.destination, true), "CargoDist packet has invalid destination");
                 validateServiceLeg(packet.departure, packet.arrival, packet.nextHop == StationId::null, "Invalid CargoDist packet service points");
+                quantity += packet.quantity;
+                require(quantity <= maxQuantity, "CargoDist packet quantity exceeds supported capacity");
                 encoder.write(packet.quantity);
                 encoder.write(stationValue(packet.origin));
                 encoder.write(stationValue(packet.nextHop));
@@ -203,6 +205,8 @@ namespace OpenLoco::CargoDist
         {
             const auto count = decoder.read<uint32_t>();
             require(count <= maxQuantity, "Too many CargoDist packets");
+            const auto packetSize = version >= 5 ? 26U : version >= 4 ? 18U : version >= 3 ? 16U : 8U;
+            require(count <= decoder.remaining() / packetSize, "Too many CargoDist packets");
             PacketList::Container packets;
             packets.reserve(count);
             uint32_t quantity = 0;
@@ -233,7 +237,7 @@ namespace OpenLoco::CargoDist
                 require(isValidStation(packet.origin), "CargoDist packet has invalid origin");
                 require(isValidStation(packet.nextHop, true), "CargoDist packet has invalid next hop");
                 require(isValidStation(packet.destination, true), "CargoDist packet has invalid destination");
-                require(packet.quantity <= maxQuantity - quantity, "CargoDist packet quantity exceeds native capacity");
+                require(packet.quantity <= maxQuantity - quantity, "CargoDist packet quantity exceeds supported capacity");
                 quantity += packet.quantity;
                 packets.push_back(packet);
             }
@@ -336,7 +340,7 @@ namespace OpenLoco::CargoDist
             payload.write(stationValue(key.station));
             payload.write(key.cargo);
             payload.write<uint8_t>(0);
-            encodePackets(payload, packets, std::numeric_limits<uint16_t>::max());
+            encodePackets(payload, packets, std::numeric_limits<uint32_t>::max());
         }
 
         payload.write(countMatching(state.vehicleCargo, [](const auto& item) { return !item.second.empty(); }));
@@ -495,7 +499,8 @@ namespace OpenLoco::CargoDist
             key.cargo = decoder.read<uint8_t>();
             decoder.read<uint8_t>();
             require(isValidStation(key.station) && key.cargo < state.settings.modes.size(), "Invalid CargoDist station cargo key");
-            require(state.stationCargo.emplace(key, decodePackets(decoder, std::numeric_limits<uint16_t>::max(), version)).second, "Duplicate CargoDist station cargo key");
+            const auto maximumQuantity = version >= 6 ? std::numeric_limits<uint32_t>::max() : std::numeric_limits<uint16_t>::max();
+            require(state.stationCargo.emplace(key, decodePackets(decoder, maximumQuantity, version)).second, "Duplicate CargoDist station cargo key");
         }
 
         const auto vehicleListCount = decoder.read<uint32_t>();
@@ -628,6 +633,9 @@ namespace OpenLoco::CargoDist
         {
             state.flows.clear();
             state.destinationFlows.clear();
+        }
+        if (version < 6)
+        {
             state.graphDirty = true;
         }
         return state;

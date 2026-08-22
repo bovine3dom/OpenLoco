@@ -37,6 +37,7 @@
 #include <OpenLoco/Math/Bound.hpp>
 #include <algorithm>
 #include <cassert>
+#include <limits>
 
 using namespace OpenLoco::World;
 using namespace OpenLoco::Ui;
@@ -720,8 +721,10 @@ namespace OpenLoco
         for (uint32_t cargoId = 0; cargoId < kMaxCargoStats; cargoId++)
         {
             auto& stationCargoStat = cargoStats[cargoId];
+            const auto* packets = CargoDist::getStationCargoConst(id(), cargoId);
+            const auto quantity = packets == nullptr ? static_cast<uint32_t>(stationCargoStat.quantity) : packets->quantity();
 
-            if (stationCargoStat.quantity == 0)
+            if (quantity == 0)
             {
                 continue;
             }
@@ -732,10 +735,10 @@ namespace OpenLoco
             }
 
             FormatArguments args{};
-            args.push<uint32_t>(stationCargoStat.quantity);
+            args.push<int32_t>(static_cast<int32_t>(std::min<uint32_t>(quantity, std::numeric_limits<int32_t>::max())));
 
             auto cargo = ObjectManager::get<CargoObject>(cargoId);
-            auto unitName = stationCargoStat.quantity == 1 ? cargo->unitNameSingular : cargo->unitNamePlural;
+            auto unitName = quantity == 1 ? cargo->unitNameSingular : cargo->unitNamePlural;
             ptr = StringManager::formatString(ptr, unitName, args);
         }
 

@@ -382,6 +382,32 @@ namespace OpenLoco::CargoDist
             return saturatedAdd(saturatedMultiply(value / 100, percent), (value % 100) * percent / 100);
         }
 
+        uint64_t ratioQ16(uint64_t numerator, uint64_t denominator)
+        {
+            constexpr uint64_t kScale = uint64_t{ 1 } << 16;
+            if (numerator >= denominator)
+            {
+                return kScale;
+            }
+
+            uint64_t result = 0;
+            auto remainder = numerator;
+            for (uint8_t bit = 0; bit < 16; ++bit)
+            {
+                result *= 2;
+                if (remainder >= denominator - remainder)
+                {
+                    remainder -= denominator - remainder;
+                    ++result;
+                }
+                else
+                {
+                    remainder *= 2;
+                }
+            }
+            return result;
+        }
+
         uint64_t geometricDistance(const RoutingNode& lhs, const RoutingNode& rhs)
         {
             const int64_t dx = static_cast<int64_t>(lhs.x) - rhs.x;
@@ -668,6 +694,7 @@ namespace OpenLoco::CargoDist
             bool timeSensitive,
             uint8_t saturation,
             size_t visitedNode,
+            size_t forbiddenReturnStation,
             ShortestPathScratch& scratch)
         {
             scratch.reset(nodeStations.size());
@@ -701,7 +728,10 @@ namespace OpenLoco::CargoDist
                 for (const auto edgeIndex : adjacency[current])
                 {
                     const auto& edge = edges[edgeIndex];
-                    if (settled[edge.to])
+                    if (settled[edge.to]
+                        || (forbiddenReturnStation != kNoIndex
+                            && nodeStations[current] != forbiddenReturnStation
+                            && nodeStations[edge.to] == forbiddenReturnStation))
                     {
                         continue;
                     }
@@ -721,6 +751,39 @@ namespace OpenLoco::CargoDist
             }
 
             return reconstructPath(source, destination, nodeStations, edges, scratch);
+        }
+
+        std::vector<uint64_t> destinationWeights(
+            const std::vector<size_t>& sinks,
+            const std::vector<RoutingNode>& nodes,
+            const std::vector<uint64_t>& journeyCosts,
+            uint8_t distanceEffect)
+        {
+            constexpr uint64_t kMaximumWeight = uint64_t{ 1 } << 32;
+            uint64_t minimumCost = kMaximumCost;
+            for (const auto sink : sinks)
+            {
+                minimumCost = std::min(minimumCost, std::max<uint64_t>(1, journeyCosts[sink]));
+            }
+
+            std::vector<uint64_t> weights;
+            weights.reserve(sinks.size());
+            uint64_t maximumScore = 1;
+            for (const auto sink : sinks)
+            {
+                const auto cost = std::max<uint64_t>(1, journeyCosts[sink]);
+                const auto effectiveCost = saturatedAdd(minimumCost, scalePercent(cost - minimumCost, distanceEffect));
+                const auto proximity = ratioQ16(minimumCost, effectiveCost);
+                const auto score = saturatedMultiply(proximity * proximity, std::max<uint64_t>(1, nodes[sink].attraction));
+                weights.push_back(score);
+                maximumScore = std::max(maximumScore, score);
+            }
+            const auto divisor = maximumScore / kMaximumWeight + (maximumScore % kMaximumWeight != 0);
+            for (auto& weight : weights)
+            {
+                weight = std::max<uint64_t>(1, weight / divisor);
+            }
+            return weights;
         }
 
         struct MultiplyDivideResult
@@ -1035,7 +1098,17 @@ namespace OpenLoco::CargoDist
                     visitedNode = predecessors.front();
                 }
             }
-            const auto reachable = reachableNodes(sourceNode, edges, adjacency, visitedNode);
+            auto reachable = graph.passengerRouting
+                ? std::vector<bool>(planned.nodeStations.size())
+                : reachableNodes(sourceNode, edges, adjacency, visitedNode);
+            if (graph.passengerRouting)
+            {
+                shortestPath(sourceNode, kNoIndex, nodes, planned.nodeStations, edges, adjacency, graph.timeSensitive, settings.saturation, visitedNode, planned.nodeStations[sourceNode], shortestPathScratch);
+                for (size_t node = 0; node < reachable.size(); ++node)
+                {
+                    reachable[node] = shortestPathScratch.distance[node] != kUnreachableJourneyCost;
+                }
+            }
             if (fixedDestination != StationId::null)
             {
                 const auto sink = findNode(nodes, fixedDestination);
@@ -1070,10 +1143,11 @@ namespace OpenLoco::CargoDist
             }
 
             const auto chunkSize = demand.amount / accuracy + (demand.amount % accuracy != 0);
+            const auto forbiddenReturnStation = graph.passengerRouting ? planned.nodeStations[demand.sourceNode] : kNoIndex;
             uint32_t iterations = 0;
             for (uint32_t remaining = amount; remaining != 0;)
             {
-                const auto& path = shortestPath(demand.sourceNode, destinationNode, nodes, planned.nodeStations, edges, adjacency, graph.timeSensitive, settings.saturation, demand.visitedNode, shortestPathScratch);
+                const auto& path = shortestPath(demand.sourceNode, destinationNode, nodes, planned.nodeStations, edges, adjacency, graph.timeSensitive, settings.saturation, demand.visitedNode, forbiddenReturnStation, shortestPathScratch);
                 if (path.empty())
                 {
                     break;
@@ -1116,22 +1190,54 @@ namespace OpenLoco::CargoDist
             routeAmount(demand, demand.sinks.front(), demand.amount);
         }
 
-        for (auto& demand : flexibleDemands)
+        if (graph.passengerRouting)
         {
-            shortestPath(demand.sourceNode, kNoIndex, nodes, planned.nodeStations, edges, adjacency, graph.timeSensitive, settings.saturation, demand.visitedNode, shortestPathScratch);
-            demand.costs.reserve(demand.sinks.size());
-            for (const auto sink : demand.sinks)
+            for (const auto& demand : flexibleDemands)
             {
-                demand.costs.push_back(shortestPathScratch.distance[sink]);
+                std::vector<int64_t> credits(demand.sinks.size());
+                const auto chunkSize = demand.amount / accuracy + (demand.amount % accuracy != 0);
+                for (uint32_t remaining = demand.amount; remaining != 0;)
+                {
+                    shortestPath(demand.sourceNode, kNoIndex, nodes, planned.nodeStations, edges, adjacency, graph.timeSensitive, settings.saturation, demand.visitedNode, planned.nodeStations[demand.sourceNode], shortestPathScratch);
+                    const auto weights = destinationWeights(demand.sinks, nodes, shortestPathScratch.distance, settings.distanceEffect);
+                    uint64_t totalWeight = 0;
+                    size_t chosen = 0;
+                    for (size_t i = 0; i < demand.sinks.size(); ++i)
+                    {
+                        totalWeight += weights[i];
+                        credits[i] += static_cast<int64_t>(weights[i]);
+                        if (credits[i] > credits[chosen]
+                            || (credits[i] == credits[chosen] && stationValue(nodes[demand.sinks[i]].station) < stationValue(nodes[demand.sinks[chosen]].station)))
+                        {
+                            chosen = i;
+                        }
+                    }
+                    credits[chosen] -= static_cast<int64_t>(totalWeight);
+                    const auto amount = std::min(remaining, chunkSize);
+                    routeAmount(demand, demand.sinks[chosen], amount);
+                    remaining -= amount;
+                }
             }
         }
-        const auto targets = calculateFairSinkTargets(flexibleDemands, nodes);
-        const auto assignments = assignDemandTargets(flexibleDemands, nodes, targets, settings.distanceEffect);
-        for (size_t demand = 0; demand < flexibleDemands.size(); ++demand)
+        else
         {
-            for (const auto [sink, amount] : assignments[demand])
+            for (auto& demand : flexibleDemands)
             {
-                routeAmount(flexibleDemands[demand], sink, amount);
+                shortestPath(demand.sourceNode, kNoIndex, nodes, planned.nodeStations, edges, adjacency, graph.timeSensitive, settings.saturation, demand.visitedNode, kNoIndex, shortestPathScratch);
+                demand.costs.reserve(demand.sinks.size());
+                for (const auto sink : demand.sinks)
+                {
+                    demand.costs.push_back(shortestPathScratch.distance[sink]);
+                }
+            }
+            const auto targets = calculateFairSinkTargets(flexibleDemands, nodes);
+            const auto assignments = assignDemandTargets(flexibleDemands, nodes, targets, settings.distanceEffect);
+            for (size_t demand = 0; demand < flexibleDemands.size(); ++demand)
+            {
+                for (const auto [sink, amount] : assignments[demand])
+                {
+                    routeAmount(flexibleDemands[demand], sink, amount);
+                }
             }
         }
 
@@ -1209,7 +1315,8 @@ namespace OpenLoco::CargoDist
 
         const auto adjacency = makeAdjacency(planned.nodeStations.size(), planned.edges);
         ShortestPathScratch scratch;
-        shortestPath(sourceNode, kNoIndex, nodes, planned.nodeStations, planned.edges, adjacency, graph.timeSensitive, 100, visitedNode, scratch);
+        const auto forbiddenReturnStation = graph.passengerRouting ? sourceStation : kNoIndex;
+        shortestPath(sourceNode, kNoIndex, nodes, planned.nodeStations, planned.edges, adjacency, graph.timeSensitive, 100, visitedNode, forbiddenReturnStation, scratch);
         std::vector<StationJourneyCost> result;
         result.reserve(nodes.size());
         for (size_t node = 0; node < nodes.size(); ++node)

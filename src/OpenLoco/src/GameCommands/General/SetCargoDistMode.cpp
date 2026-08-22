@@ -22,13 +22,15 @@ namespace OpenLoco::GameCommands
             {
                 for (uint8_t cargo = 0; cargo < CargoDist::getStateConst().settings.modes.size(); ++cargo)
                 {
-                    if (CargoDist::getMode(cargo) != CargoDist::DistributionMode::manual && CargoDist::hasOutstandingTransferCredits(cargo))
+                    if (CargoDist::getMode(cargo) != CargoDist::DistributionMode::manual
+                        && !CargoDist::canDisableDistribution(cargo))
                     {
                         return kFailure;
                     }
                 }
             }
-            else if (CargoDist::getMode(args.cargo) != CargoDist::DistributionMode::manual && CargoDist::hasOutstandingTransferCredits(args.cargo))
+            else if (CargoDist::getMode(args.cargo) != CargoDist::DistributionMode::manual
+                && !CargoDist::canDisableDistribution(args.cargo))
             {
                 return kFailure;
             }

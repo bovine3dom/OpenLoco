@@ -270,6 +270,7 @@ namespace OpenLoco::CargoDist
     DistributionMode getMode(uint8_t cargo);
     bool isEnabled(uint8_t cargo);
     bool hasOutstandingTransferCredits(uint8_t cargo);
+    bool canDisableDistribution(uint8_t cargo);
     void setMode(uint8_t cargo, DistributionMode mode);
     void markGraphDirty();
     void markServicesDirty();

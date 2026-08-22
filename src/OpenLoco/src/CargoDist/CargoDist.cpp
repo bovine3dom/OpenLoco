@@ -236,7 +236,9 @@ namespace OpenLoco::CargoDist
         uint32_t total = 0;
         for (const auto& packet : _packets)
         {
-            total += packet.quantity;
+            total = packet.quantity > std::numeric_limits<uint32_t>::max() - total
+                ? std::numeric_limits<uint32_t>::max()
+                : total + packet.quantity;
         }
         return total;
     }

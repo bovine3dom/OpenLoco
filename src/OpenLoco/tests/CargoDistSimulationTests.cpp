@@ -603,6 +603,32 @@ TEST_F(CargoDistServiceSimulationTest, AsyncRecalculationRoutesProducedCargo)
     EXPECT_EQ(packets->packets().front().nextHop, station(2));
 }
 
+TEST_F(CargoDistServiceSimulationTest, AsyncCommitKeepsCargoProducedAfterCaptureRoutable)
+{
+    createVehicle();
+    getState().supply[{ 0, station(1) }] = 20;
+    recalculateNow();
+    getState().supply.clear();
+
+    markServicesDirty();
+    getGameState().scenarioTicks = 0;
+    update();
+    ASSERT_TRUE(isServiceRecalculationPending());
+
+    StationCargoStats cargo{};
+    addProducedCargo(station(1), 0, cargo, 20);
+    ASSERT_EQ(getStationCargoConst(station(1), 0)->packets().front().destination, station(2));
+
+    getGameState().scenarioTicks += 48;
+    update();
+
+    const auto* packets = getStationCargoConst(station(1), 0);
+    ASSERT_NE(packets, nullptr);
+    ASSERT_EQ(packets->packets().size(), 1);
+    EXPECT_EQ(packets->packets().front().destination, station(2));
+    EXPECT_EQ(packets->packets().front().nextHop, station(2));
+}
+
 TEST_F(CargoDistServiceSimulationTest, AsyncCommitKeepsCargoTransferredAfterCaptureRoutable)
 {
     getGameState().stations[2].cargoStats[0].isAccepted(false);
@@ -1027,7 +1053,7 @@ TEST(CargoDistSimulation, SplitsProducedCargoByFlowQuantity)
     EXPECT_EQ(packets->quantityFor(station(3)), 10);
 }
 
-TEST(CargoDistSimulation, RecordsSupplyWhenStationIsFull)
+TEST(CargoDistSimulation, StoresProducedCargoAboveNativeStationLimit)
 {
     reset();
     getOrCreateStationCargo(station(1), 0).append({ std::numeric_limits<uint16_t>::max(), station(1), StationId::null, 0 });
@@ -1037,6 +1063,7 @@ TEST(CargoDistSimulation, RecordsSupplyWhenStationIsFull)
     addProducedCargo(station(1), 0, cargo, 10);
 
     EXPECT_EQ(cargo.quantity, std::numeric_limits<uint16_t>::max());
+    EXPECT_EQ(getStationCargoConst(station(1), 0)->quantity(), std::numeric_limits<uint16_t>::max() + 10U);
     EXPECT_EQ(getStateConst().supply.at({ 0, station(1) }), 10);
 }
 
@@ -1265,7 +1292,7 @@ TEST(CargoDistSimulation, ForcedUnloadDeliversAllAtAcceptingStation)
     EXPECT_EQ(vehicleCargo.qty, 0);
 }
 
-TEST(CargoDistSimulation, CapsTransferredCargoAtNativeStationLimit)
+TEST(CargoDistSimulation, StoresTransferredCargoAboveNativeStationLimit)
 {
     reset();
     const std::array flows = { FlowShare{ station(2), station(1), station(3), 20, {}, {}, {}, station(3) } };
@@ -1280,19 +1307,16 @@ TEST(CargoDistSimulation, CapsTransferredCargoAtNativeStationLimit)
 
     const auto result = unloadVehicleCargo(key, vehicleCargo, station(2), stationCargo, {}, false, std::nullopt, [](const auto& packet) { return packet.quantity * 10; });
 
-    EXPECT_EQ(result.transferred, 5);
+    EXPECT_EQ(result.transferred, 20);
     ASSERT_EQ(result.transferCredits.size(), 1U);
-    EXPECT_EQ(result.transferCredits.front().packet.quantity, 5);
-    EXPECT_EQ(result.transferCredits.front().amount, 45);
-    EXPECT_EQ(result.transferCredits.front().packet.transferCredit, 50);
-    EXPECT_EQ(vehicleCargo.qty, 15);
+    EXPECT_EQ(result.transferCredits.front().packet.quantity, 20);
+    EXPECT_EQ(result.transferCredits.front().amount, 180);
+    EXPECT_EQ(result.transferCredits.front().packet.transferCredit, 200);
+    EXPECT_EQ(vehicleCargo.qty, 0);
     EXPECT_EQ(stationCargo.quantity, std::numeric_limits<uint16_t>::max());
-    EXPECT_EQ(getStationCargoConst(station(2), 0)->quantity(), std::numeric_limits<uint16_t>::max());
-    const auto* onboard = getVehicleCargoConst(key);
-    ASSERT_NE(onboard, nullptr);
-    ASSERT_EQ(onboard->size(), 1U);
-    EXPECT_EQ(onboard->packets().front().nextHop, StationId::null);
-    EXPECT_EQ(onboard->packets().front().transferCredit, 15);
+    EXPECT_EQ(getStationCargoConst(station(2), 0)->quantity(), 65550U);
+    ASSERT_NE(getVehicleCargoConst(key), nullptr);
+    EXPECT_TRUE(getVehicleCargoConst(key)->empty());
 }
 
 TEST(CargoDistSimulation, ContinuesOnSameServiceWithoutTransfer)

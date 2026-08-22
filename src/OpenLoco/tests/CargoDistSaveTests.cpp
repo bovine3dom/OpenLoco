@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <gtest/gtest.h>
+#include <limits>
 #include <stdexcept>
 
 using namespace OpenLoco;
@@ -89,6 +90,10 @@ namespace
         {
             appendValue<uint16_t>(data, 4);
         }
+        if (version >= 5)
+        {
+            appendValue<int64_t>(data, 0);
+        }
 
         appendValue<uint32_t>(data, 0);
         appendValue<uint32_t>(data, 0);
@@ -128,6 +133,10 @@ namespace
             appendValue<uint32_t>(data, 25);
         }
         if (version >= 4)
+        {
+            appendValue<uint32_t>(data, 0);
+        }
+        if (version >= 5)
         {
             appendValue<uint32_t>(data, 0);
         }
@@ -273,7 +282,7 @@ TEST(CargoDistSave, RoundTripsCanonicalState)
     expectStatesEqual(original, decoded);
     EXPECT_TRUE(decoded.serviceEdges.empty());
     EXPECT_TRUE(decoded.vehicleServiceLegs.empty());
-    EXPECT_EQ(std::to_integer<uint8_t>(encoded[8]), 5);
+    EXPECT_EQ(std::to_integer<uint8_t>(encoded[8]), 6);
 }
 
 TEST(CargoDistSave, MigratesVersionOneWithoutStationAttraction)
@@ -324,6 +333,26 @@ TEST(CargoDistSave, MigratesVersionFourWithoutTransferCredits)
     EXPECT_TRUE(decoded.pendingVehicleRevenueAdjustments.empty());
 }
 
+TEST(CargoDistSave, MigratesVersionFiveAndForcesRecalculation)
+{
+    const auto decoded = decodeState(legacyEncodedState(5));
+
+    EXPECT_TRUE(decoded.graphDirty);
+    EXPECT_EQ(decoded.stationCargo.at({ station(2), 0 }).packets().front().destination, station(4));
+}
+
+TEST(CargoDistSave, RoundTripsStationCargoAboveNativeLimit)
+{
+    State state;
+    auto& packets = state.stationCargo[{ station(2), 0 }];
+    packets.append({ std::numeric_limits<uint16_t>::max(), station(1), station(3), 4 });
+    packets.append({ 20, station(1), station(3), 5 });
+
+    const auto decoded = decodeState(encodeState(state));
+
+    EXPECT_EQ(decoded.stationCargo.at({ station(2), 0 }).quantity(), std::numeric_limits<uint16_t>::max() + 20U);
+}
+
 TEST(CargoDistSave, EncodingIsDeterministic)
 {
     const auto state = populatedState();
@@ -363,6 +392,26 @@ TEST(CargoDistSave, ValidatesNativeStateBeforeRestore)
     EXPECT_THROW(validateState(state, *gameState), std::runtime_error);
 }
 
+TEST(CargoDistSave, ValidatesExtendedStationCargoAgainstClampedNativeState)
+{
+    State state;
+    state.settings.modes[0] = DistributionMode::asymmetric;
+    auto& packets = state.stationCargo[{ station(1), 0 }];
+    packets.append({ std::numeric_limits<uint16_t>::max(), station(1), StationId::null, 2 });
+    packets.append({ 10, station(1), StationId::null, 3 });
+    auto gameState = std::make_unique<GameState>();
+    auto& stationCargo = gameState->stations[1].cargoStats[0];
+    gameState->stations[1].name = StringId(1);
+    stationCargo.quantity = std::numeric_limits<uint16_t>::max();
+    stationCargo.origin = station(1);
+    stationCargo.enrouteAge = 2;
+
+    EXPECT_NO_THROW(validateState(state, *gameState));
+
+    stationCargo.quantity--;
+    EXPECT_THROW(validateState(state, *gameState), std::runtime_error);
+}
+
 TEST(CargoDistSave, ValidatesPendingRevenueVehicle)
 {
     State state;
@@ -386,10 +435,18 @@ TEST(CargoDistSave, RejectsTruncatedData)
     EXPECT_THROW(decodeState(encoded), std::runtime_error);
 }
 
+TEST(CargoDistSave, RejectsPacketCountLargerThanPayload)
+{
+    auto encoded = encodeState(populatedState());
+    std::fill(encoded.begin() + 72, encoded.begin() + 76, std::byte{ 0xFF });
+
+    EXPECT_THROW(decodeState(encoded), std::runtime_error);
+}
+
 TEST(CargoDistSave, RejectsUnknownVersion)
 {
     auto encoded = encodeState(populatedState());
-    encoded[8] = std::byte{ 6 };
+    encoded[8] = std::byte{ 7 };
 
     EXPECT_THROW(decodeState(encoded), std::runtime_error);
 }

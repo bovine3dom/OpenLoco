@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <gtest/gtest.h>
+#include <limits>
 
 using namespace OpenLoco;
 using namespace OpenLoco::CargoDist;
@@ -84,4 +85,37 @@ TEST(CargoDistCommand, KeepsRoutingEnabledUntilTransferCreditsAreSettled)
 
     setMode(31, DistributionMode::manual);
     EXPECT_EQ(getMode(31), DistributionMode::asymmetric);
+}
+
+TEST(CargoDistCommand, KeepsRoutingEnabledWhileStationCargoExceedsNativeLimit)
+{
+    reset();
+    EntityManager::reset();
+    getState().settings.modes[31] = DistributionMode::asymmetric;
+    auto& packets = getState().stationCargo[{ StationId(1), 31 }];
+    packets.append({ std::numeric_limits<uint16_t>::max(), StationId(1), StationId(2), 0 });
+    packets.append({ 1, StationId(1), StationId(2), 1 });
+    registers regs = static_cast<registers>(SetCargoDistModeArgs(kAllCargo, DistributionMode::manual));
+
+    setCargoDistMode(regs, Flags::apply);
+
+    EXPECT_EQ(static_cast<uint32_t>(regs.ebx), kFailure);
+    EXPECT_EQ(getMode(31), DistributionMode::asymmetric);
+
+    setMode(31, DistributionMode::manual);
+    EXPECT_EQ(getMode(31), DistributionMode::asymmetric);
+}
+
+TEST(CargoDistCommand, AllowsManualModeAtNativeStationLimit)
+{
+    reset();
+    EntityManager::reset();
+    getState().settings.modes[31] = DistributionMode::asymmetric;
+    getState().stationCargo[{ StationId(1), 31 }].append({ std::numeric_limits<uint16_t>::max(), StationId(1), StationId(2), 0 });
+    registers regs = static_cast<registers>(SetCargoDistModeArgs(kAllCargo, DistributionMode::manual));
+
+    setCargoDistMode(regs, Flags::apply);
+
+    EXPECT_EQ(static_cast<uint32_t>(regs.ebx), 0);
+    EXPECT_EQ(getMode(31), DistributionMode::manual);
 }

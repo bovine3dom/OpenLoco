@@ -27,7 +27,10 @@
 #include "World/CompanyManager.h"
 #include "World/StationManager.h"
 #include "World/TownManager.h"
+#include <OpenLoco/CargoDist/CargoDist.h>
 #include <OpenLoco/Core/Exception.hpp>
+#include <limits>
+#include <map>
 
 namespace OpenLoco::Ui::Windows::StationList
 {
@@ -170,22 +173,15 @@ namespace OpenLoco::Ui::Windows::StationList
         return strcmp(lhsString, rhsString) < 0;
     }
 
-    // 0x00491281, 0x00491247
-    static bool orderByQuantity(const OpenLoco::Station& lhs, const OpenLoco::Station& rhs)
+    static uint64_t getTotalWaitingCargo(const OpenLoco::Station& station)
     {
-        uint32_t lhsSum = 0;
-        for (const auto& cargo : lhs.cargoStats)
+        uint64_t total = 0;
+        for (uint8_t cargo = 0; cargo < kMaxCargoStats; ++cargo)
         {
-            lhsSum += cargo.quantity;
+            const auto* packets = CargoDist::getStationCargoConst(station.id(), cargo);
+            total += packets == nullptr ? station.cargoStats[cargo].quantity : packets->quantity();
         }
-
-        uint32_t rhsSum = 0;
-        for (const auto& cargo : rhs.cargoStats)
-        {
-            rhsSum += cargo.quantity;
-        }
-
-        return rhsSum < lhsSum;
+        return total;
     }
 
     // 0x004912BB
@@ -226,7 +222,7 @@ namespace OpenLoco::Ui::Windows::StationList
 
             case SortMode::Status:
             case SortMode::TotalUnitsWaiting:
-                return orderByQuantity(lhs, rhs);
+                break;
 
             case SortMode::CargoAccepted:
                 return orderByAccepts(lhs, rhs);
@@ -239,12 +235,25 @@ namespace OpenLoco::Ui::Windows::StationList
     static void sortStationList(Window& self)
     {
         auto list = std::span<StationId>(reinterpret_cast<StationId*>(self.rowInfo), self.rowCount);
+        const auto sortMode = SortMode(self.sortMode);
 
-        std::stable_sort(list.begin(), list.end(), [self](StationId lhs, StationId rhs) {
-            auto* lhsStation = StationManager::get(lhs);
-            auto* rhsStation = StationManager::get(rhs);
-            return getOrder(SortMode(self.sortMode), *lhsStation, *rhsStation);
-        });
+        if (sortMode == SortMode::Status || sortMode == SortMode::TotalUnitsWaiting)
+        {
+            std::map<StationId, uint64_t> quantities;
+            for (const auto stationId : list)
+            {
+                quantities.emplace(stationId, getTotalWaitingCargo(*StationManager::get(stationId)));
+            }
+            std::stable_sort(list.begin(), list.end(), [&quantities](StationId lhs, StationId rhs) {
+                return quantities.at(rhs) < quantities.at(lhs);
+            });
+        }
+        else
+        {
+            std::stable_sort(list.begin(), list.end(), [sortMode](StationId lhs, StationId rhs) {
+                return getOrder(sortMode, *StationManager::get(lhs), *StationManager::get(rhs));
+            });
+        }
 
         self.invalidate();
     }
@@ -494,15 +503,11 @@ namespace OpenLoco::Ui::Windows::StationList
 
             // Total units waiting.
             {
-                uint16_t totalUnits = 0;
-                for (const auto& stats : station->cargoStats)
-                {
-                    totalUnits += stats.quantity;
-                }
+                const auto totalUnits = std::min<uint64_t>(getTotalWaitingCargo(*station), std::numeric_limits<int32_t>::max());
 
                 auto args = FormatArguments{};
                 args.push(StringIds::num_units);
-                args.push<uint32_t>(totalUnits);
+                args.push<int32_t>(static_cast<int32_t>(totalUnits));
 
                 auto point = Point(400, yPos);
                 tr.drawStringLeftClipped(point, 88, Colour::black, text_colour_id, args);

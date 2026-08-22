@@ -308,6 +308,67 @@ TEST(CargoDistRouting, JourneyCostDoesNotChangeDestinationTargets)
     EXPECT_EQ(amountAt(distanceFlows, 3, 1, 3), 909U);
 }
 
+TEST(CargoDistRouting, LocalGravityPrefersCloserDestinations)
+{
+    RoutingGraph graph{
+        { node(1, 0, 0, 100), node(2, 10, 0, 0, true), node(3, 100, 0, 0, true) },
+        { edge(1, 2, 1000), edge(1, 3, 1000) },
+        false,
+        {},
+    };
+    graph.passengerRouting = true;
+
+    const auto flows = calculateAsymmetricFlows(graph);
+    const auto near = amountToDestination(flows, 1, 2);
+    const auto far = amountToDestination(flows, 1, 3);
+
+    EXPECT_GT(near, far);
+    EXPECT_EQ(near + far, 100U);
+}
+
+TEST(CargoDistRouting, LocalGravityUsesDestinationAttraction)
+{
+    RoutingGraph graph{
+        { node(1, 0, 0, 100), node(2, -10, 0, 0, true, 10), node(3, 10, 0, 0, true, 90) },
+        { edge(1, 2, 1000), edge(1, 3, 1000) },
+        false,
+        {},
+    };
+    graph.passengerRouting = true;
+    RoutingSettings settings{};
+    settings.accuracy = 100;
+
+    const auto flows = calculateAsymmetricFlows(graph, settings);
+
+    EXPECT_EQ(amountToDestination(flows, 1, 2), 10U);
+    EXPECT_EQ(amountToDestination(flows, 1, 3), 90U);
+}
+
+TEST(CargoDistRouting, LocalGravityDistributesEachOrigin)
+{
+    RoutingGraph graph{
+        {
+            node(1, 0, 0, 100),
+            node(2, 100, 0, 100),
+            node(3, 50, -10, 0, true),
+            node(4, 50, 10, 0, true),
+        },
+        { edge(1, 3, 1000), edge(1, 4, 1000), edge(2, 3, 1000), edge(2, 4, 1000) },
+        false,
+        {},
+    };
+    graph.passengerRouting = true;
+    RoutingSettings settings{};
+    settings.accuracy = 100;
+
+    const auto flows = calculateAsymmetricFlows(graph, settings);
+
+    EXPECT_EQ(amountToDestination(flows, 1, 3), 50U);
+    EXPECT_EQ(amountToDestination(flows, 1, 4), 50U);
+    EXPECT_EQ(amountToDestination(flows, 2, 3), 50U);
+    EXPECT_EQ(amountToDestination(flows, 2, 4), 50U);
+}
+
 TEST(CargoDistRouting, BalancesSinkTargetsAcrossMultipleSources)
 {
     const RoutingGraph graph{
@@ -549,6 +610,56 @@ TEST(CargoDistRouting, CongestionDoesNotChangeDestinationTargets)
     EXPECT_EQ(amountToDestination(uncongested, 1, 3), 80U);
     EXPECT_EQ(amountToDestination(congested, 1, 2), 80U);
     EXPECT_EQ(amountToDestination(congested, 1, 3), 80U);
+}
+
+TEST(CargoDistRouting, LocalGravityRespondsToDestinationCongestion)
+{
+    const auto calculate = [](uint32_t cheapCapacity) {
+        RoutingGraph graph{
+            { node(1, 0, 0, 160), node(2, -10, 0, 0, true), node(3, 10, 0, 0, true) },
+            {
+                serviceEdge(1, 2, 1, 0, 1, 1, 1, cheapCapacity),
+                serviceEdge(1, 3, 2, 0, 1, 5, 1, 1000),
+            },
+            true,
+            {},
+        };
+        graph.passengerRouting = true;
+        return calculateAsymmetricFlows(graph);
+    };
+
+    const auto uncongested = calculate(1000);
+    const auto congested = calculate(10);
+
+    EXPECT_LT(amountToDestination(congested, 1, 2), amountToDestination(uncongested, 1, 2));
+    EXPECT_GT(amountToDestination(congested, 1, 3), amountToDestination(uncongested, 1, 3));
+}
+
+TEST(CargoDistRouting, LocalRoutingDoesNotLoopBackThroughDepartureStation)
+{
+    RoutingGraph graph{
+        { node(1, 0, 0), node(2, -10, 0), node(3, -20, 0), node(4, 10, 0, 0, true) },
+        {
+            { station(1), station(4), 1, 1, servicePoint(2, 0), servicePoint(2, 1), 1, 100 },
+            serviceEdge(1, 2, 1, 0, 1, 1, 1),
+            serviceEdge(2, 3, 1, 1, 2, 1, 1),
+            serviceEdge(3, 1, 1, 2, 3, 1, 1),
+            serviceEdge(1, 4, 1, 3, 0, 1, 100),
+        },
+        true,
+        { { station(1), station(1), 20, {}, station(4) } },
+    };
+    graph.passengerRouting = true;
+
+    const auto flows = calculateAsymmetricFlows(graph);
+
+    EXPECT_EQ(amountAt(flows, 1, 1, 2, {}, servicePoint(1, 0), servicePoint(1, 1)), 0U);
+    EXPECT_EQ(
+        amountAt(flows, 1, 1, 4, {}, servicePoint(1, 3), servicePoint(1, 0))
+            + amountAt(flows, 1, 1, 4, {}, servicePoint(2, 0), servicePoint(2, 1)),
+        20U);
+    EXPECT_EQ(calculateJourneyCost(graph, station(1), station(4), servicePoint(1, 0)), kUnreachableJourneyCost);
+    EXPECT_NE(calculateJourneyCost(graph, station(1), station(4), servicePoint(2, 0)), kUnreachableJourneyCost);
 }
 
 TEST(CargoDistRouting, WaitMakesFastInfrequentServiceLoseToSlowerFrequentService)
