@@ -10,6 +10,7 @@
 #include "Map/RoadElement.h"
 #include "Map/SurfaceElement.h"
 #include "Map/TileManager.h"
+#include "Map/Track/TrackData.h"
 #include "Map/TrackElement.h"
 #include "Objects/CargoObject.h"
 #include "Objects/ObjectManager.h"
@@ -30,6 +31,7 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <sfl/static_vector.hpp>
 #include <sstream>
 
@@ -649,6 +651,76 @@ namespace OpenLoco::Vehicles::OrderManager
 
         // Return the length with which to offset
         return lengthOrderB;
+    }
+
+    bool trySkipRebuiltRailWaypoint(VehicleHead& head)
+    {
+        if (head.mode != TransportMode::rail || head.var_52 == 1)
+        {
+            return false;
+        }
+
+        const auto isRebuiltWaypoint = [&head](const Order& order) {
+            const auto* waypoint = order.as<OrderRouteWaypoint>();
+            if (waypoint == nullptr)
+            {
+                return false;
+            }
+
+            const auto waypointPos = waypoint->getWaypoint();
+            const auto waypointTaD = (waypoint->getTrackId() << 3) | waypoint->getDirection();
+            // Only infer a rebuild when one compatible replacement occupies the same track origin.
+            std::optional<uint16_t> replacement;
+            bool ambiguous = false;
+            for (const auto& entry : World::TileManager::get(waypointPos))
+            {
+                const auto* track = entry.as<World::TrackElement>();
+                if (track == nullptr
+                    || entry.isGhost()
+                    || entry.isAiAllocated()
+                    || track->sequenceIndex() != 0
+                    || track->owner() != head.owner
+                    || track->trackObjectId() != head.trackType
+                    || (track->mods() & head.var_53) != head.var_53
+                    || track->rotation() != waypoint->getDirection())
+                {
+                    continue;
+                }
+                const auto& firstPiece = World::TrackData::getTrackPiece(track->trackId()).front();
+                const auto startZ = track->baseHeight() - firstPiece.z;
+                if (startZ != waypointPos.z)
+                {
+                    continue;
+                }
+
+                const auto candidate = static_cast<uint16_t>((track->trackId() << 3) | track->rotation());
+                if (candidate == waypointTaD)
+                {
+                    return false;
+                }
+                ambiguous |= replacement.has_value() && *replacement != candidate;
+                replacement = candidate;
+            }
+            return replacement.has_value() && !ambiguous;
+        };
+
+        const auto orders = OrderRingView(head.orderTableOffset, head.currentOrder);
+        auto curOrder = orders.begin();
+        if (!isRebuiltWaypoint(*curOrder))
+        {
+            return false;
+        }
+
+        for (++curOrder; curOrder != orders.end(); ++curOrder)
+        {
+            if (curOrder->hasFlags(OrderFlags::IsRoutable) && !isRebuiltWaypoint(*curOrder))
+            {
+                head.currentOrder = curOrder->getOffset() - head.orderTableOffset;
+                Ui::WindowManager::invalidateOrderPageByVehicleNumber(enumValue(head.id));
+                return true;
+            }
+        }
+        return false;
     }
 
     // 0x0047062B

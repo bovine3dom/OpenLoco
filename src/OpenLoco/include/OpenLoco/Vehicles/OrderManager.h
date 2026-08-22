@@ -143,6 +143,7 @@ namespace OpenLoco::Vehicles::OrderManager
     std::span<const NumDisplayFrame> displayFrames();
     uint16_t reverseVehicleOrderTable(uint32_t tableOffset, uint16_t orderOfInterest);
     uint8_t swapAdjacentOrders(Order& a, Order& b);
+    bool trySkipRebuiltRailWaypoint(VehicleHead& head);
     void removeOrdersForStation(const StationId stationId);
     void fixCorruptWaypointOrders();
     bool areVehiclesOnSameRoute(const VehicleHead& lhs, const VehicleHead& rhs);

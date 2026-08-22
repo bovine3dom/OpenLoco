@@ -4572,6 +4572,7 @@ namespace OpenLoco::Vehicles
     static Sub4ACEE7Result sub_4ACEF1(VehicleHead& head, uint32_t unk1, uint32_t var_113612C, bool isPlaceDown)
     {
         // TRACK only
+        OrderManager::trySkipRebuiltRailWaypoint(head);
         RoutingManager::materializeReservedContinuation(head);
 
         {

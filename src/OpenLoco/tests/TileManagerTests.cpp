@@ -1379,6 +1379,99 @@ TEST_F(PathSignalsTest, LongReservationIsAtomicWhenSuffixConflicts)
     EXPECT_TRUE(OpenLoco::Vehicles::RoutingManager::getReservedContinuation(train->routingHandle).empty());
 }
 
+TEST_F(PathSignalsTest, SkipsWaypointWhenReferencedTrackPieceWasRebuilt)
+{
+    addTrack(kFirstPos, 2, 0);
+    auto* train = createTrain(kFirstPos, kTurnNorth);
+    ASSERT_NE(train, nullptr);
+    const OpenLoco::Vehicles::OrderRouteWaypoint staleWaypoint{ toTileSpace(kFirstPos), kFirstPos.z / 8, 0, 0 };
+    const OpenLoco::Vehicles::OrderUnloadAll modifier{ 0 };
+    const OpenLoco::Vehicles::OrderStopAt nextOrder{ OpenLoco::StationId(1) };
+    OpenLoco::Vehicles::OrderManager::insertOrder(train, 0, &staleWaypoint);
+    OpenLoco::Vehicles::OrderManager::insertOrder(train, sizeof(staleWaypoint), &staleWaypoint);
+    OpenLoco::Vehicles::OrderManager::insertOrder(train, 2 * sizeof(staleWaypoint), &modifier);
+    OpenLoco::Vehicles::OrderManager::insertOrder(train, 2 * sizeof(staleWaypoint) + sizeof(modifier), &nextOrder);
+
+    train->var_52 = 1;
+    EXPECT_FALSE(OpenLoco::Vehicles::OrderManager::trySkipRebuiltRailWaypoint(*train));
+    train->var_52 = 0;
+    train->var_53 = 1;
+    EXPECT_FALSE(OpenLoco::Vehicles::OrderManager::trySkipRebuiltRailWaypoint(*train));
+    auto* replacementTrack = getTrack(kFirstPos, 2);
+    ASSERT_NE(replacementTrack, nullptr);
+    replacementTrack->setMod(0, true);
+    train->unbunchingLastDepartureTick = 1234;
+    train->unbunchingState = 5678;
+    train->sub_4ACEE7(0xD4CB00, 0xD4CB00, false);
+    EXPECT_EQ(train->currentOrder, 2 * sizeof(staleWaypoint) + sizeof(modifier));
+    EXPECT_EQ(train->unbunchingLastDepartureTick, 1234U);
+    EXPECT_EQ(train->unbunchingState, 5678U);
+}
+
+TEST_F(PathSignalsTest, KeepsWaypointWhenReferencedTrackPieceExists)
+{
+    addTrack(kFirstPos, 0, 0);
+    auto* train = createTrain(kFirstPos, kStraightWest);
+    ASSERT_NE(train, nullptr);
+    const OpenLoco::Vehicles::OrderRouteWaypoint waypoint{ toTileSpace(kFirstPos), kFirstPos.z / 8, 0, 0 };
+    OpenLoco::Vehicles::OrderManager::insertOrder(train, 0, &waypoint);
+
+    EXPECT_FALSE(OpenLoco::Vehicles::OrderManager::trySkipRebuiltRailWaypoint(*train));
+    EXPECT_EQ(train->currentOrder, 0);
+}
+
+TEST_F(PathSignalsTest, HandlesWaypointReplacedByDescendingSlope)
+{
+    constexpr uint8_t kSlopeTrackId = 15;
+    constexpr uint16_t kSlopeTaD = kSlopeTrackId << 3;
+    addTrack(kFirstPos, kSlopeTrackId, 0);
+    auto* staleTrain = createTrain(kFirstPos, kSlopeTaD);
+    ASSERT_NE(staleTrain, nullptr);
+    const OpenLoco::Vehicles::OrderRouteWaypoint staleWaypoint{ toTileSpace(kFirstPos), kFirstPos.z / 8, 0, 0 };
+    const OpenLoco::Vehicles::OrderStopAt nextOrder{ OpenLoco::StationId(1) };
+    OpenLoco::Vehicles::OrderManager::insertOrder(staleTrain, 0, &staleWaypoint);
+    OpenLoco::Vehicles::OrderManager::insertOrder(staleTrain, sizeof(staleWaypoint), &nextOrder);
+    EXPECT_TRUE(OpenLoco::Vehicles::OrderManager::trySkipRebuiltRailWaypoint(*staleTrain));
+
+    auto* validTrain = createTrain(kFirstPos, kSlopeTaD);
+    ASSERT_NE(validTrain, nullptr);
+    const OpenLoco::Vehicles::OrderRouteWaypoint validWaypoint{ toTileSpace(kFirstPos), kFirstPos.z / 8, 0, kSlopeTrackId };
+    OpenLoco::Vehicles::OrderManager::insertOrder(validTrain, 0, &validWaypoint);
+    EXPECT_FALSE(OpenLoco::Vehicles::OrderManager::trySkipRebuiltRailWaypoint(*validTrain));
+}
+
+TEST_F(PathSignalsTest, KeepsWaypointWhenReplacementIsMissingOrAmbiguous)
+{
+    auto* train = createTrain(kFirstPos, kStraightWest);
+    ASSERT_NE(train, nullptr);
+    const OpenLoco::Vehicles::OrderRouteWaypoint staleWaypoint{ toTileSpace(kFirstPos), kFirstPos.z / 8, 0, 0 };
+    const OpenLoco::Vehicles::OrderStopAt nextOrder{ OpenLoco::StationId(1) };
+    OpenLoco::Vehicles::OrderManager::insertOrder(train, 0, &staleWaypoint);
+    OpenLoco::Vehicles::OrderManager::insertOrder(train, sizeof(staleWaypoint), &nextOrder);
+
+    EXPECT_FALSE(OpenLoco::Vehicles::OrderManager::trySkipRebuiltRailWaypoint(*train));
+    addTrack(kFirstPos, 2, 0);
+    addTrack(kFirstPos, 8, 0);
+    EXPECT_FALSE(OpenLoco::Vehicles::OrderManager::trySkipRebuiltRailWaypoint(*train));
+    EXPECT_EQ(train->currentOrder, 0);
+}
+
+TEST_F(PathSignalsTest, KeepsStaleWaypointsWithoutAnotherRoutableTarget)
+{
+    addTrack(kFirstPos, 2, 0);
+    auto* train = createTrain(kFirstPos, kTurnNorth);
+    ASSERT_NE(train, nullptr);
+    const OpenLoco::Vehicles::OrderRouteWaypoint staleWaypoint{ toTileSpace(kFirstPos), kFirstPos.z / 8, 0, 0 };
+    OpenLoco::Vehicles::OrderManager::insertOrder(train, 0, &staleWaypoint);
+
+    EXPECT_FALSE(OpenLoco::Vehicles::OrderManager::trySkipRebuiltRailWaypoint(*train));
+    EXPECT_EQ(train->currentOrder, 0);
+
+    OpenLoco::Vehicles::OrderManager::insertOrder(train, sizeof(staleWaypoint), &staleWaypoint);
+    EXPECT_FALSE(OpenLoco::Vehicles::OrderManager::trySkipRebuiltRailWaypoint(*train));
+    EXPECT_EQ(train->currentOrder, 0);
+}
+
 TEST_F(PathSignalsTest, OrdinaryMovementDoesNotEnterOccupiedPathReservation)
 {
     constexpr Pos3 currentPos{ 352, 320, 32 };
