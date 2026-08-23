@@ -73,7 +73,6 @@ using namespace OpenLoco::World;
 namespace OpenLoco::Vehicles
 {
     static uint8_t _vehicleMangled_113623B = 0; // 0x0113623B TODO: This shouldn't be used as it will be mangled but it is
-
     static constexpr uint16_t kTrainOneWaySignalTimeout = 1920;
     static constexpr uint16_t kTrainTwoWaySignalTimeout = 640;
     static constexpr uint16_t kBusSignalTimeout = 960;                // Time to wait before turning around at barriers
@@ -1298,11 +1297,49 @@ namespace OpenLoco::Vehicles
         return std::make_pair(veh1Pos, veh2Pos);
     }
 
+    static bool hasUnreachedPathSignal(const VehicleHead& head, const Vehicle1& veh1)
+    {
+        const auto firstHandle = veh1.routingHandle;
+        auto pos = veh1.getTrackLoc();
+        for (const auto handle : RoutingManager::RingView(firstHandle))
+        {
+            const auto routing = RoutingManager::getRouting(handle);
+            TrackAndDirection::_TrackAndDirection tad{ 0, 0 };
+            tad._data = routing & World::Track::AdditionalTaDFlags::basicTaDMask;
+            if (handle != firstHandle)
+            {
+                const auto signalMode = getSignalMode(pos, tad, head.trackType, 0);
+                if (signalMode.has_value() && *signalMode != World::SignalMode::block)
+                {
+                    return true;
+                }
+            }
+            if (handle == head.routingHandle)
+            {
+                return false;
+            }
+            pos += World::TrackData::getUnkTrack(tad._data).pos;
+        }
+        return false;
+    }
+
     // 0x004A8C11
     bool VehicleHead::updateLand()
     {
         Vehicle train(head);
         Vehicle2* vehType2 = train.veh2;
+
+        if (mode == TransportMode::rail
+            && (status == Status::travelling || status == Status::approaching)
+            && hasUnreachedPathSignal(*this, *train.veh1))
+        {
+            resetToVehicle1(true);
+            if (status == Status::approaching)
+            {
+                stationId = StationId::null;
+                status = Status::travelling;
+            }
+        }
 
         // If don't have any running issue and is approaching
         if ((!vehType2->has73Flags(Flags73::isBrokenDown) || vehType2->has73Flags(Flags73::isStillPowered)) && status == Status::approaching)
@@ -6220,6 +6257,13 @@ namespace OpenLoco::Vehicles
             TrackAndDirection::_TrackAndDirection tad{ 0, 0 };
             tad._data = routing & World::Track::AdditionalTaDFlags::basicTaDMask;
 
+            if (preserveFutureRouting
+                && handle != veh1.routingHandle
+                && getSignalMode(pos, tad, trackObjId, 0).has_value())
+            {
+                preserveFutureRouting = false;
+                RoutingManager::clearReservedContinuation(routingHandle);
+            }
             if (preserveFutureRouting)
             {
                 if (handle != veh1.routingHandle)

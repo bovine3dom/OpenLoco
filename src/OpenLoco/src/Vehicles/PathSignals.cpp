@@ -1001,6 +1001,12 @@ namespace OpenLoco::Vehicles::PathSignals
 
     std::optional<uint16_t> tryReservePath(VehicleHead& head, const Pos3& firstPos, const uint16_t preferredRouting, const std::span<const uint16_t> firstRoutings)
     {
+        const Vehicle train(head);
+        // Placement and reversal advance the head while laying out the consist.
+        if (head.var_52 != 1 && train.veh1->routingHandle != head.routingHandle)
+        {
+            return std::nullopt;
+        }
         const auto maxPathLength = getAvailableRoutingSlots(head);
         if (maxPathLength == 0)
         {
@@ -1012,7 +1018,6 @@ namespace OpenLoco::Vehicles::PathSignals
         }
 
         refreshVehicleClaims(head);
-        const Vehicle train(head);
         const auto requiredMods = head.var_53;
         const auto queryMods = train.veh1->var_49;
         const auto [target, nextTarget] = getTargets(head);

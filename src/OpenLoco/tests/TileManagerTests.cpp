@@ -1332,6 +1332,44 @@ TEST_F(PathSignalsTest, BreakdownResetPreservesReservationAndClearsSuffix)
     EXPECT_TRUE(OpenLoco::Vehicles::RoutingManager::validateState(OpenLoco::Vehicles::RoutingManager::captureState()));
 }
 
+TEST_F(PathSignalsTest, RewindsHeadAcrossUnreachedPathSignal)
+{
+    constexpr auto signalIndex = 2;
+    for (auto i = 0; i < 6; ++i)
+    {
+        addTrack(kFirstPos + Pos3{ -i * kTileSize, 0, 0 }, 0, 0, i == signalIndex, SignalMode::oneWayPath);
+    }
+    auto* train = createTrain(kFirstPos, kStraightWest);
+    ASSERT_NE(train, nullptr);
+    auto handle = addStraightRoutings(*train, 5);
+    handle.setIndex(signalIndex);
+    OpenLoco::Vehicles::RoutingManager::setRouting(handle, kStraightWest | OpenLoco::World::Track::AdditionalTaDFlags::hasSignal);
+    for (auto i = 1; i <= 5; ++i)
+    {
+        handle.setIndex(i);
+        OpenLoco::Vehicles::RoutingManager::markPathReserved(handle);
+    }
+    OpenLoco::Vehicles::RoutingManager::setReservedContinuation(train->routingHandle, { kStraightWest });
+    train->routingHandle.setIndex(5);
+    setBrokenDown(*train, kFirstPos + Pos3{ -5 * kTileSize, 0, 0 });
+
+    ASSERT_TRUE(train->update());
+
+    EXPECT_EQ(train->routingHandle.getIndex(), 0);
+    handle.setIndex(1);
+    EXPECT_TRUE(OpenLoco::Vehicles::RoutingManager::isPathReserved(handle));
+    for (auto i = signalIndex; i <= 5; ++i)
+    {
+        handle.setIndex(i);
+        EXPECT_EQ(OpenLoco::Vehicles::RoutingManager::getRouting(handle), OpenLoco::Vehicles::RoutingManager::kAllocatedButFreeRouting);
+        EXPECT_FALSE(OpenLoco::Vehicles::RoutingManager::isPathReserved(handle));
+    }
+    EXPECT_TRUE(OpenLoco::Vehicles::RoutingManager::getReservedContinuation(train->routingHandle).empty());
+    const auto beyondSignal = kFirstPos + Pos3{ -3 * kTileSize, 0, 0 };
+    EXPECT_FALSE(OpenLoco::Vehicles::PathSignals::hasPathReservationConflict(OpenLoco::EntityId::null, beyondSignal, kStraightWest));
+    EXPECT_TRUE(OpenLoco::Vehicles::RoutingManager::validateState(OpenLoco::Vehicles::RoutingManager::captureState()));
+}
+
 TEST_F(PathSignalsTest, BreakdownResetPreservesCurrentReservationContinuation)
 {
     addTrack(kFirstPos, 0, 0);
@@ -2186,6 +2224,34 @@ TEST_F(PathSignalsTest, WaitsInsteadOfReservingExcessiveDetour)
     ASSERT_NE(createTrain(firstPos + Pos3{ -64, 0, 0 }, kStraightWest), nullptr);
 
     EXPECT_FALSE(OpenLoco::Vehicles::PathSignals::tryReservePath(*reservingTrain, firstPos, kStraightWest));
+}
+
+TEST_F(PathSignalsTest, VirtualHeadWaitsToReservePathUntilVehicleFrontCatchesUp)
+{
+    constexpr Pos3 vehicleFrontPos{ 384, 320, 32 };
+    constexpr Pos3 headPos{ 352, 320, 32 };
+    addTrack(vehicleFrontPos, 0, 0);
+    addTrack(headPos, 0, 0);
+    addTrack(kFirstPos, 0, 0, true, SignalMode::path);
+    addTrack({ 288, 320, 32 }, 0, 0);
+    addTrack({ 256, 320, 32 }, 0, 0, true);
+    auto* train = createTrain(vehicleFrontPos, kStraightWest);
+    ASSERT_NE(train, nullptr);
+    auto headHandle = addStraightRoutings(*train, 1);
+    train->routingHandle = headHandle;
+    train->tileX = headPos.x;
+    train->tileY = headPos.y;
+    train->tileBaseZ = headPos.z / OpenLoco::World::kSmallZStep;
+    train->moveTo(headPos);
+
+    const auto result = train->sub_4ACEE7(0xD4CB00, 0xD4CB00, false);
+
+    EXPECT_EQ(result.status, 3);
+    headHandle.setIndex(headHandle.getIndex() + 1);
+    EXPECT_EQ(OpenLoco::Vehicles::RoutingManager::getRouting(headHandle), OpenLoco::Vehicles::RoutingManager::kAllocatedButFreeRouting);
+
+    train->var_52 = 1;
+    EXPECT_TRUE(OpenLoco::Vehicles::PathSignals::tryReservePath(*train, kFirstPos, kStraightWest));
 }
 
 TEST_F(PathSignalsTest, DepartureFromCurrentPathSignalWaitsForOccupiedRoute)
