@@ -1467,7 +1467,8 @@ namespace OpenLoco::Vehicles
 
         if (position != train.veh1->position)
         {
-            sub_4AD93A();
+            // Retain an active path reservation while rewinding the head during stopping.
+            resetToVehicle1(true);
             if (status == Status::approaching)
             {
                 stationId = StationId::null;
@@ -6156,9 +6157,14 @@ namespace OpenLoco::Vehicles
     // 0x004AD93A
     void VehicleHead::sub_4AD93A()
     {
-        RoutingManager::clearPathReservations(routingHandle);
+        resetToVehicle1(false);
+    }
+
+    void VehicleHead::resetToVehicle1(const bool preservePathReservation)
+    {
         if (mode == TransportMode::road)
         {
+            RoutingManager::clearPathReservations(routingHandle);
             roadResetHead(*this);
             return;
         }
@@ -6167,11 +6173,34 @@ namespace OpenLoco::Vehicles
         auto train = Vehicle(*this);
         auto& veh1 = *train.veh1;
 
+        std::optional<RoutingHandle> lastReservedRouting;
+        if (preservePathReservation)
+        {
+            for (const auto handle : RoutingManager::RingView(veh1.routingHandle))
+            {
+                if (handle != veh1.routingHandle && RoutingManager::isPathReserved(handle))
+                {
+                    lastReservedRouting = handle;
+                }
+            }
+            if (!lastReservedRouting.has_value()
+                && RoutingManager::isPathReserved(veh1.routingHandle)
+                && !RoutingManager::getReservedContinuation(routingHandle).empty())
+            {
+                lastReservedRouting = veh1.routingHandle;
+            }
+        }
+        if (!lastReservedRouting.has_value())
+        {
+            RoutingManager::clearPathReservations(routingHandle);
+        }
+
         const auto companyId = veh1.owner;
         const auto trackObjId = veh1.trackType;
         auto pos = World::Pos3(veh1.tileX, veh1.tileY, veh1.tileBaseZ * World::kSmallZStep);
 
         bool unk = false;
+        auto preserveFutureRouting = lastReservedRouting.has_value();
         RoutingManager::RingView ring(veh1.routingHandle);
         for (auto handle : ring)
         {
@@ -6179,6 +6208,21 @@ namespace OpenLoco::Vehicles
 
             TrackAndDirection::_TrackAndDirection tad{ 0, 0 };
             tad._data = routing & World::Track::AdditionalTaDFlags::basicTaDMask;
+
+            if (preserveFutureRouting)
+            {
+                if (handle != veh1.routingHandle)
+                {
+                    RoutingManager::markPathReserved(handle);
+                }
+                // Existing routings bypass entry setup, so their infrastructure must remain armed.
+                pos += World::TrackData::getUnkTrack(tad._data).pos;
+                if (handle == *lastReservedRouting)
+                {
+                    preserveFutureRouting = false;
+                }
+                continue;
+            }
 
             const auto hasSignal = routing & World::Track::AdditionalTaDFlags::hasSignal;
             if (hasSignal || !unk)

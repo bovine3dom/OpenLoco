@@ -299,6 +299,28 @@ namespace
             return OpenLoco::Vehicles::RoutingManager::getRouting(handle) & OpenLoco::World::Track::AdditionalTaDFlags::basicTaDMask;
         }
 
+        static OpenLoco::Vehicles::RoutingHandle addStraightRoutings(OpenLoco::Vehicles::VehicleHead& head, const uint8_t lastIndex)
+        {
+            auto handle = head.routingHandle;
+            for (uint8_t i = 1; i <= lastIndex; ++i)
+            {
+                handle.setIndex(i);
+                OpenLoco::Vehicles::RoutingManager::setRouting(handle, kStraightWest);
+            }
+            return handle;
+        }
+
+        static void setBrokenDown(OpenLoco::Vehicles::VehicleHead& head, const Pos3& headPos)
+        {
+            OpenLoco::Vehicles::Vehicle components(head);
+            head.status = OpenLoco::Vehicles::Status::travelling;
+            head.moveTo(headPos);
+            components.veh1->moveTo(kFirstPos);
+            components.veh2->var_73 = OpenLoco::Vehicles::Flags73::isBrokenDown;
+            components.veh2->sound.objectId = 0xFFFF;
+            components.tail->sound.objectId = 0xFFFF;
+        }
+
         static void recordSlowTrack(const Pos3& pos, const uint16_t tad)
         {
             const OpenLoco::Vehicles::RailTraffic::Edge edge{ pos.x, pos.y, pos.z, tad, 0 };
@@ -1276,6 +1298,60 @@ TEST_F(PathSignalsTest, MarksExactPathReservationEntries)
     }
     handle.setIndex(handle.getIndex() + 1);
     EXPECT_FALSE(OpenLoco::Vehicles::RoutingManager::isPathReserved(handle));
+}
+
+TEST_F(PathSignalsTest, BreakdownResetPreservesReservationAndClearsSuffix)
+{
+    for (auto i = 0; i < 6; ++i)
+    {
+        addTrack(kFirstPos + Pos3{ -i * kTileSize, 0, 0 }, 0, 0);
+    }
+    auto* train = createTrain(kFirstPos, kStraightWest);
+    ASSERT_NE(train, nullptr);
+    auto handle = addStraightRoutings(*train, 5);
+    handle.setIndex(3);
+    OpenLoco::Vehicles::RoutingManager::markPathReserved(handle);
+    handle.setIndex(4);
+    OpenLoco::Vehicles::RoutingManager::markPathReserved(handle);
+    train->routingHandle.setIndex(5);
+    setBrokenDown(*train, { 160, 320, 32 });
+
+    ASSERT_TRUE(train->update());
+
+    EXPECT_EQ(train->routingHandle.getIndex(), 0);
+    EXPECT_EQ(train->status, OpenLoco::Vehicles::Status::brokenDown);
+    for (auto i = 1; i <= 4; ++i)
+    {
+        handle.setIndex(i);
+        EXPECT_EQ(OpenLoco::Vehicles::RoutingManager::getRouting(handle), kStraightWest);
+        EXPECT_TRUE(OpenLoco::Vehicles::RoutingManager::isPathReserved(handle));
+    }
+    handle.setIndex(5);
+    EXPECT_EQ(OpenLoco::Vehicles::RoutingManager::getRouting(handle), OpenLoco::Vehicles::RoutingManager::kAllocatedButFreeRouting);
+    OpenLoco::Vehicles::RoutingManager::setReservedContinuation(train->routingHandle, { kStraightWest });
+    EXPECT_TRUE(OpenLoco::Vehicles::RoutingManager::validateState(OpenLoco::Vehicles::RoutingManager::captureState()));
+}
+
+TEST_F(PathSignalsTest, BreakdownResetPreservesCurrentReservationContinuation)
+{
+    addTrack(kFirstPos, 0, 0);
+    auto* train = createTrain(kFirstPos, kStraightWest);
+    ASSERT_NE(train, nullptr);
+    auto handle = addStraightRoutings(*train, 60);
+    OpenLoco::Vehicles::Vehicle components(*train);
+    train->routingHandle = handle;
+    components.veh1->routingHandle = handle;
+    components.veh2->routingHandle = handle;
+    OpenLoco::Vehicles::RoutingManager::markPathReserved(handle);
+    OpenLoco::Vehicles::RoutingManager::setReservedContinuation(handle, { kStraightWest });
+    setBrokenDown(*train, { 288, 320, 32 });
+    ASSERT_TRUE(OpenLoco::Vehicles::RoutingManager::validateState(OpenLoco::Vehicles::RoutingManager::captureState()));
+
+    ASSERT_TRUE(train->update());
+
+    EXPECT_TRUE(OpenLoco::Vehicles::RoutingManager::isPathReserved(handle));
+    EXPECT_EQ(OpenLoco::Vehicles::RoutingManager::getReservedContinuation(handle).size(), 1);
+    EXPECT_TRUE(OpenLoco::Vehicles::RoutingManager::validateState(OpenLoco::Vehicles::RoutingManager::captureState()));
 }
 
 TEST_F(PathSignalsTest, StreamsWaypointReservationBeyondRoutingCapacity)

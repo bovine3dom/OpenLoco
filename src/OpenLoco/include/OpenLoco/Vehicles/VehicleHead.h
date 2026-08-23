@@ -140,6 +140,7 @@ namespace OpenLoco::Vehicles
         bool updateLand();
         bool sub_4A8DB7();
         bool tryReverse();
+        void resetToVehicle1(bool preservePathReservation);
         bool stoppingUpdate();
         bool sub_4A8C81();
         bool landTryBeginUnloading();
