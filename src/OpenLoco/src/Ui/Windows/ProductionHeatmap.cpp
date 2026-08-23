@@ -709,8 +709,7 @@ namespace OpenLoco::Ui::Windows::ProductionHeatmap
 
     bool setTooltip(const Viewport& viewport, const Point cursor)
     {
-        if (!isOpen() || (viewport.flags & ViewportFlags::production_heatmap) == ViewportFlags::none
-            || (viewport.flags & ViewportFlags::underground_view) != ViewportFlags::none)
+        if (!isOpen() || (viewport.flags & ViewportFlags::production_heatmap) == ViewportFlags::none)
         {
             return false;
         }

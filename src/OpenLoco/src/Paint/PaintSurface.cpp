@@ -1642,17 +1642,15 @@ namespace OpenLoco::Paint
         }
         // 0x00465E92
 
-        if ((session.getViewFlags() & Ui::ViewportFlags::production_heatmap) != Ui::ViewportFlags::none
-            && (session.getViewFlags() & Ui::ViewportFlags::underground_view) == Ui::ViewportFlags::none)
+        if ((session.getViewFlags() & Ui::ViewportFlags::production_heatmap) != Ui::ViewportFlags::none)
         {
             const auto bucket = Ui::Windows::ProductionHeatmap::getTileBucket(session.getUnkPosition());
             if (bucket != 0)
             {
                 const auto waterSurface = getWaterSurface(elSurface, selfDescriptor.slope);
                 const auto waterDisplaySlope = kSlopeToDisplaySlope[waterSurface.slope];
-                const auto imageId = ImageId(kCatchmentFromSlope[waterDisplaySlope], Ui::Windows::ProductionHeatmap::getBucketColour(bucket));
+                const auto imageId = ImageId(kCornerSelectionBoxFromSlope[waterDisplaySlope], Ui::Windows::ProductionHeatmap::getBucketColour(bucket));
                 auto* lastPs = session.getLastPS();
-                session.addToPlotListAsParent(imageId, { 0, 0, waterSurface.height }, { 32, 32, 1 });
                 session.addToPlotListAsParent(imageId, { 0, 0, waterSurface.height }, { 32, 32, 1 });
                 session.setLastPS(lastPs);
             }
