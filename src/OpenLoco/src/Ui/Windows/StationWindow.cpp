@@ -59,7 +59,7 @@ namespace OpenLoco::Ui::Windows::Station
     struct CargoWindowState
     {
         uint32_t expanded{};
-        CargoRouteTree::GroupOrder groupOrder = CargoRouteTree::GroupOrder::sourceDestinationVia;
+        CargoRouteTree::GroupOrder groupOrder = CargoRouteTree::GroupOrder::destinationSourceVia;
         CargoRouteTree::SortMode sortMode = CargoRouteTree::SortMode::amountWaiting;
         std::map<uint8_t, std::set<CargoRouteTree::GroupKey>> expandedGroups;
         uint64_t cargoRevision = std::numeric_limits<uint64_t>::max();
@@ -404,7 +404,8 @@ namespace OpenLoco::Ui::Windows::Station
 
         enum widx
         {
-            group_by_label = Common::widx::content_begin,
+            expand_all = Common::widx::content_begin,
+            group_by_label,
             group_by,
             group_by_dropdown,
             sort_by_label,
@@ -418,6 +419,7 @@ namespace OpenLoco::Ui::Windows::Station
         namespace Widx
         {
             constexpr WidgetId kGroupByLabel{ "group_by_label" };
+            constexpr WidgetId kExpandAll{ "expand_all" };
             constexpr WidgetId kGroupBy{ "group_by" };
             constexpr WidgetId kGroupByDropdown{ "group_by_dropdown" };
             constexpr WidgetId kSortByLabel{ "sort_by_label" };
@@ -554,15 +556,18 @@ namespace OpenLoco::Ui::Windows::Station
 
         static constexpr auto widgets = makeWidgets(
             Common::makeCommonWidgets(kMinWindowSize.width, kMinWindowSize.height),
-            Widgets::Label(Widx::kGroupByLabel, { 3, 44 }, { 40, 12 }, WindowColour::secondary, ContentAlign::right, StringIds::cargo_group_by),
-            Widgets::dropdownWidgets(Widx::kGroupBy, Widx::kGroupByDropdown, { 45, 44 }, { 152, 12 }, WindowColour::secondary, StringIds::wcolour2_stringid, StringIds::tooltip_cargo_group_by),
-            Widgets::Label(Widx::kSortByLabel, { 3, 57 }, { 40, 12 }, WindowColour::secondary, ContentAlign::right, StringIds::cargo_sort_by),
-            Widgets::dropdownWidgets(Widx::kSortBy, Widx::kSortByDropdown, { 45, 57 }, { 152, 12 }, WindowColour::secondary, StringIds::wcolour2_stringid, StringIds::tooltip_cargo_sort_by),
+            Widgets::Button(Widx::kExpandAll, { 3, 44 }, { 40, 12 }, WindowColour::secondary, StringIds::select_all),
+            Widgets::Label(Widx::kGroupByLabel, { 46, 44 }, { 40, 12 }, WindowColour::secondary, ContentAlign::right, StringIds::cargo_group_by),
+            Widgets::dropdownWidgets(Widx::kGroupBy, Widx::kGroupByDropdown, { 87, 44 }, { 110, 12 }, WindowColour::secondary, StringIds::wcolour2_stringid, StringIds::tooltip_cargo_group_by),
+            Widgets::Label(Widx::kSortByLabel, { 46, 57 }, { 40, 12 }, WindowColour::secondary, ContentAlign::right, StringIds::cargo_sort_by),
+            Widgets::dropdownWidgets(Widx::kSortBy, Widx::kSortByDropdown, { 87, 57 }, { 110, 12 }, WindowColour::secondary, StringIds::wcolour2_stringid, StringIds::tooltip_cargo_sort_by),
             Widgets::ScrollView(Widx::kScrollview, { 3, 70 }, { 217, 78 }, WindowColour::secondary, 2),
             Widgets::Label(Widx::kStatusBar, { 3, 151 }, { 195, 10 }, WindowColour::secondary, ContentAlign::left, StringIds::accepted_cargo_separator, StringIds::small_black_string),
             Widgets::ImageButton(Widx::kStationCatchment, { 198, 44 }, { 24, 24 }, WindowColour::secondary, ImageIds::show_station_catchment, StringIds::station_catchment)
 
         );
+
+        static void updateScrollSize(Window& self, uint8_t scrollIndex);
 
         static void resizeDropdown(Window& self, const widx comboIndex, const widx buttonIndex)
         {
@@ -655,6 +660,29 @@ namespace OpenLoco::Ui::Windows::Station
         {
             switch (id)
             {
+                case Widx::kExpandAll:
+                {
+                    auto& state = getWindowState(StationId(self.number));
+                    const auto* station = StationManager::get(StationId(self.number));
+                    for (uint32_t cargoId = 0; cargoId < kMaxCargoStats; ++cargoId)
+                    {
+                        if (station->cargoStats[cargoId].quantity == 0)
+                        {
+                            continue;
+                        }
+                        const auto cargo = static_cast<uint8_t>(cargoId);
+                        const auto* packets = CargoDist::getStationCargoConst(StationId(self.number), cargo);
+                        if (packets == nullptr || packets->empty())
+                        {
+                            continue;
+                        }
+                        state.expanded |= 1U << cargo;
+                        CargoRouteTree::expandAllGroups(state.expandedGroups[cargo], getRouteTree(state, cargo, *packets));
+                    }
+                    updateScrollSize(self, 0);
+                    self.invalidate();
+                    return;
+                }
                 case Widx::kStationCatchment:
                 {
                     StationId windowNumber = StationId(self.number);

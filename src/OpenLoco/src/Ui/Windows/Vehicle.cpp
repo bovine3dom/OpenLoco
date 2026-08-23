@@ -309,6 +309,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
         enum widx
         {
             refit = 9,
+            expandAllButton,
             groupByLabel,
             groupBy,
             groupByDropdown,
@@ -321,6 +322,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
         namespace Widx
         {
             constexpr WidgetId kRefit{ "refit" };
+            constexpr WidgetId kExpandAll{ "expandAll" };
             constexpr WidgetId kGroupByLabel{ "groupByLabel" };
             constexpr WidgetId kGroupBy{ "groupBy" };
             constexpr WidgetId kGroupByDropdown{ "groupByDropdown" };
@@ -335,10 +337,11 @@ namespace OpenLoco::Ui::Windows::Vehicle
         static constexpr auto widgets = makeWidgets(
             Common::makeCommonWidgets(265, 177, StringIds::title_vehicle_cargo),
             Widgets::ImageButton(Widx::kRefit, { 240, 44 }, { 24, 24 }, WindowColour::secondary, ImageIds::refit_cargo_button, StringIds::refit_vehicle_tip),
-            Widgets::Label(Widx::kGroupByLabel, { 3, 44 }, { 40, 12 }, WindowColour::secondary, ContentAlign::right, StringIds::cargo_group_by),
-            Widgets::dropdownWidgets(Widx::kGroupBy, Widx::kGroupByDropdown, { 45, 44 }, { 192, 12 }, WindowColour::secondary, StringIds::wcolour2_stringid, StringIds::tooltip_cargo_group_by),
-            Widgets::Label(Widx::kSortByLabel, { 3, 57 }, { 40, 12 }, WindowColour::secondary, ContentAlign::right, StringIds::cargo_sort_by),
-            Widgets::dropdownWidgets(Widx::kSortBy, Widx::kSortByDropdown, { 45, 57 }, { 192, 12 }, WindowColour::secondary, StringIds::wcolour2_stringid, StringIds::tooltip_cargo_sort_by),
+            Widgets::Button(Widx::kExpandAll, { 3, 44 }, { 40, 12 }, WindowColour::secondary, StringIds::select_all),
+            Widgets::Label(Widx::kGroupByLabel, { 46, 44 }, { 40, 12 }, WindowColour::secondary, ContentAlign::right, StringIds::cargo_group_by),
+            Widgets::dropdownWidgets(Widx::kGroupBy, Widx::kGroupByDropdown, { 87, 44 }, { 151, 12 }, WindowColour::secondary, StringIds::wcolour2_stringid, StringIds::tooltip_cargo_group_by),
+            Widgets::Label(Widx::kSortByLabel, { 46, 57 }, { 40, 12 }, WindowColour::secondary, ContentAlign::right, StringIds::cargo_sort_by),
+            Widgets::dropdownWidgets(Widx::kSortBy, Widx::kSortByDropdown, { 87, 57 }, { 151, 12 }, WindowColour::secondary, StringIds::wcolour2_stringid, StringIds::tooltip_cargo_sort_by),
             Widgets::ScrollView(Widx::kCargoList, { 3, 70 }, { 259, 94 }, WindowColour::secondary, Scrollbars::vertical)
 
         );
@@ -2302,7 +2305,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
     {
         struct CargoWindowState
         {
-            CargoRouteTree::GroupOrder groupOrder = CargoRouteTree::GroupOrder::sourceDestinationVia;
+            CargoRouteTree::GroupOrder groupOrder = CargoRouteTree::GroupOrder::destinationSourceVia;
             CargoRouteTree::SortMode sortMode = CargoRouteTree::SortMode::amountWaiting;
             std::set<CargoDist::VehicleCargoKey> expandedCompartments;
             std::map<CargoDist::VehicleCargoKey, std::set<CargoRouteTree::GroupKey>> expandedGroups;
@@ -2765,6 +2768,35 @@ namespace OpenLoco::Ui::Windows::Vehicle
             Dropdown::setItemSelected(selected);
         }
 
+        static void expandAll(Window& self)
+        {
+            auto* head = Common::getVehicle(self);
+            if (head == nullptr)
+            {
+                return;
+            }
+
+            auto& state = getWindowState(head->id);
+            Vehicles::Vehicle train{ *head };
+            for (const auto& car : train.cars)
+            {
+                for (const auto key : {
+                    CargoDist::VehicleCargoKey{ car.body->id, CargoDist::VehicleCargoSlot::primary },
+                    CargoDist::VehicleCargoKey{ car.front->id, CargoDist::VehicleCargoSlot::secondary } })
+                {
+                    const auto* packets = CargoDist::getVehicleCargoConst(key);
+                    if (packets == nullptr || packets->empty())
+                    {
+                        continue;
+                    }
+                    state.expandedCompartments.insert(key);
+                    CargoRouteTree::expandAllGroups(state.expandedGroups[key], getRouteTree(state, key, *packets));
+                }
+            }
+            updateScrollSize(self, 0);
+            self.invalidate();
+        }
+
         // 0x004B41BD
         static void onMouseUp(Window& self, const WidgetIndex_t i, const WidgetId id)
         {
@@ -2784,6 +2816,10 @@ namespace OpenLoco::Ui::Windows::Vehicle
 
                 case Common::Widx::kCaption:
                     Common::renameVehicle(self, i);
+                    break;
+
+                case Widx::kExpandAll:
+                    expandAll(self);
                     break;
             }
         }

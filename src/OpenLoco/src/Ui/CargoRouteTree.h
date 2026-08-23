@@ -57,6 +57,7 @@ namespace OpenLoco::Ui::CargoRouteTree
     std::span<const StringId> getGroupOrderNames();
     std::span<const StringId> getSortModeNames();
     void sortTree(std::vector<CargoDist::CargoRouteNode>& nodes, SortMode sortMode);
+    void expandAllGroups(std::set<GroupKey>& expandedGroups, const std::vector<CargoDist::CargoRouteNode>& nodes);
     void appendRows(std::vector<Row>& rows, const std::vector<CargoDist::CargoRouteNode>& nodes, GroupOrder order, const std::set<GroupKey>& expandedGroups, size_t maxRows, size_t& omittedRows);
     void drawDisclosure(Gfx::DrawingContext& drawingCtx, int16_t x, int16_t y, bool expanded);
     void drawRow(Gfx::DrawingContext& drawingCtx, const Row& row, int32_t y, int32_t width, int16_t xOffset = 0);

@@ -200,6 +200,25 @@ namespace OpenLoco::Ui::CargoRouteTree
         }
     }
 
+    void expandAllGroups(std::set<GroupKey>& expandedGroups, const std::vector<CargoDist::CargoRouteNode>& nodes)
+    {
+        const auto addGroups = [&](const auto& self, const auto& children, GroupKey parent, const uint8_t depth) -> void {
+            for (const auto& node : children)
+            {
+                auto key = parent;
+                key.depth = depth + 1;
+                key.stations[depth] = node.station;
+                if (node.children.empty())
+                {
+                    continue;
+                }
+                expandedGroups.insert(key);
+                self(self, node.children, key, depth + 1);
+            }
+        };
+        addGroups(addGroups, nodes, {}, 0);
+    }
+
     void appendRows(std::vector<Row>& rows, const std::vector<CargoDist::CargoRouteNode>& nodes, const GroupOrder order, const std::set<GroupKey>& expandedGroups, const size_t maxRows, size_t& omittedRows)
     {
         appendRows(rows, nodes, getOrder(order), expandedGroups, 0, {}, maxRows, omittedRows);

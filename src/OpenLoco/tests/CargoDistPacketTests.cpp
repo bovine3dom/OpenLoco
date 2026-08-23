@@ -209,6 +209,28 @@ TEST(CargoRouteTree, FlattensExpandedGroupsWithinRowLimit)
     EXPECT_EQ(omittedRows, 2U);
 }
 
+TEST(CargoRouteTree, ExpandsAllNestedGroups)
+{
+    const std::vector<CargoRouteNode> tree = {
+        { station(1), 10, { { station(2), 10, { { station(3), 10, {} } } } } },
+        { station(4), 5, {} },
+    };
+
+    std::set<Ui::CargoRouteTree::GroupKey> expandedGroups;
+    Ui::CargoRouteTree::expandAllGroups(expandedGroups, tree);
+
+    Ui::CargoRouteTree::GroupKey sourceKey{};
+    sourceKey.depth = 1;
+    sourceKey.stations[0] = station(1);
+    auto destinationKey = sourceKey;
+    destinationKey.depth = 2;
+    destinationKey.stations[1] = station(2);
+
+    EXPECT_TRUE(expandedGroups.contains(sourceKey));
+    EXPECT_TRUE(expandedGroups.contains(destinationKey));
+    EXPECT_EQ(expandedGroups.size(), 2U);
+}
+
 TEST(CargoDistPackets, KeepsServicePlansDistinct)
 {
     const auto departure1 = servicePoint(1, 2);
