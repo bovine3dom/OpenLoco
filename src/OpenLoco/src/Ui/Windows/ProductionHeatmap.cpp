@@ -41,7 +41,7 @@ namespace OpenLoco::Ui::Windows::ProductionHeatmap
         constexpr uint8_t kNoCargo = 0xFF;
         constexpr Ui::Size kWindowSize = { 252, 110 };
         constexpr int16_t kLegendLeft = 80;
-        constexpr int16_t kLegendTop = 59;
+        constexpr int16_t kLegendTop = 76;
         constexpr int16_t kLegendCellWidth = 20;
 
         constexpr std::array<Colour, kBucketCount> kBucketColours = {
@@ -396,9 +396,10 @@ namespace OpenLoco::Ui::Windows::ProductionHeatmap
             auto tr = Gfx::TextRenderer(drawingCtx);
             tr.setCurrentFont(Gfx::Font::small);
             const auto colour = self.getColour(WindowColour::secondary).opaque();
-            tr.drawStringLeft({ kLegendLeft, 72 }, colour, StringIds::low);
-            tr.drawStringCentred({ kLegendLeft + kLegendCellWidth * 4, 72 }, colour, StringIds::medium);
-            tr.drawStringRight({ kLegendLeft + kLegendCellWidth * kBucketCount - 1, 72 }, colour, StringIds::high);
+            constexpr auto kLegendLabelY = kLegendTop + 13;
+            tr.drawStringLeft({ kLegendLeft, kLegendLabelY }, colour, StringIds::low);
+            tr.drawStringCentred({ kLegendLeft + kLegendCellWidth * 4, kLegendLabelY }, colour, StringIds::medium);
+            tr.drawStringRight({ kLegendLeft + kLegendCellWidth * kBucketCount - 1, kLegendLabelY }, colour, StringIds::high);
         }
 
         static void onClose(Window& self)
