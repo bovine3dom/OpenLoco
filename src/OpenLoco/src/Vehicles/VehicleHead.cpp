@@ -1444,6 +1444,17 @@ namespace OpenLoco::Vehicles
     // 0x004A8F22
     bool VehicleHead::tryReverse()
     {
+        if (mode == TransportMode::road && var_52 != 1)
+        {
+            auto reverseTad = trackAndDirection.road;
+            reverseTad.setReversed(!reverseTad.isReversed());
+            const auto pos = World::Pos3(tileX, tileY, tileBaseZ * World::kSmallZStep);
+            if ((getRoadOccupation(pos, reverseTad) & RoadOccupationFlags::isLaneOccupied) != RoadOccupationFlags::none)
+            {
+                return true;
+            }
+        }
+
         if (isOnExpectedRoadOrTrack())
         {
             auto temp = var_52;
