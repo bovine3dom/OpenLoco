@@ -30,6 +30,7 @@
 #include "Ui/Widget.h"
 #include "Ui/WindowManager.h"
 #include "Ui/Windows/CargoFlowOverlay.h"
+#include "Ui/Windows/ProductionHeatmap.h"
 #include "Vehicles/Vehicle.h"
 #include "Vehicles/VehicleHead.h"
 #include "World/CompanyManager.h"
@@ -1671,6 +1672,12 @@ namespace OpenLoco::Input
                         {
                             if (window->type == Ui::WindowType::main && window->viewports[0] != nullptr
                                 && Windows::CargoFlowOverlay::setTooltip(*window->viewports[0], { x, y }))
+                            {
+                                skipItem = true;
+                                break;
+                            }
+                            if (window->type == Ui::WindowType::main && window->viewports[0] != nullptr
+                                && Windows::ProductionHeatmap::setTooltip(*window->viewports[0], { x, y }))
                             {
                                 skipItem = true;
                                 break;

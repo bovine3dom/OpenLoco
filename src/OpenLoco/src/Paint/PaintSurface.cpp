@@ -19,6 +19,7 @@
 #include "Paint/Paint.h"
 #include "Paint/PaintTileDecorations.h"
 #include "Ui/ViewportInteraction.h"
+#include "Ui/Windows/ProductionHeatmap.h"
 #include "World/IndustryManager.h"
 #include "World/Station.h"
 #include <OpenLoco/Core/Numerics.hpp>
@@ -1640,6 +1641,21 @@ namespace OpenLoco::Paint
             }
         }
         // 0x00465E92
+
+        if ((session.getViewFlags() & Ui::ViewportFlags::production_heatmap) != Ui::ViewportFlags::none
+            && (session.getViewFlags() & Ui::ViewportFlags::underground_view) == Ui::ViewportFlags::none)
+        {
+            const auto bucket = Ui::Windows::ProductionHeatmap::getTileBucket(session.getUnkPosition());
+            if (bucket != 0)
+            {
+                const auto waterSurface = getWaterSurface(elSurface, selfDescriptor.slope);
+                const auto waterDisplaySlope = kSlopeToDisplaySlope[waterSurface.slope];
+                const auto imageId = ImageId(kCatchmentFromSlope[waterDisplaySlope], Ui::Windows::ProductionHeatmap::getBucketColour(bucket));
+                auto* lastPs = session.getLastPS();
+                session.addToPlotListAsParent(imageId, { 0, 0, waterSurface.height }, { 32, 32, 1 });
+                session.setLastPS(lastPs);
+            }
+        }
 
         if (World::hasMapSelectionFlag(World::MapSelectionFlags::enable))
         {

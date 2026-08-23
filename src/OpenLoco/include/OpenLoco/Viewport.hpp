@@ -69,6 +69,7 @@ namespace OpenLoco::Ui
         seeThroughBuildings = 1U << 12,
         seeThroughTrees = 1U << 13,
         seeThroughBridges = 1U << 14,
+        production_heatmap = 1U << 15,
     };
     OPENLOCO_ENABLE_ENUM_OPERATORS(ViewportFlags);
 

@@ -316,6 +316,7 @@ set(OLOCO_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Ui/Windows/CompanyList.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Ui/Windows/CompanyWindow.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Ui/Windows/CargoFlowOverlay.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/Ui/Windows/ProductionHeatmap.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Ui/Windows/Construction/Blueprints.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Ui/Windows/Construction/Common.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Ui/Windows/Construction/ConstructionTab.cpp"
@@ -748,6 +749,7 @@ set(OLOCO_HEADERS
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/Ui/Windows/Construction/Construction.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/Ui/Windows/News/News.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/Ui/Windows/CargoFlowOverlay.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/Ui/Windows/ProductionHeatmap.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/Ui/Windows/ToolbarTopCommon.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/Vehicles/OrderManager.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/Vehicles/Orders.h"
@@ -822,6 +824,7 @@ set(private_compile_definitions
 
 set(test_files
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/CargoFlowOverlayTests.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/ProductionHeatmapTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/CargoDistPacketTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/CargoDistCommandTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/CargoDistRoutingTests.cpp"

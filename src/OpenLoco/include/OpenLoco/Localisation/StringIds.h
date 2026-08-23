@@ -2260,6 +2260,12 @@ namespace OpenLoco::StringIds
     constexpr StringId extended_vehicle_objects_in_use = 2548;
     constexpr StringId catchment_cargo_acceptance = 2549;
     constexpr StringId catchment_cargo_production = 2550;
+    constexpr StringId production_heatmap = 2551;
+    constexpr StringId production_heatmap_cargo = 2552;
+    constexpr StringId production_heatmap_mode = 2553;
+    constexpr StringId production_heatmap_physical = 2554;
+    constexpr StringId production_heatmap_station_potential = 2555;
+    constexpr StringId production_heatmap_tooltip = 2556;
 
     constexpr StringId temporary_object_load_str_0 = 8192;
     constexpr StringId temporary_object_load_str_1 = 8193;
