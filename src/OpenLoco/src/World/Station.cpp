@@ -1,4 +1,6 @@
 #include "World/Station.h"
+#include "Game.h"
+#include "GameStateFlags.h"
 #include "Graphics/Gfx.h"
 #include "Graphics/ImageIds.h"
 #include "Graphics/RenderTarget.h"
@@ -27,6 +29,7 @@
 #include "Objects/TrackObject.h"
 #include "Objects/TrainStationObject.h"
 #include "Random.h"
+#include "S5/Limits.h"
 #include "Ui/WindowManager.h"
 #include "ViewportManager.h"
 #include "World/CompanyManager.h"
@@ -36,6 +39,7 @@
 #include <OpenLoco/CargoDist/Simulation.h>
 #include <OpenLoco/Math/Bound.hpp>
 #include <algorithm>
+#include <bitset>
 #include <cassert>
 #include <limits>
 
@@ -159,6 +163,9 @@ namespace OpenLoco
         uint32_t _filter = 0U;                            // 0x0112C68C
         std::array<uint32_t, kMaxCargoStats> _score = {}; // 0x0112C690
         uint32_t _producedCargoTypes = 0U;                // 0x0112C710
+        std::array<uint64_t, kMaxCargoStats> _monthlyProductionEstimate = {};
+        std::bitset<Limits::kMaxIndustries> _visitedIndustries{};
+        bool _calculateProductionEstimates = false;
         std::array<IndustryId, kMaxCargoStats> _industry; // 0x0112C7D2
         uint8_t _byte_112C7F2 = 1;                        // 0x0112C7F2
 
@@ -201,11 +208,47 @@ namespace OpenLoco
         void resetProducedCargoTypes()
         {
             _producedCargoTypes = 0;
+            _monthlyProductionEstimate.fill(0);
+            _visitedIndustries.reset();
         }
 
         void addProducedCargoType(const uint8_t cargoId)
         {
             _producedCargoTypes = _producedCargoTypes | (1 << cargoId);
+        }
+
+        void addMonthlyProductionEstimate(const uint8_t cargoId, const uint64_t scaledEstimate)
+        {
+            _monthlyProductionEstimate[cargoId] += scaledEstimate;
+        }
+
+        void calculateProductionEstimates()
+        {
+            _calculateProductionEstimates = true;
+        }
+
+        bool shouldCalculateProductionEstimates() const
+        {
+            return _calculateProductionEstimates;
+        }
+
+        bool addIndustryProductionEstimate(const IndustryId industryId)
+        {
+            const auto index = enumValue(industryId);
+            const auto isNew = !_visitedIndustries.test(index);
+            _visitedIndustries.set(index);
+            return isNew;
+        }
+
+        CargoPreviewArray monthlyProductionEstimate() const
+        {
+            CargoPreviewArray result{};
+            for (size_t i = 0; i < result.size(); ++i)
+            {
+                const auto estimate = roundMonthlyProductionEstimate(_monthlyProductionEstimate[i]);
+                result[i] = static_cast<uint32_t>(std::min<uint64_t>(estimate, std::numeric_limits<int32_t>::max()));
+            }
+            return result;
         }
 
         void byte_112C7F2(const uint8_t value)
@@ -331,6 +374,7 @@ namespace OpenLoco
     {
         cargoSearchState.resetScores();
         cargoSearchState.resetProducedCargoTypes();
+        const auto reducedBuildingProduction = cargoSearchState.shouldCalculateProductionEstimates() && Game::hasFlags(GameStateFlags::unk2);
 
         if (station != nullptr)
         {
@@ -405,6 +449,8 @@ namespace OpenLoco
                                 {
                                     break;
                                 }
+                                const auto includeProductionEstimate = cargoSearchState.shouldCalculateProductionEstimates()
+                                    && cargoSearchState.addIndustryProductionEstimate(industry->id());
 
                                 for (auto cargoId : obj->requiredCargoType)
                                 {
@@ -415,11 +461,17 @@ namespace OpenLoco
                                     }
                                 }
 
-                                for (auto cargoId : obj->producedCargoType)
+                                for (uint8_t i = 0; i < 2; ++i)
                                 {
+                                    const auto cargoId = obj->producedCargoType[i];
                                     if (cargoId != 0xFF && (cargoSearchState.filter() & (1 << cargoId)))
                                     {
                                         cargoSearchState.addProducedCargoType(cargoId);
+                                        if (includeProductionEstimate)
+                                        {
+                                            const auto estimate = static_cast<uint64_t>(industry->producedCargoQuantityPreviousMonth[i]) * kMonthlyProductionEstimateDenominator;
+                                            cargoSearchState.addMonthlyProductionEstimate(cargoId, estimate);
+                                        }
                                     }
                                 }
 
@@ -450,6 +502,11 @@ namespace OpenLoco
                                         if (obj->producedQuantity[i] != 0)
                                         {
                                             cargoSearchState.addProducedCargoType(cargoId);
+                                            if (cargoSearchState.shouldCalculateProductionEstimates())
+                                            {
+                                                const auto estimate = getBuildingMonthlyProductionEstimateScaled(obj->producedQuantity[i], reducedBuildingProduction);
+                                                cargoSearchState.addMonthlyProductionEstimate(cargoId, estimate);
+                                            }
                                         }
                                     }
                                 }
@@ -498,6 +555,19 @@ namespace OpenLoco
         return acceptedCargos;
     }
 
+    static PotentialCargoStats makePotentialCargoStats(const CargoSearchState& cargoSearchState, const uint32_t acceptedCargo)
+    {
+        PotentialCargoStats result{};
+        result.accepted = acceptedCargo;
+        result.produced = cargoSearchState.producedCargoTypes();
+        for (size_t i = 0; i < result.acceptanceScores.size(); ++i)
+        {
+            result.acceptanceScores[i] = std::min(cargoSearchState.score(i), 8U);
+        }
+        result.monthlyProductionEstimate = cargoSearchState.monthlyProductionEstimate();
+        return result;
+    }
+
     // 0x0049239A
     PotentialCargo calcAcceptedCargoAi(const TilePos2 minPos, const TilePos2 maxPos)
     {
@@ -541,70 +611,40 @@ namespace OpenLoco
     // 0x00491FE0
     // WARNING: this may be called with station (ebp) = -1
     // THIS FUNCTION ONLY TO BE CALLED ON GHOST TRACK STATIONS
-    PotentialCargo calcAcceptedCargoTrainStationGhost(const Station* ghostStation, const Pos2& location, const uint32_t filter)
+    template<typename TAddCatchment>
+    static PotentialCargoStats calcAcceptedCargoGhostStats(const Station* ghostStation, const uint32_t filter, TAddCatchment&& addCatchment)
     {
         CargoSearchState cargoSearchState;
+        cargoSearchState.calculateProductionEstimates();
         cargoSearchState.byte_112C7F2(1);
-        cargoSearchState.filter(0);
-
         cargoSearchState.filter(filter);
-
         cargoSearchState.resetIndustryMap();
-
         setCatchmentDisplay(ghostStation, CatchmentFlags::flag_1);
+        addCatchment();
 
-        sub_491BF5(location, CatchmentFlags::flag_1);
+        const auto acceptedCargo = doCalcAcceptedCargo(ghostStation, cargoSearchState);
+        return makePotentialCargoStats(cargoSearchState, acceptedCargo);
+    }
 
-        PotentialCargo res{};
-        res.accepted = doCalcAcceptedCargo(ghostStation, cargoSearchState);
-        res.produced = cargoSearchState.producedCargoTypes();
-        return res;
+    PotentialCargoStats calcAcceptedCargoTrainStationGhost(const Station* ghostStation, const Pos2& location, const uint32_t filter)
+    {
+        return calcAcceptedCargoGhostStats(ghostStation, filter, [&] { sub_491BF5(location, CatchmentFlags::flag_1); });
     }
 
     // 0x00491F43
     // WARNING: this may be called with station (ebp) = -1
     // THIS FUNCTION ONLY TO BE CALLED ON GHOST AIRPORT STATIONS
-    PotentialCargo calcAcceptedCargoAirportGhost(const Station* ghostStation, const uint8_t type, const Pos2& location, const uint8_t rotation, const uint32_t filter)
+    PotentialCargoStats calcAcceptedCargoAirportGhost(const Station* ghostStation, const uint8_t type, const Pos2& location, const uint8_t rotation, const uint32_t filter)
     {
-        CargoSearchState cargoSearchState;
-        cargoSearchState.byte_112C7F2(1);
-        cargoSearchState.filter(0);
-
-        cargoSearchState.filter(filter);
-
-        cargoSearchState.resetIndustryMap();
-
-        setCatchmentDisplay(ghostStation, CatchmentFlags::flag_1);
-
-        sub_491C6F(type, location, rotation, CatchmentFlags::flag_1);
-
-        PotentialCargo res{};
-        res.accepted = doCalcAcceptedCargo(ghostStation, cargoSearchState);
-        res.produced = cargoSearchState.producedCargoTypes();
-        return res;
+        return calcAcceptedCargoGhostStats(ghostStation, filter, [&] { sub_491C6F(type, location, rotation, CatchmentFlags::flag_1); });
     }
 
     // 0x00491F93
     // WARNING: this may be called with station (ebp) = -1
     // THIS FUNCTION ONLY TO BE CALLED ON GHOST DOCK STATIONS
-    PotentialCargo calcAcceptedCargoDockGhost(const Station* ghostStation, const Pos2& location, const uint32_t filter)
+    PotentialCargoStats calcAcceptedCargoDockGhost(const Station* ghostStation, const Pos2& location, const uint32_t filter)
     {
-        CargoSearchState cargoSearchState;
-        cargoSearchState.byte_112C7F2(1);
-        cargoSearchState.filter(0);
-
-        cargoSearchState.filter(filter);
-
-        cargoSearchState.resetIndustryMap();
-
-        setCatchmentDisplay(ghostStation, CatchmentFlags::flag_1);
-
-        sub_491D20(location, CatchmentFlags::flag_1);
-
-        PotentialCargo res{};
-        res.accepted = doCalcAcceptedCargo(ghostStation, cargoSearchState);
-        res.produced = cargoSearchState.producedCargoTypes();
-        return res;
+        return calcAcceptedCargoGhostStats(ghostStation, filter, [&] { sub_491D20(location, CatchmentFlags::flag_1); });
     }
 
     static void setStationCatchmentRegion(TilePos2 minPos, TilePos2 maxPos, const CatchmentFlags flags);

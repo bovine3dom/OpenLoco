@@ -127,3 +127,22 @@ TEST_F(StationManagerTest, CatchmentRegionsRemainSparseAndFlagsIndependent)
     EXPECT_FALSE(isWithinCatchmentDisplay(toWorldSpace(firstDisplayTile)));
     EXPECT_FALSE(isWithinCatchmentDisplay(toWorldSpace(secondDisplayTile)));
 }
+
+TEST(StationCatchmentEstimate, CalculatesExpectedMonthlyBuildingProduction)
+{
+    EXPECT_EQ(getBuildingMonthlyProductionEstimateScaled(0, false), 0U);
+    EXPECT_EQ(getBuildingMonthlyProductionEstimateScaled(8, false), 360U);
+    EXPECT_EQ(getBuildingMonthlyProductionEstimateScaled(16, false), 1200U);
+    EXPECT_EQ(getBuildingMonthlyProductionEstimateScaled(16, true), 720U);
+
+    EXPECT_EQ(roundMonthlyProductionEstimate(getBuildingMonthlyProductionEstimateScaled(8, false)), 1U);
+    EXPECT_EQ(roundMonthlyProductionEstimate(getBuildingMonthlyProductionEstimateScaled(16, false)), 2U);
+    EXPECT_EQ(roundMonthlyProductionEstimate(getBuildingMonthlyProductionEstimateScaled(16, true)), 1U);
+}
+
+TEST(StationCatchmentEstimate, RoundsAggregateProductionOnce)
+{
+    EXPECT_EQ(roundMonthlyProductionEstimate(kMonthlyProductionEstimateDenominator / 2 - 1), 0U);
+    EXPECT_EQ(roundMonthlyProductionEstimate(kMonthlyProductionEstimateDenominator / 2), 1U);
+    EXPECT_EQ(roundMonthlyProductionEstimate(kMonthlyProductionEstimateDenominator), 1U);
+}

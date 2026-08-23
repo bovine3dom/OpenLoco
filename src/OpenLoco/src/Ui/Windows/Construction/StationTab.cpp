@@ -53,6 +53,26 @@ namespace OpenLoco::Ui::Windows::Construction::Station
     static bool _isDragging = false;
     static World::TilePos2 _toolPosDrag;
     static World::TilePos2 _toolPosInitial;
+    static CargoPreviewArray _constructingStationAcceptanceScores{};
+    static CargoPreviewArray _constructingStationMonthlyProduction{};
+    static uint32_t _constructingStationAcceptanceCargoTypes = 0;
+
+    static void setPotentialCargo(const PotentialCargoStats& cargo)
+    {
+        auto& cState = getConstructionState();
+        cState.constructingStationAcceptedCargoTypes = cargo.accepted;
+        cState.constructingStationProducedCargoTypes = cargo.produced;
+        _constructingStationAcceptanceScores = cargo.acceptanceScores;
+        _constructingStationMonthlyProduction = cargo.monthlyProductionEstimate;
+        _constructingStationAcceptanceCargoTypes = 0;
+        for (size_t i = 0; i < cargo.acceptanceScores.size(); ++i)
+        {
+            if (cargo.acceptanceScores[i] != 0)
+            {
+                _constructingStationAcceptanceCargoTypes |= 1U << i;
+            }
+        }
+    }
 
     static constexpr auto kWidgets = makeWidgets(
         Common::makeCommonWidgets(138, 190, StringIds::stringid_2),
@@ -345,8 +365,7 @@ namespace OpenLoco::Ui::Windows::Construction::Station
         sub_491C6F(cState.stationGhostTypeDockAirport, pos, cState.stationGhostRotation, CatchmentFlags::flag_0);
         Windows::Station::sub_491BC6();
         auto res = calcAcceptedCargoAirportGhost(station, cState.stationGhostTypeDockAirport, pos, cState.stationGhostRotation, 0xFFFFFFFFU);
-        cState.constructingStationAcceptedCargoTypes = res.accepted;
-        cState.constructingStationProducedCargoTypes = res.produced;
+        setPotentialCargo(res);
     }
 
     // 0x004A5158
@@ -409,8 +428,7 @@ namespace OpenLoco::Ui::Windows::Construction::Station
         sub_491D20(pos, CatchmentFlags::flag_0);
         Windows::Station::sub_491BC6();
         auto res = calcAcceptedCargoDockGhost(station, pos, 0xFFFFFFFFU);
-        cState.constructingStationAcceptedCargoTypes = res.accepted;
-        cState.constructingStationProducedCargoTypes = res.produced;
+        setPotentialCargo(res);
     }
 
     // 0x004A4D21
@@ -484,8 +502,7 @@ namespace OpenLoco::Ui::Windows::Construction::Station
         }
 
         auto res = calcAcceptedCargoTrainStationGhost(station, pos, filter);
-        cState.constructingStationAcceptedCargoTypes = res.accepted;
-        cState.constructingStationProducedCargoTypes = res.produced;
+        setPotentialCargo(res);
     }
 
     // 0x004A4B2E
@@ -547,8 +564,7 @@ namespace OpenLoco::Ui::Windows::Construction::Station
         Windows::Station::sub_491BC6();
 
         auto res = calcAcceptedCargoTrainStationGhost(station, pos, 0xFFFFFFFFU);
-        cState.constructingStationAcceptedCargoTypes = res.accepted;
-        cState.constructingStationProducedCargoTypes = res.produced;
+        setPotentialCargo(res);
     }
 
     // 0x0049E421
@@ -1172,7 +1188,7 @@ namespace OpenLoco::Ui::Windows::Construction::Station
         auto newHeight = baseFrame.height();
         if (Common::hasGhostVisibilityFlag(GhostVisibilityFlags::station))
         {
-            const auto numAcceptedCargoTypes = std::max(1, std::popcount(cState.constructingStationAcceptedCargoTypes));
+            const auto numAcceptedCargoTypes = std::max(1, std::popcount(_constructingStationAcceptanceCargoTypes));
             const auto numProducedCargoTypes = std::max(1, std::popcount(cState.constructingStationProducedCargoTypes));
             newHeight += 1 + (numAcceptedCargoTypes + numProducedCargoTypes) * 11;
         }
@@ -1298,7 +1314,7 @@ namespace OpenLoco::Ui::Windows::Construction::Station
         origin.x = 14;
         origin.y += 11;
 
-        auto drawCargoList = [&origin, &drawingCtx, &tr, &self](uint32_t cargoTypes) {
+        auto drawCargoList = [&origin, &drawingCtx, &tr, &self](uint32_t cargoTypes, const CargoPreviewArray& quantities, const bool isProduction) {
             for (uint8_t i = 0; i < ObjectManager::getMaxObjects(ObjectType::cargo); i++)
             {
                 if (!(cargoTypes & (1 << i)))
@@ -1309,23 +1325,31 @@ namespace OpenLoco::Ui::Windows::Construction::Station
                 auto* cargoObj = ObjectManager::get<CargoObject>(i);
                 drawingCtx.drawImage(ZoomLevel::full, origin.x, origin.y, cargoObj->unitInlineSprite);
 
-                FormatArguments args{};
-                args.push(cargoObj->name);
+                FormatArguments nameArgs{};
+                nameArgs.push(cargoObj->name);
 
-                auto width = self.width - 12 - 10;
-                tr.drawStringLeftClipped(origin + Point{ 12, 1 }, width, Colour::black, StringIds::black_stringid, args);
+                constexpr int16_t kValueWidth = 78;
+                const auto width = self.width - 12 - 10 - kValueWidth;
+                tr.drawStringLeftClipped(origin + Point{ 12, 1 }, width, Colour::black, StringIds::black_stringid, nameArgs);
+
+                const auto quantity = quantities[i];
+                FormatArguments quantityArgs{};
+                quantityArgs.push<int32_t>(static_cast<int32_t>(quantity));
+
+                const auto stringId = isProduction ? StringIds::catchment_cargo_production : StringIds::catchment_cargo_acceptance;
+                tr.drawStringRight({ static_cast<int16_t>(self.width - 3), static_cast<int16_t>(origin.y + 1) }, Colour::black, stringId, quantityArgs);
                 origin.y += 11;
             }
         };
 
-        if (cState.constructingStationAcceptedCargoTypes == 0)
+        if (_constructingStationAcceptanceCargoTypes == 0)
         {
             tr.drawStringLeft(origin, Colour::black, StringIds::catchment_area_nothing);
             origin.y += 11;
         }
         else
         {
-            drawCargoList(cState.constructingStationAcceptedCargoTypes);
+            drawCargoList(_constructingStationAcceptanceCargoTypes, _constructingStationAcceptanceScores, false);
         }
 
         // Catchment area cargo production list
@@ -1343,7 +1367,7 @@ namespace OpenLoco::Ui::Windows::Construction::Station
         }
         else
         {
-            drawCargoList(cState.constructingStationProducedCargoTypes);
+            drawCargoList(cState.constructingStationProducedCargoTypes, _constructingStationMonthlyProduction, true);
         }
     }
 

@@ -2601,3 +2601,5 @@ strings:
   2546: "Allow more than 224 vehicle objects"
   2547: "{SMALLFONT}{COLOUR BLACK}OpenLoco-only: allow up to 1000 vehicle objects in this scenario"
   2548: "Deselect vehicle objects in slots 224 or above before disabling this option"
+  2549: "{COLOUR BLACK}{INT32}/8"
+  2550: "{COLOUR BLACK}~{INT32}/mo"

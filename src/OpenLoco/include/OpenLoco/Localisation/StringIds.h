@@ -2258,6 +2258,8 @@ namespace OpenLoco::StringIds
     constexpr StringId extended_vehicle_objects = 2546;
     constexpr StringId tooltip_extended_vehicle_objects = 2547;
     constexpr StringId extended_vehicle_objects_in_use = 2548;
+    constexpr StringId catchment_cargo_acceptance = 2549;
+    constexpr StringId catchment_cargo_production = 2550;
 
     constexpr StringId temporary_object_load_str_0 = 8192;
     constexpr StringId temporary_object_load_str_1 = 8193;

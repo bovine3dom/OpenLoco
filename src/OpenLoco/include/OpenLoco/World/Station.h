@@ -8,6 +8,7 @@
 #include <OpenLoco/Map/Tile.h>
 #include <OpenLoco/Speed.hpp>
 #include <OpenLoco/Types.hpp>
+#include <array>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -67,6 +68,33 @@ namespace OpenLoco
     };
 
     constexpr size_t kMaxCargoStats = 32;
+    using CargoPreviewArray = std::array<uint32_t, kMaxCargoStats>;
+
+    // Buildings update once per 256 ticks; a 30-day month reduces the expected
+    // production calculation to successful-production totals * 30 / 682.
+    constexpr uint32_t kMonthlyProductionEstimateDenominator = 682;
+    constexpr uint64_t getBuildingMonthlyProductionEstimateScaled(const uint8_t producedQuantity, const bool reducedProduction)
+    {
+        const uint32_t fullGroups = producedQuantity / 4;
+        const uint32_t remainder = producedQuantity % 4;
+        uint32_t successfulProductionTotal;
+        if (reducedProduction)
+        {
+            const uint32_t pairs = fullGroups / 2;
+            const uint32_t fullGroupTotal = fullGroups % 2 == 0 ? pairs * (pairs + 1) : (pairs + 1) * (pairs + 1);
+            successfulProductionTotal = fullGroupTotal * 4 + remainder * ((fullGroups + 2) / 2);
+        }
+        else
+        {
+            successfulProductionTotal = 2 * fullGroups * (fullGroups + 1) + remainder * (fullGroups + 1);
+        }
+        return successfulProductionTotal * 30;
+    }
+
+    constexpr uint64_t roundMonthlyProductionEstimate(const uint64_t scaledEstimate)
+    {
+        return (scaledEstimate + kMonthlyProductionEstimateDenominator / 2) / kMonthlyProductionEstimateDenominator;
+    }
 
     constexpr size_t kMaxStationTiles = 256;
 
@@ -174,9 +202,16 @@ namespace OpenLoco
         uint32_t accepted;
         uint32_t produced;
     };
-    PotentialCargo calcAcceptedCargoTrainStationGhost(const Station* ghostStation, const World::Pos2& location, const uint32_t filter);
-    PotentialCargo calcAcceptedCargoAirportGhost(const Station* ghostStation, const uint8_t type, const World::Pos2& location, const uint8_t rotation, const uint32_t filter);
-    PotentialCargo calcAcceptedCargoDockGhost(const Station* ghostStation, const World::Pos2& location, const uint32_t filter);
+    struct PotentialCargoStats
+    {
+        uint32_t accepted;
+        uint32_t produced;
+        CargoPreviewArray acceptanceScores{};
+        CargoPreviewArray monthlyProductionEstimate{};
+    };
+    PotentialCargoStats calcAcceptedCargoTrainStationGhost(const Station* ghostStation, const World::Pos2& location, const uint32_t filter);
+    PotentialCargoStats calcAcceptedCargoAirportGhost(const Station* ghostStation, const uint8_t type, const World::Pos2& location, const uint8_t rotation, const uint32_t filter);
+    PotentialCargoStats calcAcceptedCargoDockGhost(const Station* ghostStation, const World::Pos2& location, const uint32_t filter);
     PotentialCargo calcAcceptedCargoAi(const World::TilePos2 minPos, const World::TilePos2 maxPos);
     void sub_491C6F(const uint8_t type, const World::Pos2& pos, const uint8_t rotation, const CatchmentFlags flag);
     void sub_491D20(const World::Pos2& pos, const CatchmentFlags flag);
