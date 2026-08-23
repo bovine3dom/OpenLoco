@@ -1653,6 +1653,7 @@ namespace OpenLoco::Paint
                 const auto imageId = ImageId(kCatchmentFromSlope[waterDisplaySlope], Ui::Windows::ProductionHeatmap::getBucketColour(bucket));
                 auto* lastPs = session.getLastPS();
                 session.addToPlotListAsParent(imageId, { 0, 0, waterSurface.height }, { 32, 32, 1 });
+                session.addToPlotListAsParent(imageId, { 0, 0, waterSurface.height }, { 32, 32, 1 });
                 session.setLastPS(lastPs);
             }
         }

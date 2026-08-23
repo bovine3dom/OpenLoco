@@ -87,3 +87,11 @@ TEST(ProductionHeatmap, SaturatesCombinedProductionWithoutWrapping)
     EXPECT_EQ(layers.physical.values[1 * 3 + 1], std::numeric_limits<uint64_t>::max());
     EXPECT_EQ(layers.stationPotential.values[1 * 3 + 1], std::numeric_limits<uint64_t>::max());
 }
+
+TEST(ProductionHeatmap, LinearBucketsUseTheActualValueRange)
+{
+    EXPECT_EQ(getLinearBucket(0, 10, 100), 0);
+    EXPECT_EQ(getLinearBucket(10, 10, 100), 1);
+    EXPECT_EQ(getLinearBucket(100, 10, 100), kBucketCount);
+    EXPECT_GT(getLinearBucket(55, 10, 100), getLinearBucket(20, 10, 100));
+}

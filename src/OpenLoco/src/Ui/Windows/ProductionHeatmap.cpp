@@ -39,7 +39,7 @@ namespace OpenLoco::Ui::Windows::ProductionHeatmap
     namespace
     {
         constexpr uint8_t kNoCargo = 0xFF;
-        constexpr Ui::Size kWindowSize = { 252, 92 };
+        constexpr Ui::Size kWindowSize = { 252, 110 };
         constexpr int16_t kLegendLeft = 80;
         constexpr int16_t kLegendTop = 59;
         constexpr int16_t kLegendCellWidth = 20;
@@ -61,6 +61,7 @@ namespace OpenLoco::Ui::Windows::ProductionHeatmap
             uint32_t mapRevision{};
             uint32_t simulationPeriod{};
             bool reducedProduction{};
+            ScaleMode scaleMode = ScaleMode::percentiles;
             HeatmapLayers layers;
         };
 
@@ -76,6 +77,9 @@ namespace OpenLoco::Ui::Windows::ProductionHeatmap
             modeLabel,
             mode,
             modeButton,
+            scaleLabel,
+            scale,
+            scaleButton,
         };
 
         namespace Widx
@@ -88,6 +92,8 @@ namespace OpenLoco::Ui::Windows::ProductionHeatmap
             constexpr WidgetId kCargoButton{ "cargo_button" };
             constexpr WidgetId kMode{ "mode" };
             constexpr WidgetId kModeButton{ "mode_button" };
+            constexpr WidgetId kScale{ "scale" };
+            constexpr WidgetId kScaleButton{ "scale_button" };
         }
 
         static constexpr auto kWidgets = makeWidgets(
@@ -98,10 +104,13 @@ namespace OpenLoco::Ui::Windows::ProductionHeatmap
             Widgets::Label({ 6, 22 }, { 44, 12 }, WindowColour::secondary, ContentAlign::left, StringIds::production_heatmap_cargo),
             Widgets::dropdownWidgets(Widx::kCargo, Widx::kCargoButton, { 50, 21 }, { 194, 12 }, WindowColour::secondary, StringIds::stringid, StringIds::tooltip_select_cargo_type),
             Widgets::Label({ 6, 39 }, { 44, 12 }, WindowColour::secondary, ContentAlign::left, StringIds::production_heatmap_mode),
-            Widgets::dropdownWidgets(Widx::kMode, Widx::kModeButton, { 50, 38 }, { 194, 12 }, WindowColour::secondary, StringIds::stringid));
+            Widgets::dropdownWidgets(Widx::kMode, Widx::kModeButton, { 50, 38 }, { 194, 12 }, WindowColour::secondary, StringIds::stringid),
+            Widgets::Label({ 6, 56 }, { 44, 12 }, WindowColour::secondary, ContentAlign::left, StringIds::production_heatmap_scale),
+            Widgets::dropdownWidgets(Widx::kScale, Widx::kScaleButton, { 50, 55 }, { 194, 12 }, WindowColour::secondary, StringIds::stringid));
 
         uint8_t _selectedCargo = kNoCargo;
         Mode _selectedMode = Mode::stationPotential;
+        ScaleMode _selectedScale = ScaleMode::percentiles;
         std::optional<Snapshot> _snapshot;
         std::vector<uint8_t> _dropdownCargoIds;
         uint32_t _pendingMapRevision{};
@@ -138,13 +147,23 @@ namespace OpenLoco::Ui::Windows::ProductionHeatmap
             return result;
         }
 
-        void finishLayer(HeatmapLayer& layer)
+        void finishLayer(HeatmapLayer& layer, const ScaleMode scaleMode)
         {
             const auto thresholds = calculatePercentileThresholds(layer.values);
+            uint64_t minimum = 0;
+            uint64_t maximum = 0;
+            for (const auto value : layer.values)
+            {
+                if (value != 0 && (minimum == 0 || value < minimum))
+                {
+                    minimum = value;
+                }
+                maximum = std::max(maximum, value);
+            }
             layer.buckets.resize(layer.values.size());
             for (size_t i = 0; i < layer.values.size(); ++i)
             {
-                layer.buckets[i] = getPercentileBucket(layer.values[i], thresholds);
+                layer.buckets[i] = scaleMode == ScaleMode::percentiles ? getPercentileBucket(layer.values[i], thresholds) : getLinearBucket(layer.values[i], minimum, maximum);
             }
         }
 
@@ -281,7 +300,7 @@ namespace OpenLoco::Ui::Windows::ProductionHeatmap
             const auto simulationPeriod = ScenarioManager::getScenarioTicks() / 1024;
             const auto reducedProduction = Game::hasFlags(GameStateFlags::unk2);
             if (_snapshot.has_value() && _snapshot->cargo == _selectedCargo && _snapshot->simulationPeriod == simulationPeriod
-                && _snapshot->reducedProduction == reducedProduction)
+                && _snapshot->reducedProduction == reducedProduction && _snapshot->scaleMode == _selectedScale)
             {
                 if (_snapshot->mapRevision == mapRevision)
                 {
@@ -304,8 +323,9 @@ namespace OpenLoco::Ui::Windows::ProductionHeatmap
             snapshot.mapRevision = mapRevision;
             snapshot.simulationPeriod = simulationPeriod;
             snapshot.reducedProduction = reducedProduction;
+            snapshot.scaleMode = _selectedScale;
             const auto sources = collectProductionSources(_selectedCargo);
-            snapshot.layers = buildProductionLayers(sources, World::kMapColumns, World::kMapRows, kCatchmentRadius, true);
+            snapshot.layers = buildProductionLayers(sources, World::kMapColumns, World::kMapRows, kCatchmentRadius, true, _selectedScale);
             _snapshot = std::move(snapshot);
             _pendingMapRevision = mapRevision;
             _stableMapRevisionUpdates = 0;
@@ -361,6 +381,8 @@ namespace OpenLoco::Ui::Windows::ProductionHeatmap
             }
             auto modeArgs = FormatArguments(self.widgets[widx::mode].textArgs);
             modeArgs.push(getModeStringId(_selectedMode));
+            auto scaleArgs = FormatArguments(self.widgets[widx::scale].textArgs);
+            scaleArgs.push(_selectedScale == ScaleMode::percentiles ? StringIds::production_heatmap_percentiles : StringIds::production_heatmap_linear);
         }
 
         static void draw(Window& self, Gfx::DrawingContext& drawingCtx)
@@ -429,6 +451,14 @@ namespace OpenLoco::Ui::Windows::ProductionHeatmap
                 Dropdown::showText(self.x + widget.left, self.y + widget.top, widget.width() - 4, widget.height(), self.getColour(WindowColour::secondary), 2, 0);
                 Dropdown::setItemSelected(static_cast<int16_t>(_selectedMode));
             }
+            else if (id == Widx::kScaleButton)
+            {
+                Dropdown::add(0, StringIds::dropdown_stringid, StringIds::production_heatmap_percentiles);
+                Dropdown::add(1, StringIds::dropdown_stringid, StringIds::production_heatmap_linear);
+                const auto& widget = self.widgets[widx::scale];
+                Dropdown::showText(self.x + widget.left, self.y + widget.top, widget.width() - 4, widget.height(), self.getColour(WindowColour::secondary), 2, 0);
+                Dropdown::setItemSelected(static_cast<int16_t>(_selectedScale));
+            }
         }
 
         static void onDropdown(Window& self, WidgetIndex_t, const WidgetId id, const int16_t itemIndex)
@@ -441,6 +471,11 @@ namespace OpenLoco::Ui::Windows::ProductionHeatmap
             else if (id == Widx::kModeButton && itemIndex >= 0 && itemIndex <= 1)
             {
                 _selectedMode = static_cast<Mode>(itemIndex);
+            }
+            else if (id == Widx::kScaleButton && itemIndex >= 0 && itemIndex <= 1)
+            {
+                _selectedScale = static_cast<ScaleMode>(itemIndex);
+                refreshSnapshot();
             }
             else
             {
@@ -514,7 +549,22 @@ namespace OpenLoco::Ui::Windows::ProductionHeatmap
         return bucket;
     }
 
-    HeatmapLayers buildProductionLayers(const std::span<const ProductionSource> sources, const uint16_t width, const uint16_t height, const uint8_t catchmentRadius, const bool excludeNonDrawableBorder)
+    uint8_t getLinearBucket(const uint64_t value, const uint64_t minimum, const uint64_t maximum)
+    {
+        if (value == 0 || maximum == 0)
+        {
+            return 0;
+        }
+        if (minimum >= maximum || value <= minimum)
+        {
+            return 1;
+        }
+        const auto range = maximum - minimum;
+        const auto proportion = static_cast<long double>(value - minimum) / static_cast<long double>(range);
+        return static_cast<uint8_t>(1 + proportion * (kBucketCount - 1));
+    }
+
+    HeatmapLayers buildProductionLayers(const std::span<const ProductionSource> sources, const uint16_t width, const uint16_t height, const uint8_t catchmentRadius, const bool excludeNonDrawableBorder, const ScaleMode scaleMode)
     {
         HeatmapLayers result{};
         const auto cellCount = static_cast<size_t>(width) * height;
@@ -581,8 +631,8 @@ namespace OpenLoco::Ui::Windows::ProductionHeatmap
                 }
             }
         }
-        finishLayer(result.physical);
-        finishLayer(result.stationPotential);
+        finishLayer(result.physical, scaleMode);
+        finishLayer(result.stationPotential, scaleMode);
         return result;
     }
 

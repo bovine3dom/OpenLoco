@@ -2608,4 +2608,7 @@ strings:
   2553: "{COLOUR WINDOW_2}Mode:"
   2554: "Physical production"
   2555: "Station potential"
-  2556: "{SMALLFONT}{COLOUR BLACK}{STRINGID}: {STRINGID}{NEWLINE}Estimated production: {INT32_2DP} per month{NEWLINE}Percentile band: {INT32}/{INT32}"
+  2556: "{SMALLFONT}{COLOUR BLACK}{STRINGID}: {STRINGID}{NEWLINE}Estimated production: {INT32_2DP} per month{NEWLINE}Colour band: {INT32}/{INT32}"
+  2557: "{COLOUR WINDOW_2}Scale:"
+  2558: "Percentiles"
+  2559: "Linear"

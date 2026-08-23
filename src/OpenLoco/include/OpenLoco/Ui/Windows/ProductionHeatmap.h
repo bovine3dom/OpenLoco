@@ -25,6 +25,12 @@ namespace OpenLoco::Ui
             stationPotential,
         };
 
+        enum class ScaleMode : uint8_t
+        {
+            percentiles,
+            linear,
+        };
+
         struct ProductionSource
         {
             uint64_t monthlyProductionScaled{};
@@ -45,7 +51,8 @@ namespace OpenLoco::Ui
 
         std::array<uint64_t, kBucketCount - 1> calculatePercentileThresholds(std::span<const uint64_t> values);
         uint8_t getPercentileBucket(uint64_t value, const std::array<uint64_t, kBucketCount - 1>& thresholds);
-        HeatmapLayers buildProductionLayers(std::span<const ProductionSource> sources, uint16_t width, uint16_t height, uint8_t catchmentRadius = kCatchmentRadius, bool excludeNonDrawableBorder = false);
+        uint8_t getLinearBucket(uint64_t value, uint64_t minimum, uint64_t maximum);
+        HeatmapLayers buildProductionLayers(std::span<const ProductionSource> sources, uint16_t width, uint16_t height, uint8_t catchmentRadius = kCatchmentRadius, bool excludeNonDrawableBorder = false, ScaleMode scaleMode = ScaleMode::percentiles);
 
         Window* open();
         void toggle();
