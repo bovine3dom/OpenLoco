@@ -4,7 +4,9 @@
 #include "Date.h"
 #include "GameState.h"
 #include "Objects/CargoObject.h"
+#include "Objects/IndustryObject.h"
 #include "Objects/ObjectManager.h"
+#include "S5/Limits.h"
 #include "Scenario/ScenarioManager.h"
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/Orders.h"
@@ -15,6 +17,7 @@
 #include "Vehicles/VehicleBogie.h"
 #include "Vehicles/VehicleHead.h"
 #include "Vehicles/VehicleManager.h"
+#include "World/IndustryManager.h"
 #include "World/Station.h"
 #include "World/StationManager.h"
 #include <OpenLoco/Math/Vector.hpp>
@@ -953,11 +956,51 @@ namespace OpenLoco::CargoDist
             return demands;
         }
 
+        struct PassengerIndustryActivity
+        {
+            uint32_t previousMonthVisitors{};
+            uint32_t currentMonthVisitors{};
+        };
+
+        std::optional<PassengerIndustryActivity> getPassengerIndustryActivity(const IndustryId industryId, const uint8_t cargo)
+        {
+            const auto* industry = IndustryManager::get(industryId);
+            if (industry == nullptr || industry->empty())
+            {
+                return std::nullopt;
+            }
+            const auto* object = industry->getObject();
+            if (object == nullptr || std::find(std::begin(object->producedCargoType), std::end(object->producedCargoType), cargo) == std::end(object->producedCargoType))
+            {
+                return std::nullopt;
+            }
+
+            PassengerIndustryActivity activity{};
+            auto requiresPassengers = false;
+            for (uint8_t i = 0; i < 3; ++i)
+            {
+                if (object->requiredCargoType[i] == cargo)
+                {
+                    requiresPassengers = true;
+                    activity.previousMonthVisitors = std::max<uint32_t>(activity.previousMonthVisitors, industry->receivedCargoQuantityPreviousMonth[i]);
+                    activity.currentMonthVisitors = std::max<uint32_t>(activity.currentMonthVisitors, industry->receivedCargoQuantityMonthlyTotal[i]);
+                }
+            }
+            return requiresPassengers ? std::optional<PassengerIndustryActivity>{ activity } : std::nullopt;
+        }
+
         RoutingGraph buildGraph(uint8_t cargo, bool includeDemands = true)
         {
+            struct PassengerIndustryGroup
+            {
+                uint32_t bonus{};
+                std::vector<size_t> nodes;
+            };
+
             RoutingGraph graph;
             graph.timeSensitive = true;
             graph.passengerRouting = isPassengerCargo(cargo);
+            std::array<PassengerIndustryGroup, Limits::kMaxIndustries> passengerIndustries{};
             const auto& state = getStateConst();
             for (const auto& station : StationManager::stations())
             {
@@ -973,6 +1016,11 @@ namespace OpenLoco::CargoDist
                     const auto recordedAttraction = found == state.stationAttraction.end() ? 0 : found->second;
                     attraction = getRoutingAttraction(graph.passengerRouting, station.cargoStats[cargo].industryId != IndustryId::null, recordedAttraction);
                 }
+                const auto industryId = station.cargoStats[cargo].industryId;
+                const auto industryPassengerSink = graph.passengerRouting && industryId != IndustryId::null;
+                const auto industryActivity = industryPassengerSink ? getPassengerIndustryActivity(industryId, cargo) : std::nullopt;
+                const auto passengerSink = industryPassengerSink
+                    && (!industryActivity.has_value() || (industryActivity->previousMonthVisitors == 0 && industryActivity->currentMonthVisitors == 0));
                 graph.nodes.push_back({
                     station.id(),
                     station.x,
@@ -980,8 +1028,28 @@ namespace OpenLoco::CargoDist
                     0,
                     accepts,
                     attraction,
-                    graph.passengerRouting && station.cargoStats[cargo].industryId != IndustryId::null,
+                    passengerSink,
                 });
+                if (industryActivity.has_value())
+                {
+                    auto& group = passengerIndustries[enumValue(industryId)];
+                    group.bonus = getPassengerIndustryBonus(industryActivity->previousMonthVisitors);
+                    group.nodes.push_back(graph.nodes.size() - 1);
+                }
+            }
+            for (auto& group : passengerIndustries)
+            {
+                std::sort(group.nodes.begin(), group.nodes.end(), [&graph](const auto lhs, const auto rhs) {
+                    return enumValue(graph.nodes[lhs].station) < enumValue(graph.nodes[rhs].station);
+                });
+                const auto stationCount = static_cast<uint32_t>(group.nodes.size());
+                for (uint32_t i = 0; i < stationCount; ++i)
+                {
+                    auto& node = graph.nodes[group.nodes[i]];
+                    const auto bonus = getSharedPassengerIndustryBonus(group.bonus, stationCount, i);
+                    node.attraction = getPassengerIndustryAttraction(node.attraction, bonus);
+                    node.accepts &= node.attraction != 0;
+                }
             }
             if (includeDemands)
             {
@@ -2123,6 +2191,15 @@ namespace OpenLoco::CargoDist
         {
             _pendingFlowCalculation.reset();
         }
+        if (_pendingFlowCalculation.has_value() && _pendingFlowCalculation->dirtyEpoch != _dirtyEpoch)
+        {
+            const auto pending = *_pendingFlowCalculation;
+            notifyRecalculationDirty();
+            _pendingFlowCalculation.reset();
+            state.servicesDirty |= pending.blocksTransfers;
+            startFlowCalculation(pending.scheduled, !pending.blocksTransfers);
+            return;
+        }
         if (_pendingFlowCalculation.has_value())
         {
             const auto pending = *_pendingFlowCalculation;
@@ -2133,7 +2210,7 @@ namespace OpenLoco::CargoDist
             const auto waitStart = std::chrono::steady_clock::now();
             auto result = _flowWorker->take(pending.generation, true);
             const auto waitEnd = std::chrono::steady_clock::now();
-            if (pending.generation != _flowCalculationGeneration || !result.has_value())
+            if (pending.generation != _flowCalculationGeneration || pending.dirtyEpoch != _dirtyEpoch || !result.has_value())
             {
                 _pendingFlowCalculation.reset();
                 return;
@@ -2148,10 +2225,7 @@ namespace OpenLoco::CargoDist
             {
                 finishScheduledRecalculation();
             }
-            if (pending.dirtyEpoch == _dirtyEpoch)
-            {
-                state.graphDirty = false;
-            }
+            state.graphDirty = false;
             _pendingFlowCalculation.reset();
             return;
         }
@@ -2321,6 +2395,8 @@ namespace OpenLoco::CargoDist
             }
         }
         validateState(state, getGameState());
+        const auto refreshStationMetadata = state.requiresStationMetadataRefresh;
+        state.requiresStationMetadataRefresh = false;
         state.serviceEdges.clear();
         state.vehicleServiceLegs.clear();
         state.routingRevision = getStateConst().routingRevision + 1;
@@ -2328,6 +2404,13 @@ namespace OpenLoco::CargoDist
 
         const auto needsRecalculation = state.graphDirty;
         getState() = std::move(state);
+        if (refreshStationMetadata)
+        {
+            for (auto& station : StationManager::stations())
+            {
+                station.refreshCargoRoutingMetadata();
+            }
+        }
         rebuildServiceEdges();
         if (needsRecalculation || !hasValidServicePlans())
         {

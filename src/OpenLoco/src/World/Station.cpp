@@ -162,6 +162,7 @@ namespace OpenLoco
     private:
         uint32_t _filter = 0U;                            // 0x0112C68C
         std::array<uint32_t, kMaxCargoStats> _score = {}; // 0x0112C690
+        uint32_t _scoredIndustryCargoTypes = 0;
         uint32_t _producedCargoTypes = 0U;                // 0x0112C710
         std::array<uint64_t, kMaxCargoStats> _monthlyProductionEstimate = {};
         std::bitset<Limits::kMaxIndustries> _visitedIndustries{};
@@ -188,6 +189,7 @@ namespace OpenLoco
         void resetScores()
         {
             _score.fill(0);
+            _scoredIndustryCargoTypes = 0;
         }
 
         uint32_t score(const uint8_t cargo) const
@@ -198,6 +200,16 @@ namespace OpenLoco
         void addScore(const uint8_t cargo, const int32_t value)
         {
             _score[cargo] += value;
+        }
+
+        void addIndustryScore(const uint8_t cargo)
+        {
+            const auto cargoType = 1U << cargo;
+            if ((_scoredIndustryCargoTypes & cargoType) == 0)
+            {
+                _score[cargo] += 8;
+                _scoredIndustryCargoTypes |= cargoType;
+            }
         }
 
         uint32_t producedCargoTypes() const
@@ -281,7 +293,7 @@ namespace OpenLoco
         {
             auto& stats = station.cargoStats[cargoId];
             const auto industryId = cargoSearchState.getIndustry(cargoId);
-            routingChanged |= (stats.industryId == IndustryId::null) != (industryId == IndustryId::null);
+            routingChanged |= stats.industryId != industryId;
             stats.industryId = industryId;
         }
         return routingChanged;
@@ -456,7 +468,7 @@ namespace OpenLoco
                                 {
                                     if (cargoId != 0xFF && (cargoSearchState.filter() & (1 << cargoId)))
                                     {
-                                        cargoSearchState.addScore(cargoId, 8);
+                                        cargoSearchState.addIndustryScore(cargoId);
                                         cargoSearchState.setIndustry(cargoId, industry->id());
                                     }
                                 }

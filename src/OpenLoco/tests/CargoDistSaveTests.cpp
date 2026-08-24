@@ -164,6 +164,7 @@ namespace
         EXPECT_EQ(lhs.settings.recalculationInterval, rhs.settings.recalculationInterval);
         EXPECT_EQ(lhs.nextRecalculationDay, rhs.nextRecalculationDay);
         EXPECT_EQ(lhs.graphDirty, rhs.graphDirty);
+        EXPECT_EQ(lhs.requiresStationMetadataRefresh, rhs.requiresStationMetadataRefresh);
         EXPECT_EQ(lhs.supply, rhs.supply);
         ASSERT_EQ(lhs.stationAttraction.size(), rhs.stationAttraction.size());
         for (const auto& [key, attraction] : lhs.stationAttraction)
@@ -343,7 +344,7 @@ TEST(CargoDistSave, RoundTripsCanonicalState)
     expectStatesEqual(original, decoded);
     EXPECT_TRUE(decoded.serviceEdges.empty());
     EXPECT_TRUE(decoded.vehicleServiceLegs.empty());
-    EXPECT_EQ(std::to_integer<uint8_t>(encoded[8]), 6);
+    EXPECT_EQ(std::to_integer<uint8_t>(encoded[8]), 7);
 }
 
 TEST(CargoDistSave, MigratesVersionOneWithoutStationAttraction)
@@ -359,13 +360,14 @@ TEST(CargoDistSave, MigratesVersionOneWithoutStationAttraction)
     EXPECT_TRUE(packet.arrival.empty());
 }
 
-TEST(CargoDistSave, MigratesVersionTwoAndRetainsStationAttraction)
+TEST(CargoDistSave, MigratesVersionTwoAndInvalidatesStationAttraction)
 {
     const auto decoded = decodeState(legacyEncodedState(2));
 
-    EXPECT_EQ(decoded.stationAttraction.at({ station(2), 0 }), 25U);
+    EXPECT_TRUE(decoded.stationAttraction.empty());
     EXPECT_TRUE(decoded.flows.empty());
     EXPECT_TRUE(decoded.graphDirty);
+    EXPECT_TRUE(decoded.requiresStationMetadataRefresh);
     const auto& packet = decoded.stationCargo.at({ station(2), 0 }).packets().front();
     EXPECT_TRUE(packet.departure.empty());
     EXPECT_TRUE(packet.arrival.empty());
@@ -400,6 +402,15 @@ TEST(CargoDistSave, MigratesVersionFiveAndForcesRecalculation)
 
     EXPECT_TRUE(decoded.graphDirty);
     EXPECT_EQ(decoded.stationCargo.at({ station(2), 0 }).packets().front().destination, station(4));
+}
+
+TEST(CargoDistSave, MigratesVersionSixAndRefreshesStationMetadata)
+{
+    const auto decoded = decodeState(legacyEncodedState(6));
+
+    EXPECT_TRUE(decoded.stationAttraction.empty());
+    EXPECT_TRUE(decoded.graphDirty);
+    EXPECT_TRUE(decoded.requiresStationMetadataRefresh);
 }
 
 TEST(CargoDistSave, RoundTripsStationCargoAboveNativeLimit)
@@ -507,7 +518,7 @@ TEST(CargoDistSave, RejectsPacketCountLargerThanPayload)
 TEST(CargoDistSave, RejectsUnknownVersion)
 {
     auto encoded = encodeState(populatedState());
-    encoded[8] = std::byte{ 7 };
+    encoded[8] = std::byte{ 8 };
 
     EXPECT_THROW(decodeState(encoded), std::runtime_error);
 }

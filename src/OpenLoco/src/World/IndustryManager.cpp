@@ -20,6 +20,7 @@
 #include "Ui/WindowManager.h"
 #include "World/CompanyManager.h"
 #include "World/TownManager.h"
+#include <OpenLoco/CargoDist/CargoDist.h>
 #include <OpenLoco/Math/Vector.hpp>
 #include <numeric>
 
@@ -517,6 +518,7 @@ namespace OpenLoco::IndustryManager
             {
                 industry.updateMonthly();
             }
+            CargoDist::markGraphDirty();
 
             Ui::WindowManager::invalidate(Ui::WindowType::industry);
         }

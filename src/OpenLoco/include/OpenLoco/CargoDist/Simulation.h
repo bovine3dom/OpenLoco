@@ -52,6 +52,20 @@ namespace OpenLoco::CargoDist
     {
         return recordedAttraction != 0 && (passengerRouting || !industryDestination) ? recordedAttraction : 8;
     }
+    constexpr uint32_t getPassengerIndustryBonus(const uint32_t previousMonthVisitors)
+    {
+        const auto patronageBonus = previousMonthVisitors / 4;
+        return 8 + (patronageBonus < 40 ? patronageBonus : 40);
+    }
+    constexpr uint32_t getSharedPassengerIndustryBonus(const uint32_t bonus, const uint32_t stationCount, const uint32_t stationIndex)
+    {
+        return stationCount == 0 ? 0 : bonus / stationCount + (stationIndex < bonus % stationCount);
+    }
+    constexpr uint32_t getPassengerIndustryAttraction(const uint32_t recordedAttraction, const uint32_t resortBonus)
+    {
+        const auto townAttraction = recordedAttraction > 8 ? recordedAttraction - 8 : 0;
+        return townAttraction + resortBonus;
+    }
     void setStationAttraction(StationId station, uint8_t cargo, uint32_t attraction);
 
     void addProducedCargo(StationId station, uint8_t cargo, StationCargoStats& nativeCargo, uint16_t quantity);

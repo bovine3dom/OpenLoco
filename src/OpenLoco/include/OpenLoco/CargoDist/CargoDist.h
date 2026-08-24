@@ -261,6 +261,7 @@ namespace OpenLoco::CargoDist
         uint32_t nextRecalculationDay{};
         bool graphDirty{};
         bool servicesDirty{};
+        bool requiresStationMetadataRefresh{};
     };
 
     State& getState();

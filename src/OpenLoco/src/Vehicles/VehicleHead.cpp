@@ -3311,14 +3311,24 @@ namespace OpenLoco::Vehicles
         {
             auto* industry = IndustryManager::get(cargoStats.industryId);
             const auto* industryObj = industry->getObject();
+            const auto* cargoObject = ObjectManager::get<CargoObject>(cargoType);
+            auto activatesPassengerIndustry = cargoObject != nullptr
+                && cargoObject->cargoCategory == CargoCategory::passengers
+                && std::find(std::begin(industryObj->producedCargoType), std::end(industryObj->producedCargoType), cargoType) != std::end(industryObj->producedCargoType);
             for (auto i = 0; i < 3; ++i)
             {
                 if (industryObj->requiredCargoType[i] != cargoType)
                 {
                     continue;
                 }
+                activatesPassengerIndustry &= industry->receivedCargoQuantityPreviousMonth[i] == 0
+                    && industry->receivedCargoQuantityMonthlyTotal[i] == 0;
                 industry->receivedCargoQuantityDailyTotal[i] = Math::Bound::add(industry->receivedCargoQuantityDailyTotal[i], quantity);
                 industry->receivedCargoQuantityMonthlyTotal[i] = Math::Bound::add(industry->receivedCargoQuantityMonthlyTotal[i], quantity);
+            }
+            if (activatesPassengerIndustry && CargoDist::isEnabled(cargoType))
+            {
+                CargoDist::markGraphDirty();
             }
 
             if (!(industry->history_min_production[0] & (1ULL << cargoType)))

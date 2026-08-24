@@ -23,7 +23,7 @@ namespace OpenLoco::CargoDist
             std::byte{ 'T' },
             std::byte{ 0 },
         };
-        constexpr uint16_t kVersion = 6;
+        constexpr uint16_t kVersion = 7;
         constexpr uint16_t kHeaderSize = 16;
         constexpr uint32_t kMaxStationLists = S5::Limits::kMaxStations * S5::Limits::kMaxCargoObjects;
         constexpr uint32_t kMaxVehicleLists = S5::Limits::kMaxEntities * 2;
@@ -634,9 +634,11 @@ namespace OpenLoco::CargoDist
             state.flows.clear();
             state.destinationFlows.clear();
         }
-        if (version < 6)
+        if (version < 7)
         {
+            state.stationAttraction.clear();
             state.graphDirty = true;
+            state.requiresStationMetadataRefresh = true;
         }
         return state;
     }

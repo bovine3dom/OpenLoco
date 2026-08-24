@@ -264,6 +264,41 @@ TEST(CargoDistSimulation, PassengerIndustryUsesRecordedAttraction)
     EXPECT_EQ(getRoutingAttraction(false, false, 24), 24U);
 }
 
+TEST(CargoDistSimulation, PassengerIndustryAttractionUsesBoundedPatronageBonus)
+{
+    EXPECT_EQ(getPassengerIndustryBonus(0), 8U);
+    EXPECT_EQ(getPassengerIndustryBonus(64), 24U);
+    EXPECT_EQ(getPassengerIndustryBonus(160), 48U);
+    EXPECT_EQ(getPassengerIndustryBonus(std::numeric_limits<uint16_t>::max()), 48U);
+
+    EXPECT_EQ(getPassengerIndustryAttraction(8, 8), 8U);
+    EXPECT_EQ(getPassengerIndustryAttraction(21, 48), 61U);
+}
+
+TEST(CargoDistSimulation, PassengerIndustryBonusIsSharedAcrossStations)
+{
+    uint32_t total = 0;
+    for (uint32_t i = 0; i < 5; ++i)
+    {
+        total += getSharedPassengerIndustryBonus(48, 5, i);
+    }
+    EXPECT_EQ(total, 48U);
+    EXPECT_EQ(getSharedPassengerIndustryBonus(48, 5, 0), 10U);
+    EXPECT_EQ(getSharedPassengerIndustryBonus(48, 5, 4), 9U);
+}
+
+TEST(CargoDistSimulation, PassengerIndustryBonusRemainsBoundedWithManyStations)
+{
+    uint32_t total = 0;
+    for (uint32_t stationIndex = 0; stationIndex < 9; ++stationIndex)
+    {
+        total += getPassengerIndustryAttraction(8, getSharedPassengerIndustryBonus(8, 9, stationIndex));
+    }
+
+    EXPECT_EQ(total, 8U);
+    EXPECT_EQ(getPassengerIndustryAttraction(8, getSharedPassengerIndustryBonus(8, 9, 8)), 0U);
+}
+
 TEST_F(CargoDistServiceSimulationTest, ZeroProductionIsANoOp)
 {
     ASSERT_FALSE(getStateConst().graphDirty);
@@ -432,6 +467,45 @@ TEST_F(CargoDistServiceSimulationTest, ServiceRecalculationDiscardsSupersededGen
     update();
 
     EXPECT_FALSE(isServiceRecalculationPending());
+    EXPECT_FALSE(getStateConst().graphDirty);
+}
+
+TEST_F(CargoDistServiceSimulationTest, ServiceRecalculationDiscardsStaleGraphSnapshot)
+{
+    auto* head = createVehicle();
+    recalculateNow();
+    const auto initial = getStateConst().vehicleServiceLegs.at(head->id).front();
+    head->currentOrder = initial.currentOrder;
+    head->stationId = initial.from;
+    head->status = Vehicles::Status::loading;
+
+    markServicesDirty();
+    update();
+    markGraphDirty();
+    update();
+
+    EXPECT_TRUE(isServiceRecalculationPending());
+    EXPECT_FALSE(getCurrentServiceLeg(*head).has_value());
+    EXPECT_TRUE(getStateConst().graphDirty);
+
+    getGameState().scenarioTicks += 48;
+    update();
+
+    EXPECT_FALSE(isServiceRecalculationPending());
+    EXPECT_FALSE(getStateConst().graphDirty);
+}
+
+TEST_F(CargoDistServiceSimulationTest, RestoreConsumesStationMetadataRefresh)
+{
+    State state;
+    state.stationAttraction[{ station(2), 0 }] = 96;
+    state.graphDirty = true;
+    state.requiresStationMetadataRefresh = true;
+
+    restoreState(std::move(state));
+
+    EXPECT_FALSE(getStateConst().requiresStationMetadataRefresh);
+    EXPECT_FALSE(getStateConst().stationAttraction.contains({ station(2), 0 }));
     EXPECT_FALSE(getStateConst().graphDirty);
 }
 
