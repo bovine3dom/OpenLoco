@@ -548,6 +548,12 @@ namespace OpenLoco::CargoDist
         return _state;
     }
 
+    uint32_t getStationAccessibility(const StationId station)
+    {
+        const auto found = _state.stationAccessibility.find(station);
+        return found == _state.stationAccessibility.end() ? 0 : found->second;
+    }
+
     void reset()
     {
         cancelPendingRecalculation();

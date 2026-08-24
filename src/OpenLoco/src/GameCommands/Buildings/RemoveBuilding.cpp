@@ -20,10 +20,10 @@ namespace OpenLoco::GameCommands
         auto companyId = GameCommands::getUpdatingCompanyId();
         if (companyId != CompanyId::neutral)
         {
-            auto res = TownManager::getClosestTownAndDensity(pos);
+            auto res = TownManager::getClosestTown(pos);
             if (res.has_value())
             {
-                auto townId = res->first;
+                auto townId = *res;
                 auto town = TownManager::get(townId);
                 if (town != nullptr)
                 {
@@ -72,8 +72,8 @@ namespace OpenLoco::GameCommands
                         auto rating = getCompanyRating(pos);
                         if (rating.has_value() && *rating < 0)
                         {
-                            auto res = TownManager::getClosestTownAndDensity(pos);
-                            auto* town = TownManager::get(res->first);
+                            auto res = TownManager::getClosestTown(pos);
+                            auto* town = TownManager::get(*res);
                             auto formatArgs = FormatArguments::common();
                             formatArgs.push(town->name);
                             GameCommands::setErrorText(StringIds::local_authority_refuses_permission);

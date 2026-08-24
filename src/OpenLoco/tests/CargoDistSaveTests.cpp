@@ -196,6 +196,8 @@ namespace
             }
         }
         EXPECT_EQ(lhs.destinationFlows, rhs.destinationFlows);
+        EXPECT_EQ(lhs.stationAccessibility, rhs.stationAccessibility);
+        EXPECT_EQ(lhs.hasStationAccessibilitySnapshot, rhs.hasStationAccessibilitySnapshot);
         EXPECT_EQ(lhs.pendingVehicleRevenueAdjustments, rhs.pendingVehicleRevenueAdjustments);
     }
 
@@ -220,6 +222,8 @@ namespace
         state.stationAttraction[{ station(2), 0 }] = 120;
         state.serviceEdges[{ 0, station(1), station(2), servicePoint(8, 3), servicePoint(8, 4) }] = { 40, 10, 2 };
         state.vehicleServiceLegs[entity(7)] = { { 3, station(1), station(2), servicePoint(8, 3), servicePoint(8, 4) } };
+        state.stationAccessibility = { { station(2), 123 }, { station(1), 456 } };
+        state.hasStationAccessibilitySnapshot = true;
         state.pendingVehicleRevenueAdjustments[entity(7)] = -45;
         return state;
     }
@@ -344,7 +348,7 @@ TEST(CargoDistSave, RoundTripsCanonicalState)
     expectStatesEqual(original, decoded);
     EXPECT_TRUE(decoded.serviceEdges.empty());
     EXPECT_TRUE(decoded.vehicleServiceLegs.empty());
-    EXPECT_EQ(std::to_integer<uint8_t>(encoded[8]), 7);
+    EXPECT_EQ(std::to_integer<uint8_t>(encoded[8]), 8);
 }
 
 TEST(CargoDistSave, MigratesVersionOneWithoutStationAttraction)
@@ -413,6 +417,15 @@ TEST(CargoDistSave, MigratesVersionSixAndRefreshesStationMetadata)
     EXPECT_TRUE(decoded.requiresStationMetadataRefresh);
 }
 
+TEST(CargoDistSave, MigratesVersionSevenWithoutAccessibilitySnapshot)
+{
+    const auto decoded = decodeState(legacyEncodedState(7));
+
+    EXPECT_TRUE(decoded.stationAccessibility.empty());
+    EXPECT_FALSE(decoded.hasStationAccessibilitySnapshot);
+    EXPECT_TRUE(decoded.requiresStationMetadataRefresh);
+}
+
 TEST(CargoDistSave, RoundTripsStationCargoAboveNativeLimit)
 {
     State state;
@@ -433,11 +446,24 @@ TEST(CargoDistSave, EncodingIsDeterministic)
     packets = {};
     packets.append({ 10, station(4), StationId::null, 2, {}, {}, station(3) });
     packets.append({ 30, station(1), station(3), 4, servicePoint(7, 1), servicePoint(7, 2), station(3), 120 });
+    reordered.stationAccessibility.clear();
+    reordered.stationAccessibility.emplace(station(1), 456);
+    reordered.stationAccessibility.emplace(station(2), 123);
 
     EXPECT_EQ(encodeState(state), encodeState(reordered));
 }
 
 TEST(CargoDistSave, RoundTripsEmptyManualState)
+{
+    State state;
+    state.hasStationAccessibilitySnapshot = true;
+
+    const auto decoded = decodeState(encodeState(state));
+
+    expectStatesEqual(state, decoded);
+}
+
+TEST(CargoDistSave, RoundTripsMissingAccessibilitySnapshot)
 {
     const State state;
 
@@ -518,9 +544,27 @@ TEST(CargoDistSave, RejectsPacketCountLargerThanPayload)
 TEST(CargoDistSave, RejectsUnknownVersion)
 {
     auto encoded = encodeState(populatedState());
-    encoded[8] = std::byte{ 8 };
+    encoded[8] = std::byte{ 9 };
 
     EXPECT_THROW(decodeState(encoded), std::runtime_error);
+}
+
+TEST(CargoDistSave, RejectsInvalidAccessibilityStation)
+{
+    State state;
+    state.hasStationAccessibilitySnapshot = true;
+    state.stationAccessibility[station(S5::Limits::kMaxStations)] = 123;
+
+    EXPECT_THROW(encodeState(state), std::runtime_error);
+}
+
+TEST(CargoDistSave, RejectsZeroAccessibility)
+{
+    State state;
+    state.hasStationAccessibilitySnapshot = true;
+    state.stationAccessibility[station(1)] = 0;
+
+    EXPECT_THROW(encodeState(state), std::runtime_error);
 }
 
 TEST(CargoDistSave, RejectsInvalidMode)

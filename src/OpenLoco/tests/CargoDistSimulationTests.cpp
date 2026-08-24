@@ -495,10 +495,12 @@ TEST_F(CargoDistServiceSimulationTest, ServiceRecalculationDiscardsStaleGraphSna
     EXPECT_FALSE(getStateConst().graphDirty);
 }
 
-TEST_F(CargoDistServiceSimulationTest, RestoreConsumesStationMetadataRefresh)
+TEST_F(CargoDistServiceSimulationTest, RestorePreservesCommittedAccessibilityWhileQueuingRefresh)
 {
     State state;
     state.stationAttraction[{ station(2), 0 }] = 96;
+    state.stationAccessibility[station(2)] = 123;
+    state.hasStationAccessibilitySnapshot = true;
     state.graphDirty = true;
     state.requiresStationMetadataRefresh = true;
 
@@ -506,7 +508,21 @@ TEST_F(CargoDistServiceSimulationTest, RestoreConsumesStationMetadataRefresh)
 
     EXPECT_FALSE(getStateConst().requiresStationMetadataRefresh);
     EXPECT_FALSE(getStateConst().stationAttraction.contains({ station(2), 0 }));
-    EXPECT_FALSE(getStateConst().graphDirty);
+    EXPECT_EQ(getStationAccessibility(station(2)), 123U);
+    EXPECT_TRUE(getStateConst().graphDirty);
+}
+
+TEST_F(CargoDistServiceSimulationTest, RestorePreservesEmptyCommittedAccessibilitySnapshot)
+{
+    State state;
+    state.graphDirty = true;
+    state.hasStationAccessibilitySnapshot = true;
+
+    restoreState(std::move(state));
+
+    EXPECT_TRUE(getStateConst().hasStationAccessibilitySnapshot);
+    EXPECT_TRUE(getStateConst().stationAccessibility.empty());
+    EXPECT_TRUE(getStateConst().graphDirty);
 }
 
 TEST_F(CargoDistServiceSimulationTest, PeriodicRecalculationCommitsOnTheNextDayBoundary)
@@ -542,6 +558,21 @@ TEST_F(CargoDistServiceSimulationTest, ResetDiscardsPendingServiceRecalculation)
     EXPECT_FALSE(isServiceRecalculationPending());
     EXPECT_TRUE(getStateConst().serviceEdges.empty());
     EXPECT_TRUE(getStateConst().flows.empty());
+}
+
+TEST_F(CargoDistServiceSimulationTest, PendingRecalculationKeepsCommittedAccessibilitySnapshot)
+{
+    getState().stationAccessibility[station(1)] = 123;
+    createVehicle();
+    markServicesDirty();
+
+    update();
+
+    ASSERT_TRUE(isServiceRecalculationPending());
+    EXPECT_EQ(getStationAccessibility(station(1)), 123U);
+
+    reset();
+    EXPECT_EQ(getStationAccessibility(station(1)), 0U);
 }
 
 TEST_F(CargoDistServiceSimulationTest, RecalculationReleasesRejectedDestination)
@@ -1556,10 +1587,12 @@ TEST(CargoDistSimulation, ForcedUnloadDoesNotContinueOnSameService)
     EXPECT_EQ(getStationCargoConst(station(2), 0)->quantityFor(station(3), onward.departure), 20);
 }
 
-TEST(CargoDistSimulation, RemovingStationKeepsFlowCursorsSerializable)
+TEST(CargoDistSimulation, RemovingStationClearsAccessibilityAndKeepsFlowCursorsSerializable)
 {
     reset();
     EntityManager::reset();
+    getState().stationAccessibility = { { station(3), 123 }, { station(4), 456 } };
+    getState().hasStationAccessibilitySnapshot = true;
     getState().flows[{ 0, station(1), station(2), {}, station(4) }] = {
         { station(3), 75, -25 },
         { station(4), 25, 25 },
@@ -1567,6 +1600,8 @@ TEST(CargoDistSimulation, RemovingStationKeepsFlowCursorsSerializable)
 
     removeStation(station(3));
 
+    EXPECT_EQ(getStationAccessibility(station(3)), 0U);
+    EXPECT_EQ(getStationAccessibility(station(4)), 456U);
     const auto& options = getStateConst().flows.at({ 0, station(1), station(2), {}, station(4) });
     ASSERT_EQ(options.size(), 1);
     EXPECT_EQ(options.front().current, 0);

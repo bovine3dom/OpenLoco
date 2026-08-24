@@ -785,6 +785,7 @@ set(OLOCO_HEADERS
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/World/Station.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/World/StationManager.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/World/Town.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/World/TownGrowth.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/World/TownManager.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/ZoomLevel.hpp")
 
@@ -843,6 +844,7 @@ set(test_files
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/SignalFuzzerTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/StationManagerTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/TileManagerTests.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/TownManagerTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/UndoTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/VehicleAutoRenewalTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/VehicleMovementTests.cpp"

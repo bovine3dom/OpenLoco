@@ -29,9 +29,10 @@ namespace
         uint32_t supply = 0,
         bool accepts = false,
         uint32_t attraction = 1,
-        bool passengerSink = false)
+        bool passengerSink = false,
+        TownId town = TownId::null)
     {
-        return { station(id), x, y, supply, accepts, attraction, passengerSink };
+        return { station(id), x, y, supply, accepts, attraction, passengerSink, town };
     }
 
     RoutingEdge edge(uint16_t from, uint16_t to, uint32_t capacity = 100, uint32_t travelTime = 1)
@@ -116,6 +117,14 @@ namespace
         }
     }
 
+    uint32_t accessibilityAt(const std::vector<StationAccessibility>& accessibility, uint16_t id)
+    {
+        const auto found = std::find_if(accessibility.begin(), accessibility.end(), [id](const auto& item) {
+            return item.station == station(id);
+        });
+        return found == accessibility.end() ? 0 : found->score;
+    }
+
     RoutingGraph parallelGraph()
     {
         return {
@@ -138,6 +147,23 @@ namespace
             },
             true,
             {},
+        };
+    }
+
+    RoutingGraph accessibilityGraph()
+    {
+        return {
+            {
+                node(1, 0, 0, 0, true, 100, false, TownId(1)),
+                node(2, 10, 0, 0, true, 100, false, TownId(2)),
+            },
+            {
+                serviceEdge(1, 2, 1, 0, 1, 10, 2, 20),
+                serviceEdge(2, 1, 2, 0, 1, 10, 2, 20),
+            },
+            true,
+            {},
+            true,
         };
     }
 }
@@ -1253,4 +1279,122 @@ TEST(CargoDistRouting, ServiceRoutingIsIndependentOfInputOrder)
     std::reverse(reversed.demands.begin(), reversed.demands.end());
 
     expectSameFlows(calculateAsymmetricFlows(ordered), calculateAsymmetricFlows(reversed));
+}
+
+TEST(CargoDistRouting, AccessibilityUsesReciprocalJourneyQualityAndBoundedCapacity)
+{
+    const auto graph = accessibilityGraph();
+
+    const auto journeys = calculateJourneyCosts(graph, station(1));
+    ASSERT_EQ(journeys.size(), 2U);
+    EXPECT_EQ(journeys[1].cost, 12U);
+    EXPECT_EQ(accessibilityAt(calculateStationAccessibility(graph), 1), 62U);
+
+    auto slower = graph;
+    for (auto& route : slower.edges)
+    {
+        route.travelTime = 40;
+    }
+    EXPECT_LT(accessibilityAt(calculateStationAccessibility(slower), 1), 62U);
+
+    auto moreAttractive = graph;
+    moreAttractive.nodes[1].attraction = 200;
+    EXPECT_GT(accessibilityAt(calculateStationAccessibility(moreAttractive), 1), 62U);
+
+    auto fasterLowCapacity = graph;
+    fasterLowCapacity.edges.push_back(serviceEdge(1, 2, 3, 0, 1, 1, 0, 1));
+    fasterLowCapacity.edges.push_back(serviceEdge(2, 1, 4, 0, 1, 1, 0, 1));
+    EXPECT_EQ(accessibilityAt(calculateStationAccessibility(fasterLowCapacity), 1), 95U);
+
+    auto oneWay = graph;
+    oneWay.edges.pop_back();
+    EXPECT_EQ(accessibilityAt(calculateStationAccessibility(oneWay), 1), 0U);
+
+    auto bounded = graph;
+    for (auto& route : bounded.edges)
+    {
+        route.capacity = 256;
+    }
+    const auto boundedScore = accessibilityAt(calculateStationAccessibility(bounded), 1);
+    for (auto& route : bounded.edges)
+    {
+        route.capacity = 1000;
+    }
+    EXPECT_EQ(accessibilityAt(calculateStationAccessibility(bounded), 1), boundedScore);
+}
+
+TEST(CargoDistRouting, AccessibilityChargesWaitOnlyWhenBoardingAThroughService)
+{
+    const RoutingGraph graph{
+        {
+            node(1, 0, 0, 0, false, 0, false, TownId(1)),
+            node(2, 10, 0, 0, false, 0, false, TownId(2)),
+            node(3, 20, 0, 0, true, 100, false, TownId(3)),
+        },
+        {
+            serviceEdge(1, 2, 1, 0, 1, 1, 10, 20),
+            serviceEdge(2, 3, 1, 1, 2, 1, 10, 20),
+            serviceEdge(3, 2, 2, 0, 1, 1, 10, 20),
+            serviceEdge(2, 1, 2, 1, 2, 1, 10, 20),
+        },
+        true,
+        {},
+        true,
+    };
+
+    EXPECT_EQ(calculateJourneyCost(graph, station(1), station(3)), 12U);
+    EXPECT_EQ(accessibilityAt(calculateStationAccessibility(graph), 1), 62U);
+}
+
+TEST(CargoDistRouting, AccessibilityCountsEachReachableTownOnceInStableOrder)
+{
+    auto graph = accessibilityGraph();
+    const auto oneStationScore = accessibilityAt(calculateStationAccessibility(graph), 1);
+    ASSERT_GT(oneStationScore, 0U);
+
+    graph.nodes[1].town = TownId(1);
+    EXPECT_EQ(accessibilityAt(calculateStationAccessibility(graph), 1), oneStationScore);
+
+    graph.nodes.push_back(node(3, 20, 0, 0, true, 100, false, TownId(1)));
+    graph.edges.push_back(serviceEdge(1, 3, 3, 0, 1, 10, 2, 20));
+    graph.edges.push_back(serviceEdge(3, 1, 4, 0, 1, 10, 2, 20));
+    const auto sameTown = calculateStationAccessibility(graph);
+    EXPECT_EQ(accessibilityAt(sameTown, 1), oneStationScore);
+
+    graph.nodes.back().town = TownId(3);
+    const auto separateTowns = calculateStationAccessibility(graph);
+    EXPECT_GT(accessibilityAt(separateTowns, 1), oneStationScore);
+
+    std::reverse(graph.nodes.begin(), graph.nodes.end());
+    std::reverse(graph.edges.begin(), graph.edges.end());
+    EXPECT_EQ(calculateStationAccessibility(graph), separateTowns);
+}
+
+TEST(CargoDistRouting, AccessibilityHandlesManyServiceOccurrencesDeterministically)
+{
+    constexpr uint16_t kStationCount = 24;
+    constexpr uint16_t kParallelServices = 8;
+    RoutingGraph graph{};
+    graph.timeSensitive = true;
+    graph.passengerRouting = true;
+    for (uint16_t id = 1; id <= kStationCount; ++id)
+    {
+        graph.nodes.push_back(node(id, id * 10, 0, 0, true, 100, false, TownId(id)));
+    }
+    uint16_t service = 1;
+    for (uint16_t id = 1; id < kStationCount; ++id)
+    {
+        for (uint16_t parallel = 0; parallel < kParallelServices; ++parallel)
+        {
+            graph.edges.push_back(serviceEdge(id, id + 1, service++, 0, 1, 1, 1, 20));
+            graph.edges.push_back(serviceEdge(id + 1, id, service++, 0, 1, 1, 1, 20));
+        }
+    }
+
+    const auto accessibility = calculateStationAccessibility(graph);
+    ASSERT_EQ(accessibility.size(), kStationCount);
+
+    std::reverse(graph.nodes.begin(), graph.nodes.end());
+    std::reverse(graph.edges.begin(), graph.edges.end());
+    EXPECT_EQ(calculateStationAccessibility(graph), accessibility);
 }

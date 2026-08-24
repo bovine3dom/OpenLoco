@@ -42,7 +42,7 @@ namespace OpenLoco::GameCommands
 
         if (!buildingObj->hasFlags(BuildingObjectFlags::miscBuilding))
         {
-            auto nearest = TownManager::getClosestTownAndDensity(args.pos);
+            auto nearest = TownManager::getClosestTown(args.pos);
             if (!nearest.has_value())
             {
                 setErrorText(StringIds::town_must_be_built_first);
@@ -265,7 +265,7 @@ namespace OpenLoco::GameCommands
             {
                 if (buildingObj->townAmenityCategory != TownAmenityCategory::none)
                 {
-                    town->amenityCounts[enumValue(buildingObj->townAmenityCategory)]++;
+                    TownManager::adjustAmenityCount(town->id(), enumValue(buildingObj->townAmenityCategory), 1);
                 }
             }
         }

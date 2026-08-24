@@ -192,10 +192,10 @@ namespace OpenLoco::GameCommands
         {
             setErrorText(StringIds::empty);
 
-            auto nearest = TownManager::getClosestTownAndDensity(args.pos);
+            auto nearest = TownManager::getClosestTown(args.pos);
             if (nearest.has_value())
             {
-                auto* town = TownManager::get(nearest->first);
+                auto* town = TownManager::get(*nearest);
                 FormatArguments::common(town->name);
                 setErrorText(StringIds::stringid_local_authority_wont_allow_removal_in_use);
             }

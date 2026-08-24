@@ -1374,6 +1374,7 @@ namespace OpenLoco::S5
                 }
             }
             Audio::resetSoundObjects();
+            TownManager::rebuildRuntimeMetrics();
 
             if (hasLoadFlags(flags, LoadFlags::scenario))
             {
@@ -1448,6 +1449,12 @@ namespace OpenLoco::S5
                 if (file->cargoDistState.has_value())
                 {
                     CargoDist::restoreState(std::move(*file->cargoDistState));
+                }
+                else
+                {
+                    CargoDist::State legacyState;
+                    legacyState.requiresStationMetadataRefresh = true;
+                    CargoDist::restoreState(std::move(legacyState));
                 }
                 if (file->vehicleAutoRenewalState.has_value()
                     && !Vehicles::VehicleAutoRenewal::restoreState(*file->vehicleAutoRenewalState))

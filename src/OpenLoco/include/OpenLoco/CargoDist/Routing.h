@@ -38,6 +38,7 @@ namespace OpenLoco::CargoDist
         bool accepts;
         uint32_t attraction = 1;
         bool passengerSink = false;
+        TownId town = TownId::null;
     };
 
     struct RoutingEdge
@@ -97,7 +98,16 @@ namespace OpenLoco::CargoDist
         uint64_t cost = kUnreachableJourneyCost;
     };
 
+    struct StationAccessibility
+    {
+        StationId station = StationId::null;
+        uint32_t score{};
+
+        auto operator<=>(const StationAccessibility&) const = default;
+    };
+
     std::vector<FlowShare> calculateAsymmetricFlows(const RoutingGraph& graph, const RoutingSettings& settings = {});
     std::vector<StationJourneyCost> calculateJourneyCosts(const RoutingGraph& graph, StationId source, ServicePoint departure = {});
     uint64_t calculateJourneyCost(const RoutingGraph& graph, StationId source, StationId destination, ServicePoint departure = {});
+    std::vector<StationAccessibility> calculateStationAccessibility(const RoutingGraph& graph);
 }

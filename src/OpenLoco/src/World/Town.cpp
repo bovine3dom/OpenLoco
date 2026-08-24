@@ -1,4 +1,5 @@
 #include "World/Town.h"
+#include "CargoDist/CargoDist.h"
 #include "Config.h"
 #include "Date.h"
 #include "GameCommands/Buildings/CreateBuilding.h"
@@ -30,10 +31,13 @@
 #include "Ui/WindowManager.h"
 #include "Vehicles/Vehicle.h"
 #include "ViewportManager.h"
+#include "World/StationManager.h"
+#include "World/TownGrowth.h"
 #include "World/TownManager.h"
 #include <OpenLoco/Core/Numerics.hpp>
 #include <algorithm>
 #include <bit>
+#include <vector>
 
 using namespace OpenLoco::World;
 
@@ -244,9 +248,6 @@ namespace OpenLoco
             kMaxCompanyRating);
     }
 
-    // 0x004FF714
-    constexpr uint32_t _populations[]{ 0, 150, 500, 2500, 8000 };
-
     /**
      * 0x004975E0
      * Recalculate size
@@ -257,11 +258,11 @@ namespace OpenLoco
     {
         auto newSize = enumValue(size);
         if (size < TownSize::metropolis
-            && populationCapacity >= _populations[enumValue(size) + 1])
+            && populationCapacity >= kTownSizeCapacityThresholds[enumValue(size) + 1])
         {
             newSize++;
         }
-        else if (size != TownSize::hamlet && populationCapacity + 100 < _populations[enumValue(size)])
+        else if (size != TownSize::hamlet && populationCapacity + 100 < kTownSizeCapacityThresholds[enumValue(size)])
         {
             newSize--;
         }
@@ -691,25 +692,23 @@ namespace OpenLoco
     // targetHeight : ebp
     // return std::nullopt : Carry flag set
     //        See also BuildingPlacementArgs
-    static std::optional<GameCommands::BuildingPlacementArgs> generateNewBuildingArgs(const TownId targetTown, const World::Pos3 pos, int16_t targetHeight, uint8_t rotation, bool isLargeTile, bool buildImmediately)
+    static std::optional<GameCommands::BuildingPlacementArgs> generateNewBuildingArgs(const TownId targetTown, const World::Pos3 pos, int16_t targetHeight, uint8_t rotation, bool isLargeTile, bool buildImmediately, const uint8_t townDensity, const bool requireTargetDensity)
     {
-        const auto res = TownManager::getClosestTownAndDensity(pos);
-        if (!res.has_value())
+        const auto townId = TownManager::getClosestTown(pos);
+        if (!townId.has_value())
         {
             return std::nullopt;
         }
 
-        const auto& [townId, townDensity] = res.value();
-
-        auto* town = TownManager::get(townId);
+        auto* town = TownManager::get(*townId);
 
         // Flags for amenities that the town should consider building
         uint32_t amenitiesToBuild = 0;
         // No amenities until the town has at least 64 buildings
-        const auto buildingsFactor = (town->numBuildings + 64) / 128;
+        const auto buildingsFactor = (TownManager::getBuildingCount(*townId) + 64) / 128;
         for (auto i = 0U; i < std::size(kTownAmenityPer128Buildings); ++i)
         {
-            if (kTownAmenityPer128Buildings[i] * buildingsFactor > town->amenityCounts[i])
+            if (kTownAmenityPer128Buildings[i] * buildingsFactor > TownManager::getAmenityCount(*townId, i))
             {
                 amenitiesToBuild |= (1U << i);
             }
@@ -719,7 +718,7 @@ namespace OpenLoco
         auto potentialBuildings = sub_42CEBF(curYear, townDensity, isLargeTile, amenitiesToBuild, targetHeight);
         if (potentialBuildings.empty())
         {
-            if (townDensity == 0)
+            if (townDensity == 0 || requireTargetDensity)
             {
                 return std::nullopt;
             }
@@ -769,7 +768,7 @@ namespace OpenLoco
 
         // TODO: This should be done earlier but would cause a divergence
         // move higher when we want to diverge
-        if (targetTown != townId)
+        if (targetTown != *townId)
         {
             return std::nullopt;
         }
@@ -1416,6 +1415,48 @@ namespace OpenLoco
         GameCommands::doCommand(args, GameCommands::Flags::apply);
     }
 
+    static bool hasLowerDensityBuilding(const World::Pos3& pos, const bool isLarge, const uint8_t desiredDensity)
+    {
+        bool foundLowerDensity = false;
+        for (const auto& offset : getBuildingTileOffsets(isLarge))
+        {
+            const auto loc = World::Pos2{ pos } + offset.pos;
+            if (!World::validCoords(loc))
+            {
+                return false;
+            }
+            for (const auto& element : World::TileManager::get(loc))
+            {
+                const auto* building = element.as<World::BuildingElement>();
+                if (building == nullptr)
+                {
+                    continue;
+                }
+                const auto* buildingObj = ObjectManager::get<BuildingObject>(building->objectId());
+                if (building->isGhost() || building->isMiscBuilding() || !building->isConstructed() || building->age() <= 30
+                    || buildingObj->hasFlags(BuildingObjectFlags::isHeadquarters))
+                {
+                    return false;
+                }
+
+                uint8_t highestDensity = 0;
+                for (uint8_t density = 1; density < 4; ++density)
+                {
+                    if (buildingObj->generatorFunction & (1U << density))
+                    {
+                        highestDensity = density;
+                    }
+                }
+                if (highestDensity >= desiredDensity)
+                {
+                    return false;
+                }
+                foundLowerDensity = true;
+            }
+        }
+        return foundLowerDensity;
+    }
+
     // 0x00498320
     static void constructBuilding(Town& town, const World::Pos3 pos, const Vehicles::TrackAndDirection::_RoadAndDirection tad, const TownGrowFlags growFlags)
     {
@@ -1446,6 +1487,13 @@ namespace OpenLoco
         {
             allowBuildingUpdate = true;
         }
+        const auto desiredDensity = TownManager::getTownDensity(town.id(), buildingPos);
+        bool densityUpgrade = false;
+        if (!allowBuildingUpdate && hasLowerDensityBuilding(buildingPos, isLarge, desiredDensity) && (town.prng.randNext() & 0x1FU) == 0)
+        {
+            allowBuildingUpdate = true;
+            densityUpgrade = true;
+        }
 
         const auto maxHeight = getMaxHeightOfNewBuilding(buildingPos, isLarge, allowBuildingUpdate);
         if (maxHeight == 0)
@@ -1453,7 +1501,7 @@ namespace OpenLoco
             return;
         }
 
-        auto args = generateNewBuildingArgs(town.id(), buildingPos, maxHeight, buildingRot, isLarge, false);
+        auto args = generateNewBuildingArgs(town.id(), buildingPos, maxHeight, buildingRot, isLarge, false, desiredDensity, densityUpgrade);
         if (args.has_value())
         {
             if ((growFlags & TownGrowFlags::buildImmediately) != TownGrowFlags::none)
@@ -1535,7 +1583,7 @@ namespace OpenLoco
     };
 
     // 0x00497FFC
-    static std::optional<RoadExtentResult> findRoadExtent(const Town& town)
+    static std::optional<RoadExtentResult> findRoadExtent(const Town& town, const World::Pos2& centre)
     {
         struct FindResult
         {
@@ -1546,7 +1594,7 @@ namespace OpenLoco
         std::optional<FindResult> res;
 
         // 0x00497F74
-        auto validRoad = [randVal = town.prng.srand_0(), &res](const World::Pos2& loc) mutable {
+        auto validRoad = [randVal = town.prng.srand_0(), &res, townId = town.id()](const World::Pos2& loc) mutable {
             auto tile = World::TileManager::get(loc);
             bool hasPassedSurface = false;
             for (auto& el : tile)
@@ -1579,6 +1627,11 @@ namespace OpenLoco
                 {
                     continue;
                 }
+                const auto closestTown = TownManager::getClosestTown(loc);
+                if (!closestTown.has_value() || *closestTown != townId)
+                {
+                    continue;
+                }
                 // There is a 50% chance that it will use a new result
                 if (res.has_value())
                 {
@@ -1594,19 +1647,67 @@ namespace OpenLoco
             }
             return true;
         };
-        squareSearch({ town.x, town.y }, 9, validRoad);
+        squareSearch(centre, 9, validRoad);
 
         if (!res.has_value())
         {
             return std::nullopt;
         }
 
-        auto& roadPiece = World::TrackData::getRoadPiece(res->elRoad->roadId());
+        const auto& roadPiece = World::TrackData::getRoadPiece(res->elRoad->roadId());
         return RoadExtentResult{
             World::Pos3(res->loc, res->elRoad->baseHeight() - roadPiece[0].z),
             static_cast<uint16_t>((res->elRoad->roadId() << 3) | res->elRoad->rotation()),
             res->elRoad->hasBridge()
         };
+    }
+
+    static std::optional<RoadExtentResult> findGrowthRoadExtent(Town& town)
+    {
+        const auto centreExtent = findRoadExtent(town, { town.x, town.y });
+
+        std::vector<RoadExtentResult> stations;
+        std::vector<uint32_t> stationAccessibilities;
+        uint32_t bestAccessibility = 0;
+        for (const auto& station : StationManager::stations())
+        {
+            const auto accessibility = CargoDist::getStationAccessibility(station.id());
+            if (!TownGrowth::isGrowthStationCandidate(town.id(), station.town, station.stationTileSize, station.flags, accessibility))
+            {
+                continue;
+            }
+            const auto extent = findRoadExtent(town, { station.x, station.y });
+            if (!extent.has_value())
+            {
+                continue;
+            }
+            stations.push_back(*extent);
+            stationAccessibilities.push_back(accessibility);
+            bestAccessibility = std::max(bestAccessibility, accessibility);
+        }
+
+        if (stations.empty())
+        {
+            return centreExtent;
+        }
+
+        auto selectStation = [&]() -> RoadExtentResult {
+            const auto index = TownGrowth::selectStation(stationAccessibilities, town.prng.randNext() & 0xFFFFU);
+            return stations[index.value()];
+        };
+
+        if (!centreExtent.has_value())
+        {
+            return selectStation();
+        }
+
+        // Station count cannot increase the total transit share; it only divides that share.
+        if (!TownGrowth::shouldUseStation(bestAccessibility, town.prng.randNext() & 0xFFFFU))
+        {
+            return centreExtent;
+        }
+
+        return selectStation();
     }
 
     // 0x00498101
@@ -1657,7 +1758,7 @@ namespace OpenLoco
         const auto oldUpatingCompany = GameCommands::getUpdatingCompanyId();
         GameCommands::setUpdatingCompanyId(CompanyId::neutral);
 
-        const auto extent = findRoadExtent(*this);
+        const auto extent = findGrowthRoadExtent(*this);
         if (!extent.has_value())
         {
             if ((growFlags & TownGrowFlags::buildInitialRoad) != TownGrowFlags::none)
@@ -1673,13 +1774,19 @@ namespace OpenLoco
         tad._data = extent->tad;
         if (prng.randBool())
         {
-            auto& roadSize = World::TrackData::getUnkRoad(tad._data);
-            roadStart += roadSize.pos;
+            auto oppositeRoadStart = roadStart;
+            const auto& roadSize = World::TrackData::getUnkRoad(tad._data);
+            oppositeRoadStart += roadSize.pos;
             if (roadSize.rotationEnd < 12)
             {
-                roadStart -= World::Pos3{ kRotationOffset[roadSize.rotationEnd], 0 };
+                oppositeRoadStart -= World::Pos3{ kRotationOffset[roadSize.rotationEnd], 0 };
             }
-            tad.setReversed(!tad.isReversed());
+            const auto closestTown = TownManager::getClosestTown(oppositeRoadStart);
+            if (closestTown.has_value() && *closestTown == id())
+            {
+                roadStart = oppositeRoadStart;
+                tad.setReversed(!tad.isReversed());
+            }
         }
 
         const auto idealRoadId = getIdealTownRoadId(*this);
@@ -1691,13 +1798,47 @@ namespace OpenLoco
 
         auto curRoadPos = roadStart;
         bool curOnBridge = extent->isBridge;
+        uint16_t curRoadDepth = 0;
+        std::vector<TownGrowth::RoadTraversalState> frontier;
+        std::vector<TownGrowth::RoadTraversalState> visited;
+        constexpr uint16_t kMaximumRoadVisits = 75;
+        auto resumeFromFrontier = [&]() {
+            if (frontier.empty())
+            {
+                return false;
+            }
+            const auto next = frontier.back();
+            frontier.pop_back();
+            curRoadPos = next.pos;
+            tad._data = next.tad;
+            curOnBridge = next.isBridge;
+            curRoadDepth = next.depth;
+            return true;
+        };
 
-        for (auto i = 0U; i < 75; ++i)
+        for (auto i = 0U; i < kMaximumRoadVisits; ++i)
         {
-            auto res = TownManager::getClosestTownAndDensity(curRoadPos);
-            if (!res.has_value() || res->first != id())
+            while (TownGrowth::wasRoadStateVisited(visited, curRoadPos, tad._data))
+            {
+                if (!resumeFromFrontier())
+                {
+                    break;
+                }
+            }
+            if (TownGrowth::wasRoadStateVisited(visited, curRoadPos, tad._data))
             {
                 break;
+            }
+            visited.push_back({ curRoadPos, tad._data, curOnBridge, curRoadDepth });
+
+            const auto closestTown = TownManager::getClosestTown(curRoadPos);
+            if (!closestTown.has_value() || *closestTown != id())
+            {
+                if (!resumeFromFrontier())
+                {
+                    break;
+                }
+                continue;
             }
             const auto curRoadInfo = getRoadInformation(curRoadPos, tad);
             if (curRoadInfo.owner != CompanyId::neutral)
@@ -1739,7 +1880,7 @@ namespace OpenLoco
                     {
                         if (curRoadInfo.streetLightStyle.has_value())
                         {
-                            const auto newStyle = getStreetLightStyle(curRoadInfo.roadObjId, res->second);
+                            const auto newStyle = getStreetLightStyle(curRoadInfo.roadObjId, TownManager::getTownDensity(id(), curRoadPos));
                             if (newStyle != curRoadInfo.streetLightStyle.value())
                             {
                                 if (curOnBridge || hasNearbyBuildings(World::toTileSpace(curRoadPos)))
@@ -1763,21 +1904,49 @@ namespace OpenLoco
             {
                 if ((growFlags & TownGrowFlags::allowRoadExpansion) != TownGrowFlags::none && !curRoadInfo.isStationRoadEnd)
                 {
-                    appendToRoadEnd(*this, roadEnd.nextPos, roadEnd.nextRotation, idealRoadId.value(), i, curOnBridge);
+                    appendToRoadEnd(*this, roadEnd.nextPos, roadEnd.nextRotation, idealRoadId.value(), curRoadDepth, curOnBridge);
                 }
                 break;
             }
-            auto connection = rc.connections[0];
-            // If there are multiple branches choose a random direction to walk
-            if (rc.connections.size() > 1)
+            std::vector<TownGrowth::RoadTraversalState> nextStates;
+            for (const auto connection : rc.connections)
             {
-                const auto randConnect = ((prng.randNext() & 0xFFFF) * rc.connections.size()) / 65536;
-                connection = rc.connections[randConnect];
+                const auto nextTad = connection & World::Track::AdditionalTaDFlags::basicTaDMask;
+                if (!TownGrowth::wasRoadStateVisited(visited, roadEnd.nextPos, nextTad))
+                {
+                    nextStates.push_back({
+                        roadEnd.nextPos,
+                        static_cast<uint16_t>(nextTad),
+                        static_cast<bool>(connection & World::Track::AdditionalTaDFlags::hasBridge),
+                        static_cast<uint16_t>(curRoadDepth + 1),
+                    });
+                }
             }
 
-            curRoadPos = roadEnd.nextPos;
-            curOnBridge = connection & World::Track::AdditionalTaDFlags::hasBridge;
-            tad._data = connection & World::Track::AdditionalTaDFlags::basicTaDMask;
+            if (nextStates.empty())
+            {
+                if (!resumeFromFrontier())
+                {
+                    break;
+                }
+                continue;
+            }
+
+            const auto nextIndex = nextStates.size() == 1
+                ? 0U
+                : static_cast<uint32_t>((static_cast<uint64_t>(prng.randNext() & 0xFFFFU) * nextStates.size()) / 65536);
+            for (auto index = nextStates.size(); index-- > 0;)
+            {
+                if (index != nextIndex)
+                {
+                    frontier.push_back(nextStates[index]);
+                }
+            }
+            const auto next = nextStates[nextIndex];
+            curRoadPos = next.pos;
+            curOnBridge = next.isBridge;
+            tad._data = next.tad;
+            curRoadDepth = next.depth;
             if ((growFlags & TownGrowFlags::allowRoadBranching) == TownGrowFlags::none)
             {
                 continue;

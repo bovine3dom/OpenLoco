@@ -328,10 +328,10 @@ namespace OpenLoco
             company->observationEntity = entity;
             company->observationObject = object;
             company->observationStatus = status;
-            auto closestTown = TownManager::getClosestTownAndDensity(pos);
+            auto closestTown = TownManager::getClosestTown(pos);
             if (closestTown.has_value())
             {
-                company->observationTownId = closestTown->first;
+                company->observationTownId = *closestTown;
             }
             Ui::WindowManager::invalidate(Ui::WindowType::company, enumValue(id));
             Ui::WindowManager::invalidate(Ui::WindowType::companyList);

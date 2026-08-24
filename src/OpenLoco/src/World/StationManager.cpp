@@ -614,14 +614,14 @@ namespace OpenLoco::StationManager
                 continue;
             }
 
-            auto maybeTown = TownManager::getClosestTownAndDensity(pos);
+            auto maybeTown = TownManager::getClosestTown(pos);
             if (!maybeTown)
             {
                 GameCommands::setErrorTitle(StringIds::town_must_be_built_first);
                 return StationId::null;
             }
 
-            station.town = maybeTown->first;
+            station.town = *maybeTown;
             station.owner = owner;
             station.name = generateNewStationName(station.id(), station.town, pos, mode);
 

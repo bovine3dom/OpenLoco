@@ -131,13 +131,13 @@ namespace OpenLoco::World
             return true;
         }
 
-        auto res = TownManager::getClosestTownAndDensity(loc);
+        auto res = TownManager::getClosestTown(loc);
         if (!res)
         {
             return true;
         }
 
-        auto* town = TownManager::get(res->first);
+        auto* town = TownManager::get(*res);
         if (isConstructed())
         {
             setUnk5u(unk5u() + 1);

@@ -149,12 +149,12 @@ namespace OpenLoco::GameCommands
         currency32_t totalCost = Economy::getInflationAdjustedCost(airportObj->sellCostFactor, airportObj->costIndex, 6);
 
         // Adjust number of airports for nearest town
-        auto maybeTown = TownManager::getClosestTownAndDensity(pos);
+        auto maybeTown = TownManager::getClosestTown(pos);
         if (maybeTown && (flags & Flags::apply) != 0)
         {
             if ((flags & (Flags::aiAllocated | Flags::ghost)) == 0)
             {
-                auto* town = TownManager::get(maybeTown->first);
+                auto* town = TownManager::get(*maybeTown);
                 town->numberOfAirports--;
             }
         }

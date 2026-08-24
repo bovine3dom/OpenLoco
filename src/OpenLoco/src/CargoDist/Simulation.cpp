@@ -111,12 +111,14 @@ namespace OpenLoco::CargoDist
         {
             RoutingSettings settings;
             std::array<std::optional<RoutingGraph>, 32> graphs;
+            uint32_t flowCargoMask{};
         };
 
         struct FlowCalculationResult
         {
             std::map<FlowKey, std::vector<FlowOption>> flows;
             std::map<DestinationFlowKey, std::vector<DestinationOption>> destinationFlows;
+            std::map<StationId, uint32_t> stationAccessibility;
             std::vector<uint8_t> computedCargoes;
             uint64_t solveNanoseconds{};
         };
@@ -583,13 +585,13 @@ namespace OpenLoco::CargoDist
             });
         }
 
-        uint32_t getEnabledCargoMask()
+        uint32_t getServiceCargoMask()
         {
             uint32_t mask = 0;
             const auto& state = getStateConst();
             for (uint8_t cargo = 0; cargo < state.settings.modes.size(); ++cargo)
             {
-                if (state.settings.modes[cargo] != DistributionMode::manual)
+                if (state.settings.modes[cargo] != DistributionMode::manual || isPassengerCargo(cargo))
                 {
                     mask |= 1U << cargo;
                 }
@@ -695,7 +697,7 @@ namespace OpenLoco::CargoDist
                 groups[std::move(key)].push_back(std::move(*route));
             }
 
-            const auto enabledCargoMask = getEnabledCargoMask();
+            const auto serviceCargoMask = getServiceCargoMask();
             std::map<ServiceEdgeKey, EdgeAccumulator> accumulators;
             // Q32.32 leaves enough headroom to accumulate capacity-weighted frequencies.
             constexpr uint64_t kFrequencyOne = uint64_t{ 1 } << 32;
@@ -724,7 +726,7 @@ namespace OpenLoco::CargoDist
 
                     for (uint8_t cargo = 0; cargo < member.legCapacities.front().size(); ++cargo)
                     {
-                        if ((enabledCargoMask & (1U << cargo)) == 0)
+                        if ((serviceCargoMask & (1U << cargo)) == 0)
                         {
                             continue;
                         }
@@ -1004,7 +1006,7 @@ namespace OpenLoco::CargoDist
             const auto& state = getStateConst();
             for (const auto& station : StationManager::stations())
             {
-                if (station.empty())
+                if (station.empty() || (graph.passengerRouting && (station.stationTileSize == 0 || (station.flags & StationFlags::flag_5) != StationFlags::none)))
                 {
                     continue;
                 }
@@ -1029,6 +1031,7 @@ namespace OpenLoco::CargoDist
                     accepts,
                     attraction,
                     passengerSink,
+                    station.town,
                 });
                 if (industryActivity.has_value())
                 {
@@ -1392,18 +1395,39 @@ namespace OpenLoco::CargoDist
             std::erase_if(state.destinationFlows, [cargo](const auto& item) { return item.first.cargo == cargo; });
         }
 
-        FlowCalculationInput captureFlowCalculationInput()
+        FlowCalculationInput captureFlowCalculationInput(bool includeFlowGraphs = true)
         {
             FlowCalculationInput input;
             input.settings = getStateConst().settings.routing;
             for (uint8_t cargo = 0; cargo < input.graphs.size(); ++cargo)
             {
-                if (isEnabled(cargo))
+                const auto flow = includeFlowGraphs && isEnabled(cargo);
+                const auto passenger = isPassengerCargo(cargo);
+                if (flow || passenger)
                 {
-                    input.graphs[cargo] = buildGraph(cargo);
+                    input.graphs[cargo] = buildGraph(cargo, flow);
+                    input.flowCargoMask |= static_cast<uint32_t>(flow) << cargo;
                 }
             }
             return input;
+        }
+
+        std::map<StationId, uint32_t> solveStationAccessibility(const FlowCalculationInput& input)
+        {
+            std::map<StationId, uint32_t> result;
+            for (const auto& graph : input.graphs)
+            {
+                if (!graph.has_value() || !graph->passengerRouting)
+                {
+                    continue;
+                }
+                for (const auto& accessibility : calculateStationAccessibility(*graph))
+                {
+                    auto& score = result[accessibility.station];
+                    score = std::max(score, accessibility.score);
+                }
+            }
+            return result;
         }
 
         FlowCalculationResult solveFlowCalculation(const FlowCalculationInput& input)
@@ -1411,12 +1435,13 @@ namespace OpenLoco::CargoDist
             FlowCalculationResult result;
             for (uint8_t cargo = 0; cargo < input.graphs.size(); ++cargo)
             {
-                if (input.graphs[cargo].has_value())
+                if ((input.flowCargoMask & (1U << cargo)) != 0)
                 {
                     buildFlowMaps(result.flows, result.destinationFlows, cargo, calculateAsymmetricFlows(*input.graphs[cargo], input.settings));
                     result.computedCargoes.push_back(cargo);
                 }
             }
+            result.stationAccessibility = solveStationAccessibility(input);
             return result;
         }
 
@@ -1596,12 +1621,21 @@ namespace OpenLoco::CargoDist
             auto& state = getState();
             state.flows = std::move(result.flows);
             state.destinationFlows = std::move(result.destinationFlows);
+            state.stationAccessibility = std::move(result.stationAccessibility);
+            state.hasStationAccessibilitySnapshot = true;
             ++state.routingRevision;
             for (const auto cargo : result.computedCargoes)
             {
                 rerouteWaitingCargo(cargo);
                 invalidateJourneyGraph(cargo);
             }
+        }
+
+        void rebuildStationAccessibility()
+        {
+            const auto input = captureFlowCalculationInput(false);
+            getState().stationAccessibility = solveStationAccessibility(input);
+            getState().hasStationAccessibilitySnapshot = true;
         }
 
         void recalculateFlows()
@@ -1660,7 +1694,7 @@ namespace OpenLoco::CargoDist
         {
             state.stationAttraction.insert_or_assign(key, attraction);
         }
-        if (isEnabled(cargo))
+        if (isEnabled(cargo) || isPassengerCargo(cargo))
         {
             markGraphDirty();
         }
@@ -2173,8 +2207,10 @@ namespace OpenLoco::CargoDist
     {
         cancelPendingRecalculation();
         auto& state = getState();
-        if (std::none_of(state.settings.modes.begin(), state.settings.modes.end(), [](auto mode) { return mode != DistributionMode::manual; }))
+        if (getServiceCargoMask() == 0)
         {
+            state.stationAccessibility.clear();
+            state.hasStationAccessibilitySnapshot = true;
             state.graphDirty = false;
             state.servicesDirty = false;
             return;
@@ -2291,6 +2327,17 @@ namespace OpenLoco::CargoDist
                 throw std::runtime_error("Invalid CargoDist station attraction state");
             }
         }
+        if (!state.hasStationAccessibilitySnapshot && !state.stationAccessibility.empty())
+        {
+            throw std::runtime_error("CargoDist station accessibility has no committed snapshot");
+        }
+        for (const auto& entry : state.stationAccessibility)
+        {
+            if (!isActiveStation(entry.first) || entry.second == 0)
+            {
+                throw std::runtime_error("Invalid CargoDist station accessibility state");
+            }
+        }
         for (const auto& [key, packets] : state.stationCargo)
         {
             if (!isEnabled(key.cargo) || !isActiveStation(key.station) || !validatePackets(packets))
@@ -2395,6 +2442,10 @@ namespace OpenLoco::CargoDist
             }
         }
         validateState(state, getGameState());
+        const auto hasSavedStationAccessibility = state.hasStationAccessibilitySnapshot;
+        auto savedStationAccessibility = std::move(state.stationAccessibility);
+        state.stationAccessibility.clear();
+        state.hasStationAccessibilitySnapshot = false;
         const auto refreshStationMetadata = state.requiresStationMetadataRefresh;
         state.requiresStationMetadataRefresh = false;
         state.serviceEdges.clear();
@@ -2402,7 +2453,6 @@ namespace OpenLoco::CargoDist
         state.routingRevision = getStateConst().routingRevision + 1;
         state.cargoRevision = getStateConst().cargoRevision + 1;
 
-        const auto needsRecalculation = state.graphDirty;
         getState() = std::move(state);
         if (refreshStationMetadata)
         {
@@ -2412,19 +2462,27 @@ namespace OpenLoco::CargoDist
             }
         }
         rebuildServiceEdges();
-        if (needsRecalculation || !hasValidServicePlans())
+        const auto needsRecalculation = getStateConst().graphDirty || !hasValidServicePlans();
+        if (needsRecalculation)
         {
             recalculateFlows();
-            getState().graphDirty = false;
+            // Keep the committed snapshot until the normal worker can replace it.
+            getState().graphDirty = hasSavedStationAccessibility;
+        }
+        else if (!hasSavedStationAccessibility)
+        {
+            rebuildStationAccessibility();
+        }
+        if (hasSavedStationAccessibility)
+        {
+            getState().stationAccessibility = std::move(savedStationAccessibility);
+            getState().hasStationAccessibilitySnapshot = true;
         }
     }
 
     void updateDaily()
     {
-        const auto anyEnabled = std::any_of(getStateConst().settings.modes.begin(), getStateConst().settings.modes.end(), [](auto mode) {
-            return mode != DistributionMode::manual;
-        });
-        if (!anyEnabled)
+        if (getServiceCargoMask() == 0)
         {
             return;
         }
@@ -2466,6 +2524,7 @@ namespace OpenLoco::CargoDist
         std::erase_if(state.vehicleCargo, [](const auto& item) { return item.second.empty(); });
         std::erase_if(state.supply, [station](const auto& item) { return item.first.second == station; });
         std::erase_if(state.stationAttraction, [station](const auto& item) { return item.first.station == station; });
+        state.stationAccessibility.erase(station);
         std::erase_if(state.serviceEdges, [station](const auto& item) { return item.first.from == station || item.first.to == station; });
         for (auto it = state.flows.begin(); it != state.flows.end();)
         {

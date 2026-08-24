@@ -90,14 +90,14 @@ namespace OpenLoco::GameCommands
             }
         }
 
-        const auto res = TownManager::getClosestTownAndDensity(pos);
+        const auto res = TownManager::getClosestTown(pos);
         if (!res.has_value())
         {
             GameCommands::setErrorText(StringIds::town_must_be_built_nearby_first);
             return IndustryId::null;
         }
 
-        const auto id = IndustryManager::allocateNewIndustry(type, pos, prng, res->first);
+        const auto id = IndustryManager::allocateNewIndustry(type, pos, prng, *res);
         if (id != IndustryId::null)
         {
             return id;

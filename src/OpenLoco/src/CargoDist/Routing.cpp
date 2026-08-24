@@ -461,8 +461,8 @@ namespace OpenLoco::CargoDist
                         }),
                         nodes.end());
             std::sort(nodes.begin(), nodes.end(), [](const auto& lhs, const auto& rhs) {
-                return std::make_tuple(stationValue(lhs.station), lhs.x, lhs.y, lhs.supply, lhs.accepts, lhs.attraction)
-                    < std::make_tuple(stationValue(rhs.station), rhs.x, rhs.y, rhs.supply, rhs.accepts, rhs.attraction);
+                return std::make_tuple(stationValue(lhs.station), lhs.x, lhs.y, lhs.supply, lhs.accepts, lhs.attraction, lhs.passengerSink, lhs.town)
+                    < std::make_tuple(stationValue(rhs.station), rhs.x, rhs.y, rhs.supply, rhs.accepts, rhs.attraction, rhs.passengerSink, rhs.town);
             });
             nodes.erase(std::unique(nodes.begin(), nodes.end(), [](const auto& lhs, const auto& rhs) {
                             return lhs.station == rhs.station;
@@ -1808,5 +1808,140 @@ namespace OpenLoco::CargoDist
             return kUnreachableJourneyCost;
         }
         return found->cost;
+    }
+
+    std::vector<StationAccessibility> calculateStationAccessibility(const RoutingGraph& graph)
+    {
+        if (!graph.passengerRouting)
+        {
+            return {};
+        }
+
+        const auto nodes = canonicalNodes(graph);
+        struct AccessibilityEdge
+        {
+            size_t to;
+            uint32_t capacity;
+        };
+
+        const auto planned = makePlannedGraph(graph, nodes);
+        const auto costAdjacency = makeAdjacency(planned.nodeStations.size(), planned.edges);
+        std::map<StationId, size_t> stationIndices;
+        for (size_t index = 0; index < nodes.size(); ++index)
+        {
+            stationIndices.emplace(nodes[index].station, index);
+        }
+        std::vector<std::vector<AccessibilityEdge>> adjacency(nodes.size());
+        for (const auto& edge : graph.edges)
+        {
+            const auto from = stationIndices.find(edge.from);
+            const auto to = stationIndices.find(edge.to);
+            if (from == stationIndices.end() || to == stationIndices.end() || edge.capacity == 0)
+            {
+                continue;
+            }
+            adjacency[from->second].push_back({ to->second, edge.capacity });
+        }
+        for (auto& edges : adjacency)
+        {
+            std::sort(edges.begin(), edges.end(), [](const auto& lhs, const auto& rhs) {
+                if (lhs.to != rhs.to)
+                {
+                    return lhs.to < rhs.to;
+                }
+                return lhs.capacity > rhs.capacity;
+            });
+        }
+
+        const auto unreachable = std::numeric_limits<uint64_t>::max();
+        const auto unlimitedCapacity = std::numeric_limits<uint32_t>::max();
+        std::vector<std::vector<uint64_t>> journeyCosts(nodes.size(), std::vector<uint64_t>(nodes.size(), unreachable));
+        std::vector<std::vector<uint32_t>> journeyCapacities(nodes.size(), std::vector<uint32_t>(nodes.size()));
+        ShortestPathScratch costScratch;
+        for (size_t source = 0; source < nodes.size(); ++source)
+        {
+            auto& costs = journeyCosts[source];
+            auto& capacities = journeyCapacities[source];
+            shortestPath(source, kNoIndex, nodes, planned.nodeStations, planned.edges, costAdjacency, graph.timeSensitive, 100, kNoIndex, source, costScratch);
+            std::copy_n(costScratch.distance.begin(), nodes.size(), costs.begin());
+
+            std::priority_queue<std::pair<uint32_t, size_t>> capacityQueue;
+            capacities[source] = unlimitedCapacity;
+            capacityQueue.emplace(unlimitedCapacity, source);
+            while (!capacityQueue.empty())
+            {
+                const auto [capacity, current] = capacityQueue.top();
+                capacityQueue.pop();
+                if (capacity != capacities[current])
+                {
+                    continue;
+                }
+                for (const auto& edge : adjacency[current])
+                {
+                    const auto candidateCapacity = std::min(capacity, edge.capacity);
+                    if (candidateCapacity > capacities[edge.to])
+                    {
+                        capacities[edge.to] = candidateCapacity;
+                        capacityQueue.emplace(candidateCapacity, edge.to);
+                    }
+                }
+            }
+        }
+
+        // Fastest journey and widest corridor are independent network qualities. Capacity
+        // has diminishing returns, and each town contributes only its best reachable station.
+        constexpr uint32_t kMaximumUsefulCapacity = 256;
+        std::vector<StationAccessibility> result;
+        for (size_t source = 0; source < nodes.size(); ++source)
+        {
+            std::map<std::tuple<bool, uint16_t>, uint32_t> bestByTown;
+            for (size_t destination = 0; destination < nodes.size(); ++destination)
+            {
+                const auto& destinationNode = nodes[destination];
+                if (source == destination || !destinationNode.accepts || destinationNode.attraction == 0)
+                {
+                    continue;
+                }
+
+                const auto outwardCost = journeyCosts[source][destination];
+                const auto returnCost = journeyCosts[destination][source];
+                if (outwardCost == kUnreachableJourneyCost || returnCost == kUnreachableJourneyCost)
+                {
+                    continue;
+                }
+
+                const auto capacity = std::min({ journeyCapacities[source][destination], journeyCapacities[destination][source], kMaximumUsefulCapacity });
+                if (capacity == 0)
+                {
+                    continue;
+                }
+                const auto averageCost = outwardCost / 2 + returnCost / 2
+                    + (outwardCost % 2 + returnCost % 2 + 1) / 2;
+                const auto denominator = averageCost > std::numeric_limits<uint64_t>::max() - capacity
+                    ? std::numeric_limits<uint64_t>::max()
+                    : averageCost + capacity;
+                const auto weightedAttraction = static_cast<uint64_t>(destinationNode.attraction) * capacity;
+                const auto contribution = static_cast<uint32_t>(weightedAttraction / denominator);
+                if (contribution == 0)
+                {
+                    continue;
+                }
+                const auto townKey = destinationNode.town == TownId::null
+                    ? std::tuple{ false, stationValue(destinationNode.station) }
+                    : std::tuple{ true, static_cast<uint16_t>(destinationNode.town) };
+                bestByTown[townKey] = std::max(bestByTown[townKey], contribution);
+            }
+
+            uint64_t score = 0;
+            for (const auto& item : bestByTown)
+            {
+                score += item.second;
+            }
+            if (score != 0)
+            {
+                result.push_back({ nodes[source].station, static_cast<uint32_t>(std::min<uint64_t>(score, std::numeric_limits<uint32_t>::max())) });
+            }
+        }
+        return result;
     }
 }

@@ -1331,7 +1331,7 @@ namespace OpenLoco::World::TileManager
                         {
                             if (buildingObj->townAmenityCategory != TownAmenityCategory::none)
                             {
-                                town->amenityCounts[enumValue(buildingObj->townAmenityCategory)] -= 1;
+                                TownManager::adjustAmenityCount(town->id(), enumValue(buildingObj->townAmenityCategory), -1);
                             }
                         }
                     }

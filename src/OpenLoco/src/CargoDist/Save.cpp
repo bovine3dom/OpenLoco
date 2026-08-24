@@ -23,7 +23,7 @@ namespace OpenLoco::CargoDist
             std::byte{ 'T' },
             std::byte{ 0 },
         };
-        constexpr uint16_t kVersion = 7;
+        constexpr uint16_t kVersion = 8;
         constexpr uint16_t kHeaderSize = 16;
         constexpr uint32_t kMaxStationLists = S5::Limits::kMaxStations * S5::Limits::kMaxCargoObjects;
         constexpr uint32_t kMaxVehicleLists = S5::Limits::kMaxEntities * 2;
@@ -451,6 +451,19 @@ namespace OpenLoco::CargoDist
             payload.write(adjustment);
         }
 
+        require(state.hasStationAccessibilitySnapshot || state.stationAccessibility.empty(), "CargoDist station accessibility has no committed snapshot");
+        require(state.stationAccessibility.size() <= S5::Limits::kMaxStations, "Too many CargoDist station accessibility entries");
+        payload.write(static_cast<uint8_t>(state.hasStationAccessibilitySnapshot));
+        payload.write<uint8_t>(0);
+        payload.write<uint16_t>(0);
+        payload.write(static_cast<uint32_t>(state.stationAccessibility.size()));
+        for (const auto& [station, accessibility] : state.stationAccessibility)
+        {
+            require(isValidStation(station) && accessibility != 0, "Invalid CargoDist station accessibility entry");
+            payload.write(stationValue(station));
+            payload.write(accessibility);
+        }
+
         require(payload.data().size() <= kMaxSaveDataSize - kHeaderSize, "CargoDist save data is too large");
         Encoder result;
         result.writeBytes(std::span{ kMagic });
@@ -628,6 +641,28 @@ namespace OpenLoco::CargoDist
             }
         }
 
+        if (version >= 8)
+        {
+            const auto hasStationAccessibilitySnapshot = decoder.read<uint8_t>();
+            require(hasStationAccessibilitySnapshot <= 1, "Invalid CargoDist station accessibility snapshot state");
+            state.hasStationAccessibilitySnapshot = hasStationAccessibilitySnapshot != 0;
+            decoder.read<uint8_t>();
+            decoder.read<uint16_t>();
+            const auto accessibilityCount = decoder.read<uint32_t>();
+            require(accessibilityCount <= S5::Limits::kMaxStations && accessibilityCount <= decoder.remaining() / (sizeof(uint16_t) + sizeof(uint32_t)), "Too many CargoDist station accessibility entries");
+            require(state.hasStationAccessibilitySnapshot || accessibilityCount == 0, "CargoDist station accessibility has no committed snapshot");
+            uint16_t previousStation{};
+            for (uint32_t i = 0; i < accessibilityCount; ++i)
+            {
+                const auto station = StationId(decoder.read<uint16_t>());
+                const auto accessibility = decoder.read<uint32_t>();
+                require(isValidStation(station) && accessibility != 0, "Invalid CargoDist station accessibility entry");
+                require(i == 0 || previousStation < stationValue(station), "Non-canonical CargoDist station accessibility order");
+                state.stationAccessibility.emplace(station, accessibility);
+                previousStation = stationValue(station);
+            }
+        }
+
         require(decoder.empty(), "Trailing CargoDist save data");
         if (version < 4)
         {
@@ -638,6 +673,11 @@ namespace OpenLoco::CargoDist
         {
             state.stationAttraction.clear();
             state.graphDirty = true;
+        }
+        if (version < 8)
+        {
+            state.stationAccessibility.clear();
+            state.hasStationAccessibilitySnapshot = false;
             state.requiresStationMetadataRefresh = true;
         }
         return state;

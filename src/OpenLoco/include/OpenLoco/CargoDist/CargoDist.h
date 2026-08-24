@@ -253,6 +253,8 @@ namespace OpenLoco::CargoDist
         std::map<StationCargoKey, uint32_t> stationAttraction;
         std::map<ServiceEdgeKey, ServiceEdgeStats> serviceEdges;
         std::map<EntityId, std::vector<VehicleServiceLeg>> vehicleServiceLegs;
+        std::map<StationId, uint32_t> stationAccessibility;
+        bool hasStationAccessibilitySnapshot{};
         std::map<FlowKey, std::vector<FlowOption>> flows;
         std::map<DestinationFlowKey, std::vector<DestinationOption>> destinationFlows;
         std::map<EntityId, int64_t> pendingVehicleRevenueAdjustments;
@@ -267,6 +269,7 @@ namespace OpenLoco::CargoDist
     State& getState();
     const State& getStateConst();
     void reset();
+    uint32_t getStationAccessibility(StationId station);
 
     DistributionMode getMode(uint8_t cargo);
     bool isEnabled(uint8_t cargo);

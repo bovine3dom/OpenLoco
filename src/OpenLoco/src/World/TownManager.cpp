@@ -1,4 +1,5 @@
 #include "World/TownManager.h"
+#include "CargoDist/CargoDist.h"
 #include "Game.h"
 #include "GameCommands/GameCommands.h"
 #include "GameState.h"
@@ -20,13 +21,122 @@
 #include "SceneManager.h"
 #include "Ui/WindowManager.h"
 #include "World/CompanyManager.h"
+#include "World/StationManager.h"
 #include <OpenLoco/Core/EnumFlags.hpp>
 #include <OpenLoco/Core/Numerics.hpp>
+#include <type_traits>
 
 using namespace OpenLoco::World;
 
 namespace OpenLoco::TownManager
 {
+    using AmenityCounts = std::array<uint32_t, std::extent_v<decltype(Town::amenityCounts)>>;
+
+    struct TownRuntimeMetrics
+    {
+        uint32_t buildingCount{};
+        AmenityCounts amenityCounts{};
+    };
+
+    // Town's legacy counters remain clamped mirrors for S5 compatibility.
+    static std::array<TownRuntimeMetrics, Limits::kMaxTowns> _runtimeMetrics{};
+
+    static uint32_t adjustCount(uint32_t count, int32_t delta)
+    {
+        const auto adjusted = static_cast<int64_t>(count) + delta;
+        return static_cast<uint32_t>(std::clamp<int64_t>(adjusted, 0, std::numeric_limits<uint32_t>::max()));
+    }
+
+    static void adjustBuildingCount(Town& town, int32_t delta)
+    {
+        auto& count = _runtimeMetrics[enumValue(town.id())].buildingCount;
+        count = adjustCount(count, delta);
+        town.numBuildings = static_cast<int16_t>(std::min<uint32_t>(count, std::numeric_limits<int16_t>::max()));
+    }
+
+    static uint32_t getLocalPopulationPressure(const World::Pos2& loc)
+    {
+        constexpr auto kRadius = 8;
+        const auto centre = World::toTileSpace(loc);
+        uint32_t pressure = 0;
+        for (const auto& tilePos : World::getClampedRange(centre - World::TilePos2{ kRadius, kRadius }, centre + World::TilePos2{ kRadius, kRadius }))
+        {
+            const auto distance = std::max(std::abs(tilePos.x - centre.x), std::abs(tilePos.y - centre.y));
+            const uint32_t weight = distance <= 2 ? 4 : distance <= 4 ? 2
+                                                                    : 1;
+            for (const auto& element : World::TileManager::get(tilePos))
+            {
+                const auto* building = element.as<World::BuildingElement>();
+                if (building == nullptr || building->isGhost() || building->isMiscBuilding() || !building->isConstructed() || building->sequenceIndex() != 0)
+                {
+                    continue;
+                }
+                const auto* buildingObj = ObjectManager::get<BuildingObject>(building->objectId());
+                pressure += buildingObj->producedQuantity[0] * weight;
+            }
+        }
+        return pressure;
+    }
+
+    static uint32_t getTransportAccessibility(const TownId id, const World::Pos2& loc)
+    {
+        constexpr auto kRadius = 8 * World::kTileSize;
+        uint32_t best = 0;
+        uint32_t secondBest = 0;
+        for (const auto& station : StationManager::stations())
+        {
+            if (station.town != id || station.stationTileSize == 0 || (station.flags & StationFlags::flag_5) != StationFlags::none)
+            {
+                continue;
+            }
+            const auto accessibility = CargoDist::getStationAccessibility(station.id());
+            const auto distance = std::max(std::abs(station.x - loc.x), std::abs(station.y - loc.y));
+            if (accessibility == 0 || distance >= kRadius)
+            {
+                continue;
+            }
+            const auto weighted = static_cast<uint32_t>(static_cast<uint64_t>(accessibility) * (kRadius - distance) / kRadius);
+            if (weighted > best)
+            {
+                secondBest = best;
+                best = weighted;
+            }
+            else if (weighted > secondBest)
+            {
+                secondBest = weighted;
+            }
+        }
+        return static_cast<uint32_t>(std::min<uint64_t>(static_cast<uint64_t>(best) + secondBest / 2, std::numeric_limits<uint32_t>::max()));
+    }
+
+    uint8_t calculateTownDensity(const uint32_t localPopulationPressure, const uint32_t transportAccessibility, const uint32_t townPopulationCapacity)
+    {
+        constexpr std::array<uint32_t, 3> kDensityThresholds = { 256, 1024, 3072 };
+        const auto transportPressure = std::min<uint64_t>(static_cast<uint64_t>(transportAccessibility) * 8, 4096);
+        const auto pressure = static_cast<uint64_t>(localPopulationPressure) + transportPressure;
+        uint8_t density = 0;
+        while (density < kDensityThresholds.size() && pressure >= kDensityThresholds[density])
+        {
+            ++density;
+        }
+
+        const uint8_t maximumDensity = townPopulationCapacity < kTownSizeCapacityThresholds[1] ? 0
+            : townPopulationCapacity < kTownSizeCapacityThresholds[2]                           ? 1
+            : townPopulationCapacity < kTownSizeCapacityThresholds[3]                           ? 2
+                                                                                                : 3;
+        return std::min(density, maximumDensity);
+    }
+
+    uint8_t getTownDensity(const TownId id, const World::Pos2& loc)
+    {
+        const auto* town = get(id);
+        if (town == nullptr || town->empty())
+        {
+            return 0;
+        }
+        return calculateTownDensity(getLocalPopulationPressure(loc), getTransportAccessibility(id, loc), town->populationCapacity);
+    }
+
     // 0x0049B45F
     static uint32_t calcCargoInfluenceFlags(const Town& town)
     {
@@ -254,6 +364,8 @@ namespace OpenLoco::TownManager
         }
 
         // Initialise the new town
+        const auto townIndex = enumValue(town->id());
+        _runtimeMetrics[townIndex] = {};
         town->x = pos.x;
         town->y = pos.y;
         town->flags = TownFlags::none;
@@ -314,13 +426,12 @@ namespace OpenLoco::TownManager
     // ebp rating | (numBuildings << 16)
     Town* updateTownInfo(const World::Pos2& loc, uint32_t population, uint32_t populationCapacity, int16_t rating, int16_t numBuildings)
     {
-        auto res = getClosestTownAndDensity(loc);
-        if (res == std::nullopt)
+        auto townId = getClosestTown(loc);
+        if (townId == std::nullopt)
         {
             return nullptr;
         }
-        auto townId = res->first;
-        auto town = get(townId);
+        auto town = get(*townId);
 
         if (town == nullptr)
         {
@@ -348,23 +459,26 @@ namespace OpenLoco::TownManager
             }
         }
 
-        if (town->numBuildings + numBuildings <= std::numeric_limits<int16_t>::max())
+        if (numBuildings != 0)
         {
-            town->numBuildings += numBuildings;
+            adjustBuildingCount(*town, numBuildings);
         }
 
         return town;
     }
 
-    // 0x00497348
-    void resetBuildingsInfluence()
+    static void rebuildBuildingMetrics(bool rebuildInfluence)
     {
+        _runtimeMetrics = {};
         for (auto& town : towns())
         {
             town.numBuildings = 0;
-            town.population = 0;
-            town.populationCapacity = 0;
             std::fill(std::begin(town.amenityCounts), std::end(town.amenityCounts), 0);
+            if (rebuildInfluence)
+            {
+                town.population = 0;
+                town.populationCapacity = 0;
+            }
         }
 
         for (const auto& tilePos : World::getWorldRange())
@@ -395,32 +509,37 @@ namespace OpenLoco::TownManager
 
                 auto objectId = building->objectId();
                 auto* buildingObj = ObjectManager::get<BuildingObject>(objectId);
-                auto producedQuantity = buildingObj->producedQuantity[0];
-                uint32_t population;
-                if (!building->isConstructed())
-                {
-                    population = 0;
-                }
-                else
-                {
-                    population = producedQuantity;
-                }
-                auto* town = updateTownInfo(World::toWorldSpace(tilePos), population, producedQuantity, 0, 1);
+                const auto producedQuantity = buildingObj->producedQuantity[0];
+                const auto population = rebuildInfluence && building->isConstructed() ? producedQuantity : 0;
+                const auto populationCapacity = rebuildInfluence ? producedQuantity : 0;
+                auto* town = updateTownInfo(World::toWorldSpace(tilePos), population, populationCapacity, 0, 1);
                 if (town != nullptr)
                 {
                     if (buildingObj->townAmenityCategory != TownAmenityCategory::none)
                     {
-                        town->amenityCounts[enumValue(buildingObj->townAmenityCategory)] += 1;
+                        adjustAmenityCount(town->id(), enumValue(buildingObj->townAmenityCategory), 1);
                     }
                 }
             }
         }
+    }
+
+    void rebuildRuntimeMetrics()
+    {
+        rebuildBuildingMetrics(false);
+    }
+
+    // 0x00497348
+    void resetBuildingsInfluence()
+    {
+        rebuildBuildingMetrics(true);
         Gfx::invalidateScreen();
     }
 
     // 0x00496B38
     void reset()
     {
+        _runtimeMetrics = {};
         for (auto& town : rawTowns())
         {
             town.name = StringIds::null;
@@ -440,6 +559,39 @@ namespace OpenLoco::TownManager
             return nullptr;
         }
         return &rawTowns()[enumValue(id)];
+    }
+
+    uint32_t getBuildingCount(TownId id)
+    {
+        const auto index = enumValue(id);
+        if (index >= Limits::kMaxTowns || rawTowns()[index].empty())
+        {
+            return 0;
+        }
+        return _runtimeMetrics[index].buildingCount;
+    }
+
+    uint32_t getAmenityCount(TownId id, size_t category)
+    {
+        const auto index = enumValue(id);
+        if (index >= Limits::kMaxTowns || category >= std::tuple_size_v<AmenityCounts> || rawTowns()[index].empty())
+        {
+            return 0;
+        }
+        return _runtimeMetrics[index].amenityCounts[category];
+    }
+
+    void adjustAmenityCount(TownId id, size_t category, int32_t delta)
+    {
+        const auto index = enumValue(id);
+        if (index >= Limits::kMaxTowns || category >= std::tuple_size_v<AmenityCounts> || rawTowns()[index].empty())
+        {
+            return;
+        }
+
+        auto& count = _runtimeMetrics[index].amenityCounts[category];
+        count = adjustCount(count, delta);
+        rawTowns()[index].amenityCounts[category] = static_cast<uint8_t>(std::min<uint32_t>(count, std::numeric_limits<uint8_t>::max()));
     }
 
     // 0x00496B6D
@@ -481,8 +633,7 @@ namespace OpenLoco::TownManager
         Ui::WindowManager::invalidate(Ui::WindowType::town);
     }
 
-    // 0x00497E52
-    std::optional<std::pair<TownId, uint8_t>> getClosestTownAndDensity(const World::Pos2& loc)
+    std::optional<TownId> getClosestTown(const World::Pos2& loc)
     {
         int32_t closestDistance = std::numeric_limits<uint16_t>::max();
         auto closestTown = TownId::null; // ebx
@@ -501,18 +652,9 @@ namespace OpenLoco::TownManager
             return std::nullopt;
         }
 
-        const auto* town = get(closestTown);
-        if (town == nullptr)
-        {
-            return std::nullopt;
-        }
-        const int32_t realDistance = Math::Vector::distance2D(World::Pos2(town->x, town->y), loc);
-        // Works out a proxy for how likely there is to be buildings at the location
-        // i.e. how dense the area is.
-        const auto unk = std::clamp((realDistance - town->numBuildings * 4 + 512) / 128, 0, 4);
-        const uint8_t density = std::min(4 - unk, 3); // edx
-        return { std::make_pair(town->id(), density) };
+        return closestTown;
     }
+
 }
 
 OpenLoco::TownId OpenLoco::Town::id() const

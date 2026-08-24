@@ -370,15 +370,14 @@ namespace OpenLoco::IndustryManager
             }
             if (indObj->hasFlags(IndustryObjectFlags::builtNearTown))
             {
-                auto res = TownManager::getClosestTownAndDensity(randomPos);
-                if (!res.has_value())
+                const auto townId = TownManager::getClosestTown(randomPos);
+                if (!townId.has_value())
                 {
                     continue;
                 }
-                const auto& [townId, density] = *res;
-                if (density == 0)
+                if (TownManager::getTownDensity(*townId, randomPos) == 0)
                 {
-                    const auto* town = TownManager::get(townId);
+                    const auto* town = TownManager::get(*townId);
                     if (Math::Vector::manhattanDistance2D(randomPos, World::Pos2{ town->x, town->y }) > kIndustryDistToBeNearTownMax)
                     {
                         continue;
@@ -387,12 +386,12 @@ namespace OpenLoco::IndustryManager
             }
             if (indObj->hasFlags(IndustryObjectFlags::builtAwayFromTown))
             {
-                auto res = TownManager::getClosestTownAndDensity(randomPos);
+                auto res = TownManager::getClosestTown(randomPos);
                 if (!res.has_value())
                 {
                     continue;
                 }
-                const auto townId = res->first;
+                const auto townId = *res;
                 const auto* town = TownManager::get(townId);
                 if (Math::Vector::manhattanDistance2D(randomPos, World::Pos2{ town->x, town->y }) < kIndustryDistToBeAwayTownMin)
                 {

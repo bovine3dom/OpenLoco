@@ -307,13 +307,13 @@ namespace OpenLoco::GameCommands
             return kFailure;
         }
 
-        const auto closestTown = TownManager::getClosestTownAndDensity(args.pos);
+        const auto closestTown = TownManager::getClosestTown(args.pos);
         if (!closestTown.has_value())
         {
             return kFailure;
         }
 
-        auto* town = TownManager::get(closestTown->first);
+        auto* town = TownManager::get(*closestTown);
         if (town->numberOfAirports >= 4)
         {
             setErrorText(StringIds::town_will_not_allow_airport_to_be_built_here);

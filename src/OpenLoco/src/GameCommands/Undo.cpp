@@ -18,6 +18,7 @@
 #include "Vehicles/SharedOrderManager.h"
 #include "World/CompanyManager.h"
 #include "World/StationManager.h"
+#include "World/TownManager.h"
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -888,6 +889,7 @@ namespace OpenLoco::GameCommands::Undo
         {
             std::memcpy(state + patch.offset, patch.before.data(), patch.before.size());
         }
+        TownManager::rebuildRuntimeMetrics();
         Vehicles::OrderManager::clearNumDisplayFrames();
         bool sharedOrdersRestored = true;
         if (history.sharedOrders.has_value())

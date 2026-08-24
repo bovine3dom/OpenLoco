@@ -6,6 +6,7 @@
 #include <OpenLoco/Engine/Ui/Point.hpp>
 #include <OpenLoco/LabelFrame.h>
 #include <OpenLoco/Map/Tile.h>
+#include <array>
 #include <limits>
 #include <optional>
 
@@ -46,6 +47,8 @@ namespace OpenLoco
         city,
         metropolis,
     };
+
+    constexpr std::array<uint32_t, 5> kTownSizeCapacityThresholds = { 0, 500, 2500, 10000, 25000 };
 
     namespace Gfx
     {
