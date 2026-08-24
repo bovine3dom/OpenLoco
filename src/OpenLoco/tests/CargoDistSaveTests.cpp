@@ -348,7 +348,7 @@ TEST(CargoDistSave, RoundTripsCanonicalState)
     expectStatesEqual(original, decoded);
     EXPECT_TRUE(decoded.serviceEdges.empty());
     EXPECT_TRUE(decoded.vehicleServiceLegs.empty());
-    EXPECT_EQ(std::to_integer<uint8_t>(encoded[8]), 8);
+    EXPECT_EQ(std::to_integer<uint8_t>(encoded[8]), 9);
 }
 
 TEST(CargoDistSave, MigratesVersionOneWithoutStationAttraction)
@@ -424,6 +424,19 @@ TEST(CargoDistSave, MigratesVersionSevenWithoutAccessibilitySnapshot)
     EXPECT_TRUE(decoded.stationAccessibility.empty());
     EXPECT_FALSE(decoded.hasStationAccessibilitySnapshot);
     EXPECT_TRUE(decoded.requiresStationMetadataRefresh);
+}
+
+TEST(CargoDistSave, MigratesVersionEightAndForcesRecalculation)
+{
+    State state;
+    state.hasStationAccessibilitySnapshot = true;
+    auto encoded = encodeState(state);
+    encoded[8] = std::byte{ 8 };
+
+    const auto decoded = decodeState(encoded);
+
+    EXPECT_TRUE(decoded.graphDirty);
+    EXPECT_TRUE(decoded.hasStationAccessibilitySnapshot);
 }
 
 TEST(CargoDistSave, RoundTripsStationCargoAboveNativeLimit)
@@ -544,7 +557,7 @@ TEST(CargoDistSave, RejectsPacketCountLargerThanPayload)
 TEST(CargoDistSave, RejectsUnknownVersion)
 {
     auto encoded = encodeState(populatedState());
-    encoded[8] = std::byte{ 9 };
+    encoded[8] = std::byte{ 10 };
 
     EXPECT_THROW(decodeState(encoded), std::runtime_error);
 }

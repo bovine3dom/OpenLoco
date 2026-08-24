@@ -299,6 +299,14 @@ TEST(CargoDistSimulation, PassengerIndustryBonusRemainsBoundedWithManyStations)
     EXPECT_EQ(getPassengerIndustryAttraction(8, getSharedPassengerIndustryBonus(8, 9, 8)), 0U);
 }
 
+TEST(CargoDistSimulation, PassengerIndustrySinkRequiresSupplyOnlyFromProducers)
+{
+    EXPECT_TRUE(isPassengerIndustrySink(false, false));
+    EXPECT_TRUE(isPassengerIndustrySink(false, true));
+    EXPECT_TRUE(isPassengerIndustrySink(true, false));
+    EXPECT_FALSE(isPassengerIndustrySink(true, true));
+}
+
 TEST_F(CargoDistServiceSimulationTest, ZeroProductionIsANoOp)
 {
     ASSERT_FALSE(getStateConst().graphDirty);

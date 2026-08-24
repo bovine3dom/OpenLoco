@@ -961,7 +961,6 @@ namespace OpenLoco::CargoDist
         struct PassengerIndustryActivity
         {
             uint32_t previousMonthVisitors{};
-            uint32_t currentMonthVisitors{};
         };
 
         std::optional<PassengerIndustryActivity> getPassengerIndustryActivity(const IndustryId industryId, const uint8_t cargo)
@@ -985,7 +984,6 @@ namespace OpenLoco::CargoDist
                 {
                     requiresPassengers = true;
                     activity.previousMonthVisitors = std::max<uint32_t>(activity.previousMonthVisitors, industry->receivedCargoQuantityPreviousMonth[i]);
-                    activity.currentMonthVisitors = std::max<uint32_t>(activity.currentMonthVisitors, industry->receivedCargoQuantityMonthlyTotal[i]);
                 }
             }
             return requiresPassengers ? std::optional<PassengerIndustryActivity>{ activity } : std::nullopt;
@@ -996,6 +994,7 @@ namespace OpenLoco::CargoDist
             struct PassengerIndustryGroup
             {
                 uint32_t bonus{};
+                bool hasOutboundSupply{};
                 std::vector<size_t> nodes;
             };
 
@@ -1020,9 +1019,9 @@ namespace OpenLoco::CargoDist
                 }
                 const auto industryId = station.cargoStats[cargo].industryId;
                 const auto industryPassengerSink = graph.passengerRouting && industryId != IndustryId::null;
-                const auto industryActivity = industryPassengerSink ? getPassengerIndustryActivity(industryId, cargo) : std::nullopt;
-                const auto passengerSink = industryPassengerSink
-                    && (!industryActivity.has_value() || (industryActivity->previousMonthVisitors == 0 && industryActivity->currentMonthVisitors == 0));
+                const auto industryIndex = enumValue(industryId);
+                const auto hasValidPassengerIndustry = industryPassengerSink && industryIndex < passengerIndustries.size();
+                const auto industryActivity = hasValidPassengerIndustry ? getPassengerIndustryActivity(industryId, cargo) : std::nullopt;
                 graph.nodes.push_back({
                     station.id(),
                     station.x,
@@ -1030,14 +1029,19 @@ namespace OpenLoco::CargoDist
                     0,
                     accepts,
                     attraction,
-                    passengerSink,
+                    industryPassengerSink && !hasValidPassengerIndustry,
                     station.town,
                 });
-                if (industryActivity.has_value())
+                if (hasValidPassengerIndustry)
                 {
-                    auto& group = passengerIndustries[enumValue(industryId)];
-                    group.bonus = getPassengerIndustryBonus(industryActivity->previousMonthVisitors);
+                    auto& group = passengerIndustries[industryIndex];
                     group.nodes.push_back(graph.nodes.size() - 1);
+                    if (industryActivity.has_value())
+                    {
+                        group.bonus = getPassengerIndustryBonus(industryActivity->previousMonthVisitors);
+                        const auto supply = state.supply.find({ cargo, station.id() });
+                        group.hasOutboundSupply |= supply != state.supply.end() && supply->second != 0;
+                    }
                 }
             }
             for (auto& group : passengerIndustries)
@@ -1046,9 +1050,15 @@ namespace OpenLoco::CargoDist
                     return enumValue(graph.nodes[lhs].station) < enumValue(graph.nodes[rhs].station);
                 });
                 const auto stationCount = static_cast<uint32_t>(group.nodes.size());
+                const auto producesPassengers = group.bonus != 0;
                 for (uint32_t i = 0; i < stationCount; ++i)
                 {
                     auto& node = graph.nodes[group.nodes[i]];
+                    node.passengerSink = isPassengerIndustrySink(producesPassengers, group.hasOutboundSupply);
+                    if (!producesPassengers)
+                    {
+                        continue;
+                    }
                     const auto bonus = getSharedPassengerIndustryBonus(group.bonus, stationCount, i);
                     node.attraction = getPassengerIndustryAttraction(node.attraction, bonus);
                     node.accepts &= node.attraction != 0;

@@ -66,6 +66,10 @@ namespace OpenLoco::CargoDist
         const auto townAttraction = recordedAttraction > 8 ? recordedAttraction - 8 : 0;
         return townAttraction + resortBonus;
     }
+    constexpr bool isPassengerIndustrySink(const bool producesPassengers, const bool hasOutboundSupply)
+    {
+        return !producesPassengers || !hasOutboundSupply;
+    }
     void setStationAttraction(StationId station, uint8_t cargo, uint32_t attraction);
 
     void addProducedCargo(StationId station, uint8_t cargo, StationCargoStats& nativeCargo, uint16_t quantity);
