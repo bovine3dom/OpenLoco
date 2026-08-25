@@ -15,6 +15,7 @@
 #include "Ui.h"
 #include "Ui/ViewportInteraction.h"
 #include "Ui/WindowManager.h"
+#include "Ui/Windows/RailSpeedOverlay.h"
 #include "Viewport.hpp"
 #include "World/CompanyManager.h"
 #include <OpenLoco/Core/Numerics.hpp>
@@ -292,6 +293,16 @@ namespace OpenLoco::Paint
             {
                 // This error palette remains distinct from a red company's normal track colour.
                 baseTrackImageColour = ImageId(0, ExtColour::unk2B);
+            }
+            else if (session.isRailSpeedOverlayEnabled())
+            {
+                auto colour = Colour::grey;
+                if (const auto speed = Ui::Windows::RailSpeedOverlay::getTrackSpeed(session.getUnkPosition(), elTrack); speed.has_value())
+                {
+                    const auto bucket = Ui::Windows::RailSpeedOverlay::getSpeedBucket(*speed);
+                    colour = Ui::Windows::RailSpeedOverlay::getBucketColour(bucket);
+                }
+                baseTrackImageColour = ImageId(0, Colours::getShadow(colour));
             }
         }
 

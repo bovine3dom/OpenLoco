@@ -2612,3 +2612,6 @@ strings:
   2557: "{COLOUR WINDOW_2}Scale:"
   2558: "Percentiles"
   2559: "Linear"
+  2560: "Rail speed overlay"
+  2561: "Measured average speed (slowest direction)"
+  2562: "Grey: no data yet; updates as trains run"

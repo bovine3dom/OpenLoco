@@ -1,6 +1,10 @@
 #include <OpenLoco/Entities/EntityManager.h>
 #include <OpenLoco/GameState.h>
+#include <OpenLoco/Map/Track/TrackData.h>
+#include <OpenLoco/Map/TrackElement.h>
+#include <OpenLoco/Math/Vector.hpp>
 #include <OpenLoco/Scenario/ScenarioManager.h>
+#include <OpenLoco/Ui/Windows/RailSpeedOverlay.h>
 #include <OpenLoco/Vehicles/RailTraffic.h>
 #include <OpenLoco/Vehicles/Vehicle.h>
 #include <OpenLoco/Vehicles/Vehicle1.h>
@@ -97,6 +101,77 @@ TEST_F(RailTrafficTest, RawTraversalSpeedCapsOnlyFasterTrains)
 
     EXPECT_GT(RailTraffic::getTravelTime(fast, { 320, 320, 32 }, 0, 0), fastFreeFlow);
     EXPECT_EQ(RailTraffic::getTravelTime(slow, { 320, 320, 32 }, 0, 0), slowFreeFlow);
+}
+
+TEST_F(RailTrafficTest, ReportsMeasuredAverageSpeed)
+{
+    EXPECT_FALSE(RailTraffic::getAverageSpeed(kEdge).has_value());
+
+    const auto thirtyMphTraversal = (uint64_t{ 32 } * 21 * RailTraffic::kOneTick + 29) / 30;
+    RailTraffic::recordTraversal(kEdge, thirtyMphTraversal);
+
+    const auto speed = RailTraffic::getAverageSpeed(kEdge);
+    ASSERT_TRUE(speed.has_value());
+    EXPECT_EQ(*speed, 30_mph);
+}
+
+TEST_F(RailTrafficTest, OverlayUsesSlowestObservedDirection)
+{
+    constexpr RailTraffic::Edge forwardEdge{ 320, 320, 32, 4 << 3, 0 };
+    constexpr RailTraffic::Edge reverseEdge{ 288, 288, 32, (4 << 3) | 4, 0 };
+    const World::TrackElement track(8, 8, 0, 0, 0, 0, 4, std::nullopt, CompanyId{ 0 }, 0);
+    RailTraffic::recordTraversal(reverseEdge, 15 * RailTraffic::kOneTick);
+
+    EXPECT_EQ(Ui::Windows::RailSpeedOverlay::getTrackSpeed({ 320, 320 }, track), RailTraffic::getAverageSpeed(reverseEdge));
+
+    RailTraffic::recordTraversal(forwardEdge, 5 * RailTraffic::kOneTick);
+
+    EXPECT_EQ(Ui::Windows::RailSpeedOverlay::getTrackSpeed({ 320, 320 }, track), RailTraffic::getAverageSpeed(reverseEdge));
+}
+
+TEST_F(RailTrafficTest, OverlayMapsEveryTrackTileToTheWholePiece)
+{
+    constexpr World::Pos3 start{ 1024, 1024, 128 };
+    for (uint8_t trackId = 0; trackId < World::TrackData::kTrackPieceCount; ++trackId)
+    {
+        for (uint8_t rotation = 0; rotation < 4; ++rotation)
+        {
+            const RailTraffic::Edge edge{ start.x, start.y, start.z, static_cast<uint16_t>((trackId << 3) | rotation), 0 };
+            RailTraffic::recordTraversal(edge, 12 * RailTraffic::kOneTick);
+            const auto expected = RailTraffic::getAverageSpeed(edge);
+            for (const auto& piece : World::TrackData::getTrackPiece(trackId))
+            {
+                const auto offset = Math::Vector::rotate(World::Pos2{ piece.x, piece.y }, rotation);
+                const auto baseZ = static_cast<World::SmallZ>((start.z + piece.z) / World::kSmallZStep);
+                const World::TrackElement track(baseZ, baseZ, rotation, 0, piece.index, 0, trackId, std::nullopt, CompanyId{ 0 }, 0);
+                EXPECT_EQ(Ui::Windows::RailSpeedOverlay::getTrackSpeed(World::Pos2{ start.x, start.y } + offset, track), expected)
+                    << "track=" << static_cast<int>(trackId) << " rotation=" << static_cast<int>(rotation) << " sequence=" << static_cast<int>(piece.index);
+            }
+        }
+    }
+}
+
+TEST_F(RailTrafficTest, OverlayFindsReverseEdgeWithDiagonalEndpoint)
+{
+    constexpr RailTraffic::Edge reverseEdge{ 256, 288, 32, (8 << 3) | 4, 0 };
+    const World::TrackElement track(8, 8, 0, 0, 0, 0, 8, std::nullopt, CompanyId{ 0 }, 0);
+    RailTraffic::recordTraversal(reverseEdge, 12 * RailTraffic::kOneTick);
+
+    EXPECT_EQ(Ui::Windows::RailSpeedOverlay::getTrackSpeed({ 320, 320 }, track), RailTraffic::getAverageSpeed(reverseEdge));
+}
+
+TEST(RailSpeedOverlay, UsesAbsoluteSpeedBands)
+{
+    using Ui::Windows::RailSpeedOverlay::getSpeedBucket;
+    EXPECT_EQ(getSpeedBucket(0_mph), 1);
+    EXPECT_EQ(getSpeedBucket(9_mph), 1);
+    EXPECT_EQ(getSpeedBucket(10_mph), 2);
+    EXPECT_EQ(getSpeedBucket(29_mph), 3);
+    EXPECT_EQ(getSpeedBucket(30_mph), 4);
+    EXPECT_EQ(getSpeedBucket(45_mph), 5);
+    EXPECT_EQ(getSpeedBucket(60_mph), 6);
+    EXPECT_EQ(getSpeedBucket(80_mph), 7);
+    EXPECT_EQ(getSpeedBucket(120_mph), 8);
 }
 
 TEST_F(RailTrafficTest, TraversalIncludesAllElapsedOccupancyTime)

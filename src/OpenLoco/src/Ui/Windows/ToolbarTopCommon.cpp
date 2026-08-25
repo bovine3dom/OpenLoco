@@ -21,6 +21,7 @@
 #include "Ui/Widget.h"
 #include "Ui/Windows/CargoFlowOverlay.h"
 #include "Ui/Windows/ProductionHeatmap.h"
+#include "Ui/Windows/RailSpeedOverlay.h"
 #include "Vehicles/Vehicle.h"
 #include "World/CompanyManager.h"
 #include "World/StationManager.h"
@@ -165,7 +166,8 @@ namespace OpenLoco::Ui::Windows::ToolbarTop::Common
         Dropdown::add(14, 0);
         Dropdown::add(15, StringIds::dropdown_without_checkmark, StringIds::cargo_flow_overlay);
         Dropdown::add(16, StringIds::dropdown_without_checkmark, StringIds::production_heatmap);
-        Dropdown::showBelow(window, widgetIndex, 17, 0);
+        Dropdown::add(17, StringIds::dropdown_without_checkmark, StringIds::rail_speed_overlay);
+        Dropdown::showBelow(window, widgetIndex, 18, 0);
 
         ViewportFlags current_viewport_flags = WindowManager::getMainWindow()->viewports[0]->flags;
 
@@ -244,6 +246,10 @@ namespace OpenLoco::Ui::Windows::ToolbarTop::Common
         if (!ProductionHeatmap::hasEnabledCargo())
         {
             Dropdown::setItemDisabled(16);
+        }
+        if (RailSpeedOverlay::isOpen())
+        {
+            Dropdown::setItemSelected(17);
         }
 
         Dropdown::setHighlightedItem(0);
@@ -443,6 +449,10 @@ namespace OpenLoco::Ui::Windows::ToolbarTop::Common
         else if (itemIndex == 16)
         {
             ProductionHeatmap::toggle();
+        }
+        else if (itemIndex == 17)
+        {
+            RailSpeedOverlay::toggle();
         }
 
         window->invalidate();

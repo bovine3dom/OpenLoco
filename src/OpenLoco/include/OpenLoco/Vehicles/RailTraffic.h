@@ -6,6 +6,7 @@
 #include <OpenLoco/Engine/World.hpp>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace OpenLoco
@@ -84,6 +85,8 @@ namespace OpenLoco::Vehicles::RailTraffic
     TravelTime getTravelTime(const SpeedProfile& profile, const World::Pos3& pos, uint16_t routing, uint8_t trackType);
     TravelTime getHeuristicTime(const SpeedProfile& profile, uint32_t distance);
     TravelTime getLiveSignalPenalty(const SpeedProfile& profile, uint16_t routing, uint8_t trackType);
+    std::optional<Speed16> getAverageSpeed(const Edge& edge);
+    uint32_t getHistoryRevision();
 
     void reset();
     void beginTick();

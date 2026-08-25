@@ -296,7 +296,7 @@ namespace OpenLoco::Ui
             return Rect::fromLTRB(leftTop.x, leftTop.y, rightBottom.x, rightBottom.y);
         }
 
-        void render(Gfx::DrawingContext& drawingCtx, bool drawOverlays = true);
+        void render(Gfx::DrawingContext& drawingCtx, bool drawOverlays = true, bool isMainViewport = false);
         void renderUiOverlays(Gfx::DrawingContext& drawingCtx);
         viewport_pos centre2dCoordinates(const World::Pos3& loc);
         SavedViewSimple toSavedView() const;
@@ -318,7 +318,7 @@ namespace OpenLoco::Ui
         }
 
     private:
-        void paint(Gfx::DrawingContext& drawingCtx, const Ui::Rect& rect, bool drawOverlays);
+        void paint(Gfx::DrawingContext& drawingCtx, const Ui::Rect& rect, bool drawOverlays, bool isMainViewport);
     };
 
     struct ViewportConfig

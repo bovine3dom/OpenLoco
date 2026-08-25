@@ -26,6 +26,7 @@ namespace OpenLoco::Vehicles::RailTraffic
     {
         constexpr uint8_t kMaxConfidence = 16;
         constexpr uint8_t kPriorConfidence = 4;
+        constexpr uint64_t kLandModeModifier = 21;
         constexpr TravelTime kMaxTraversalTime = static_cast<TravelTime>(std::numeric_limits<int32_t>::max()) << kFractionBits;
         constexpr TravelTime kTimestampMask = (TravelTime{ 1 } << 48) - 1;
 
@@ -56,6 +57,7 @@ namespace OpenLoco::Vehicles::RailTraffic
         std::unordered_map<Edge, ActiveAggregate, EdgeHash> _publishedActive;
         std::vector<std::pair<Edge, TravelTime>> _pending;
         bool _inTick{};
+        uint32_t _historyRevision{};
 
         TravelTime add(const TravelTime lhs, const TravelTime rhs)
         {
@@ -133,6 +135,7 @@ namespace OpenLoco::Vehicles::RailTraffic
             auto [it, inserted] = _history.try_emplace(edge, HistoryEntry{ edge, duration, getCurrentDay(), 1 });
             if (inserted)
             {
+                _historyRevision++;
                 return;
             }
 
@@ -152,6 +155,7 @@ namespace OpenLoco::Vehicles::RailTraffic
                 entry.meanTraversalTime -= (entry.meanTraversalTime - duration) / kMaxConfidence;
             }
             entry.lastObservedDay = getCurrentDay();
+            _historyRevision++;
         }
 
         Speed16 getFreeFlowSpeed(const SpeedProfile& profile, const uint16_t routing, const uint8_t trackType)
@@ -195,7 +199,6 @@ namespace OpenLoco::Vehicles::RailTraffic
             {
                 return std::numeric_limits<TravelTime>::max();
             }
-            constexpr uint64_t kLandModeModifier = 21;
             const auto numerator = multiply(multiply(distance, kLandModeModifier), kOneTick);
             return add(numerator, static_cast<uint16_t>(speed.getRaw()) - 1) / static_cast<uint16_t>(speed.getRaw());
         }
@@ -294,6 +297,25 @@ namespace OpenLoco::Vehicles::RailTraffic
         return std::min(kOneTick, getFreeFlowTime(profile, routing, trackType));
     }
 
+    std::optional<Speed16> getAverageSpeed(const Edge& edge)
+    {
+        const auto it = _history.find(edge);
+        if (it == _history.end())
+        {
+            return std::nullopt;
+        }
+
+        const auto distance = World::TrackData::getTrackMiscData(edge.tad >> 3).unkWeighting;
+        const auto numerator = multiply(multiply(distance, kLandModeModifier), kOneTick);
+        const auto speed = add(numerator, it->second.meanTraversalTime / 2) / it->second.meanTraversalTime;
+        return Speed16(static_cast<int16_t>(std::min<uint64_t>(speed, kSpeed16Max.getRaw())));
+    }
+
+    uint32_t getHistoryRevision()
+    {
+        return _historyRevision;
+    }
+
     void reset()
     {
         _history.clear();
@@ -301,6 +323,7 @@ namespace OpenLoco::Vehicles::RailTraffic
         _publishedActive.clear();
         _pending.clear();
         _inTick = false;
+        _historyRevision++;
     }
 
     void beginTick()
@@ -333,17 +356,20 @@ namespace OpenLoco::Vehicles::RailTraffic
     void updateDaily()
     {
         const auto today = getCurrentDay();
+        bool erased = false;
         for (auto it = _history.begin(); it != _history.end();)
         {
             if (it->second.lastObservedDay != today && --it->second.confidence == 0)
             {
                 it = _history.erase(it);
+                erased = true;
             }
             else
             {
                 ++it;
             }
         }
+        _historyRevision += erased;
     }
 
     void reconcile(Vehicle1& vehicle)

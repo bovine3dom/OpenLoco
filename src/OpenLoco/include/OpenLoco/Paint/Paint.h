@@ -223,6 +223,7 @@ namespace OpenLoco::Paint
         bool isHitTest = false;
         // This is used when painting previews of track/road mods
         bool skipTrackRoadSurfaces = false;
+        bool railSpeedOverlay = false;
 
         constexpr bool hasFlags(Ui::ViewportFlags flagsToTest) const
         {
@@ -283,6 +284,7 @@ namespace OpenLoco::Paint
             return World::Pos2{ _spritePositionX, _spritePositionY };
         }
         Ui::ViewportFlags getViewFlags() const { return _viewFlags; }
+        bool isRailSpeedOverlayEnabled() const { return _railSpeedOverlay; }
         // TileElementEntry or Entity
         void setCurrentItem(void* item) { _currentItem = item; }
         void* getCurrentItem() const { return _currentItem; }
@@ -471,6 +473,7 @@ namespace OpenLoco::Paint
         void* _currentItem{};
         uint8_t currentRotation{}; // new field set from 0x00E3F0B8 but split out into this struct as separate item
         Ui::ViewportFlags _viewFlags{};
+        bool _railSpeedOverlay{};
         std::array<PaintStruct*, kMaxPaintQuadrants> _quadrants;
         uint32_t _quadrantBackIndex;
         uint32_t _quadrantFrontIndex;

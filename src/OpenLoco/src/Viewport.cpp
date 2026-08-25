@@ -18,6 +18,7 @@
 #include "Ui/Window.h"
 #include "Ui/WindowManager.h"
 #include "Ui/Windows/CargoFlowOverlay.h"
+#include "Ui/Windows/RailSpeedOverlay.h"
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/Orders.h"
 #include "Vehicles/VehicleManager.h"
@@ -42,7 +43,7 @@ namespace OpenLoco::Ui
     }
 
     // 0x0045A0E7
-    void Viewport::render(Gfx::DrawingContext& drawingCtx, bool drawOverlays)
+    void Viewport::render(Gfx::DrawingContext& drawingCtx, bool drawOverlays, bool isMainViewport)
     {
         const auto& rt = drawingCtx.currentRenderTarget();
 
@@ -53,7 +54,8 @@ namespace OpenLoco::Ui
         {
             return;
         }
-        paint(drawingCtx, uiRect.intersection(viewRect), drawOverlays);
+        isMainViewport |= this == WindowManager::getMainViewport();
+        paint(drawingCtx, uiRect.intersection(viewRect), drawOverlays, isMainViewport);
     }
 
     // 0x0048DE97
@@ -240,7 +242,7 @@ namespace OpenLoco::Ui
     }
 
     // 0x0045A1A4
-    void Viewport::paint(Gfx::DrawingContext& drawingCtx, const Rect& rect, bool drawOverlays)
+    void Viewport::paint(Gfx::DrawingContext& drawingCtx, const Rect& rect, bool drawOverlays, const bool isMainViewport)
     {
         const auto& rt = drawingCtx.currentRenderTarget();
 
@@ -257,6 +259,7 @@ namespace OpenLoco::Ui
         }
         options.rotation = getRotation();
         options.viewFlags = flags;
+        options.railSpeedOverlay = isMainViewport && Windows::RailSpeedOverlay::isOpen();
 
         Gfx::RenderTarget zoomViewRt{};
         zoomViewRt.width = rect.width();

@@ -42,6 +42,7 @@ namespace OpenLoco::Paint
         currentRotation = options.rotation;
         _isHitTest = options.isHitTest;
         _skipTrackRoadSurfaces = options.skipTrackRoadSurfaces;
+        _railSpeedOverlay = options.railSpeedOverlay;
 
         // TODO: unused
         _foregroundCullingHeight = options.foregroundCullHeight;

@@ -2269,6 +2269,9 @@ namespace OpenLoco::StringIds
     constexpr StringId production_heatmap_scale = 2557;
     constexpr StringId production_heatmap_percentiles = 2558;
     constexpr StringId production_heatmap_linear = 2559;
+    constexpr StringId rail_speed_overlay = 2560;
+    constexpr StringId rail_speed_overlay_description = 2561;
+    constexpr StringId rail_speed_overlay_no_data = 2562;
 
     constexpr StringId temporary_object_load_str_0 = 8192;
     constexpr StringId temporary_object_load_str_1 = 8193;

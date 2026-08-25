@@ -72,6 +72,7 @@ namespace OpenLoco::Ui
         debug = 61,
         cargoFlowOverlay = 62,
         productionHeatmap = 63,
+        railSpeedOverlay = 64,
 
         undefined = 255
     };

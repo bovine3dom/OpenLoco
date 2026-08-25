@@ -483,7 +483,7 @@ namespace OpenLoco::Gfx
         viewport.x = 0;
         viewport.y = 0;
         viewport.setDimensions({ _worldRT.width, _worldRT.height }, { _worldRT.width, _worldRT.height });
-        viewport.render(worldContext, false);
+        viewport.render(worldContext, false, true);
     }
 
     void SoftwareDrawingEngine::renderSeparateUi()
