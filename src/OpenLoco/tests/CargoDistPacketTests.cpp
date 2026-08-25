@@ -71,6 +71,50 @@ TEST(CargoDistPackets, CoalescesTransferCredits)
     EXPECT_EQ(packets.packets().front().transferCredit, 12);
 }
 
+TEST(CargoDistPackets, CoalescesMatchingHolidayPacketsAcrossOtherCohorts)
+{
+    CargoPacket outbound{ 2, station(1), station(2), 3, {}, {}, station(4), 5 };
+    outbound.tripKind = PassengerTripKind::holidayOutbound;
+    outbound.holidayIndustry = IndustryId(3);
+    outbound.homeTown = TownId(4);
+    auto returning = outbound;
+    returning.tripKind = PassengerTripKind::holidayReturn;
+    returning.transferCredit = 6;
+    PacketList packets;
+    packets.append(outbound);
+    packets.append(returning);
+    outbound.quantity = 3;
+    outbound.transferCredit = 7;
+    packets.append(outbound);
+
+    ASSERT_EQ(packets.size(), 2U);
+    const auto merged = std::ranges::find_if(packets.packets(), [](const auto& packet) { return packet.tripKind == PassengerTripKind::holidayOutbound; });
+    ASSERT_NE(merged, packets.packets().end());
+    EXPECT_EQ(merged->quantity, 5);
+    EXPECT_EQ(merged->transferCredit, 12);
+}
+
+TEST(CargoDistPackets, KeepsHolidayCohortsDistinctAndProtectsReturnsFromRatingLoss)
+{
+    CargoPacket outbound{ 5, station(1), station(2), 0, {}, {}, station(2) };
+    outbound.tripKind = PassengerTripKind::holidayOutbound;
+    outbound.holidayIndustry = IndustryId(3);
+    outbound.homeTown = TownId(4);
+    auto returning = outbound;
+    returning.quantity = 7;
+    returning.tripKind = PassengerTripKind::holidayReturn;
+    PacketList packets;
+    packets.append(outbound);
+    packets.append(returning);
+    packets.append({ 11, station(1), station(2), 0, {}, {}, station(2) });
+
+    EXPECT_EQ(packets.size(), 3);
+    EXPECT_EQ(packets.removeForRating(15), 15);
+    ASSERT_EQ(packets.size(), 2);
+    EXPECT_TRUE(std::ranges::all_of(packets.packets(), [](const auto& packet) { return packet.tripKind != PassengerTripKind::ordinary; }));
+    EXPECT_EQ(packets.quantity(), 8);
+}
+
 TEST(CargoDistPackets, RepeatedSplitsConserveMaximumTransferCredit)
 {
     constexpr auto kQuantity = std::numeric_limits<uint16_t>::max();
@@ -446,6 +490,23 @@ TEST(CargoDistPackets, RemovingStationDropsOriginsButOnlyClearsNextHops)
     EXPECT_TRUE(packets.packets()[0].departure.empty());
     EXPECT_TRUE(packets.packets()[0].arrival.empty());
     EXPECT_EQ(packets.packets()[0].destination, station(4));
+}
+
+TEST(CargoDistPackets, RemovingHomeStationPreservesHolidayPassengerMetadata)
+{
+    CargoPacket packet{ 10, station(1), station(3), 0, {}, {}, station(4) };
+    packet.tripKind = PassengerTripKind::holidayOutbound;
+    packet.holidayIndustry = IndustryId(2);
+    packet.homeTown = TownId(5);
+    PacketList packets;
+    packets.append(packet);
+
+    packets.removeStationReferences(station(1));
+
+    ASSERT_EQ(packets.size(), 1);
+    EXPECT_EQ(packets.packets().front().origin, station(3));
+    EXPECT_EQ(packets.packets().front().tripKind, PassengerTripKind::holidayOutbound);
+    EXPECT_EQ(packets.packets().front().homeTown, TownId(5));
 }
 
 TEST(CargoDistPackets, RemovingServiceClearsPlansButKeepsOrigins)

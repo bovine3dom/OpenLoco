@@ -3272,12 +3272,12 @@ namespace OpenLoco::Vehicles
         Audio::playSound(Audio::SoundId::income, Audio::ChannelId::ui, loc);
     }
 
-    void VehicleHead::deliverCargoPacket(Station& station, StationCargoStats& cargoStats, uint8_t cargoType, uint16_t quantity, StationId origin, uint8_t age, const int64_t transferCredit)
+    void VehicleHead::deliverCargoPacket(Station& station, StationCargoStats& cargoStats, uint8_t cargoType, uint16_t quantity, StationId origin, uint8_t age, const int64_t transferCredit, const bool holidayArrival)
     {
         station.deliverCargoToTown(cargoType, quantity);
         auto* sourceStation = StationManager::get(origin);
         auto stationLoc = World::Pos2{ station.x, station.y };
-        auto sourceLoc = World::Pos2{ sourceStation->x, sourceStation->y };
+        auto sourceLoc = sourceStation == nullptr || sourceStation->empty() ? stationLoc : World::Pos2{ sourceStation->x, sourceStation->y };
         auto tilesDistance = Math::Vector::distance2D(stationLoc, sourceLoc) / 32;
 
         Ui::WindowManager::invalidate(Ui::WindowType::company, enumValue(owner));
@@ -3307,9 +3307,9 @@ namespace OpenLoco::Vehicles
         station.var_3B1 = 0;
         station.flags |= StationFlags::flag_8;
 
-        if (cargoStats.industryId != IndustryId::null)
+        auto* industry = IndustryManager::get(cargoStats.industryId);
+        if (industry != nullptr && !industry->empty() && industry->getObject() != nullptr)
         {
-            auto* industry = IndustryManager::get(cargoStats.industryId);
             const auto* industryObj = industry->getObject();
             const auto* cargoObject = ObjectManager::get<CargoObject>(cargoType);
             auto activatesPassengerIndustry = cargoObject != nullptr
@@ -3323,7 +3323,10 @@ namespace OpenLoco::Vehicles
                 }
                 activatesPassengerIndustry &= industry->receivedCargoQuantityPreviousMonth[i] == 0
                     && industry->receivedCargoQuantityMonthlyTotal[i] == 0;
-                industry->receivedCargoQuantityDailyTotal[i] = Math::Bound::add(industry->receivedCargoQuantityDailyTotal[i], quantity);
+                if (!holidayArrival)
+                {
+                    industry->receivedCargoQuantityDailyTotal[i] = Math::Bound::add(industry->receivedCargoQuantityDailyTotal[i], quantity);
+                }
                 industry->receivedCargoQuantityMonthlyTotal[i] = Math::Bound::add(industry->receivedCargoQuantityMonthlyTotal[i], quantity);
             }
             if (activatesPassengerIndustry && CargoDist::isEnabled(cargoType))
@@ -3419,7 +3422,14 @@ namespace OpenLoco::Vehicles
             }
             for (const auto& packet : result.delivered.packets())
             {
-                deliverCargoPacket(*station, cargoStats, cargo.type, packet.quantity, packet.origin, packet.age, packet.transferCredit);
+                const auto holidayArrival = packet.tripKind == CargoDist::PassengerTripKind::holidayOutbound
+                    && cargoStats.industryId == packet.holidayIndustry
+                    && CargoDist::isHolidayResort(cargoStats.industryId, cargo.type);
+                if (holidayArrival)
+                {
+                    CargoDist::scheduleHolidayReturn(cargo.type, stationId, packet);
+                }
+                deliverCargoPacket(*station, cargoStats, cargo.type, packet.quantity, packet.origin, packet.age, packet.transferCredit, holidayArrival);
             }
             for (const auto& credit : result.transferCredits)
             {

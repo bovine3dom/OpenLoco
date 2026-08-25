@@ -186,7 +186,7 @@ namespace OpenLoco
         void invalidate();
         void invalidateWindow();
 
-        void deliverCargoToStation(const uint8_t cargoType, const uint8_t cargoQuantity);
+        void deliverCargoToStation(const uint8_t cargoType, const uint8_t cargoQuantity, bool generateHolidays = true);
         void deliverCargoToTown(uint8_t cargoType, uint16_t cargoQuantity);
         void updateCargoDistribution();
 

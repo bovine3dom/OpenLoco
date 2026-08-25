@@ -3,6 +3,7 @@
 
 #include "CargoDist.h"
 #include "Economy/Currency.h"
+#include <OpenLoco/World/Town.h>
 #include <functional>
 
 namespace OpenLoco
@@ -70,9 +71,28 @@ namespace OpenLoco::CargoDist
     {
         return !producesPassengers || !hasOutboundSupply;
     }
+    constexpr uint8_t getHolidayPercentage(const TownSize size)
+    {
+        constexpr std::array<uint8_t, 5> kPercentages = { 1, 1, 3, 6, 8 };
+        const auto index = enumValue(size);
+        return kPercentages[index < kPercentages.size() ? index : 0];
+    }
+    constexpr uint8_t updateResortPopularity(const uint8_t popularity, const uint8_t slopeScore, const uint8_t occupancyScore)
+    {
+        const auto target = (slopeScore + occupancyScore * 2) / 3;
+        return static_cast<uint8_t>((popularity + target) / 2);
+    }
+    constexpr uint16_t getResortCapacity(const uint16_t liveSlopes, const uint8_t popularity)
+    {
+        const auto capacity = static_cast<uint32_t>(liveSlopes) * 4 * (200 + popularity) / 200;
+        return static_cast<uint16_t>(std::min<uint32_t>(std::numeric_limits<uint16_t>::max(), capacity));
+    }
     void setStationAttraction(StationId station, uint8_t cargo, uint32_t attraction);
 
-    void addProducedCargo(StationId station, uint8_t cargo, StationCargoStats& nativeCargo, uint16_t quantity);
+    void addProducedCargo(StationId station, uint8_t cargo, StationCargoStats& nativeCargo, uint16_t quantity, bool generateHolidays = true);
+    bool isHolidayResort(IndustryId industry, uint8_t cargo);
+    void scheduleHolidayReturn(uint8_t cargo, StationId resortStation, const CargoPacket& packet);
+    void updateResortsMonthly();
     void updateStationCargoDaily(StationId station, uint8_t cargo, StationCargoStats& nativeCargo, uint16_t quantityBeforeUpdate);
     void updateVehicleCargoDaily(VehicleCargoKey key, Vehicles::VehicleCargo& nativeCargo);
 
@@ -99,6 +119,8 @@ namespace OpenLoco::CargoDist
     void updateDaily();
 
     void removeStation(StationId station);
+    void removeIndustry(IndustryId industry);
+    void removeTown(TownId town);
     void removeVehicleService(EntityId vehicle);
     void eraseVehicleCargoForComponent(EntityId component);
     void moveVehicleCargo(VehicleCargoKey source, VehicleCargoKey destination);

@@ -141,6 +141,13 @@ namespace
         {
             appendValue<uint32_t>(data, 0);
         }
+        if (version >= 8)
+        {
+            appendValue<uint8_t>(data, 1);
+            appendValue<uint8_t>(data, 0);
+            appendValue<uint16_t>(data, 0);
+            appendValue<uint32_t>(data, 0);
+        }
 
         const auto payloadSize = static_cast<uint32_t>(data.size() - 16);
         for (size_t i = 0; i < sizeof(payloadSize); ++i)
@@ -198,6 +205,9 @@ namespace
         EXPECT_EQ(lhs.destinationFlows, rhs.destinationFlows);
         EXPECT_EQ(lhs.stationAccessibility, rhs.stationAccessibility);
         EXPECT_EQ(lhs.hasStationAccessibilitySnapshot, rhs.hasStationAccessibilitySnapshot);
+        EXPECT_EQ(lhs.resorts, rhs.resorts);
+        EXPECT_EQ(lhs.holidaySources, rhs.holidaySources);
+        EXPECT_EQ(lhs.pendingHolidayReturns, rhs.pendingHolidayReturns);
         EXPECT_EQ(lhs.pendingVehicleRevenueAdjustments, rhs.pendingVehicleRevenueAdjustments);
     }
 
@@ -348,7 +358,7 @@ TEST(CargoDistSave, RoundTripsCanonicalState)
     expectStatesEqual(original, decoded);
     EXPECT_TRUE(decoded.serviceEdges.empty());
     EXPECT_TRUE(decoded.vehicleServiceLegs.empty());
-    EXPECT_EQ(std::to_integer<uint8_t>(encoded[8]), 9);
+    EXPECT_EQ(std::to_integer<uint8_t>(encoded[8]), 10);
 }
 
 TEST(CargoDistSave, MigratesVersionOneWithoutStationAttraction)
@@ -428,15 +438,53 @@ TEST(CargoDistSave, MigratesVersionSevenWithoutAccessibilitySnapshot)
 
 TEST(CargoDistSave, MigratesVersionEightAndForcesRecalculation)
 {
-    State state;
-    state.hasStationAccessibilitySnapshot = true;
-    auto encoded = encodeState(state);
-    encoded[8] = std::byte{ 8 };
-
-    const auto decoded = decodeState(encoded);
+    const auto decoded = decodeState(legacyEncodedState(8));
 
     EXPECT_TRUE(decoded.graphDirty);
     EXPECT_TRUE(decoded.hasStationAccessibilitySnapshot);
+}
+
+TEST(CargoDistSave, MigratesVersionNineWithoutHolidayState)
+{
+    const auto decoded = decodeState(legacyEncodedState(9));
+
+    EXPECT_TRUE(decoded.resorts.empty());
+    EXPECT_TRUE(decoded.holidaySources.empty());
+    EXPECT_TRUE(decoded.pendingHolidayReturns.empty());
+}
+
+TEST(CargoDistSave, RoundTripsHolidayState)
+{
+    State state;
+    state.settings.modes[0] = DistributionMode::asymmetric;
+    state.resorts[IndustryId(2)] = { 456, 120, 20, 75 };
+    state.holidaySources[{ station(1), 0 }] = { 42, 1234 };
+    state.pendingHolidayReturns.push_back({ 100, 12, station(2), station(1), TownId(3), IndustryId(2), 0, 9, true, 48 });
+    CargoPacket packet{ 7, station(1), station(2), 3, {}, {}, station(2) };
+    packet.tripKind = PassengerTripKind::holidayOutbound;
+    packet.holidayIndustry = IndustryId(2);
+    packet.homeTown = TownId(3);
+    state.stationCargo[{ station(1), 0 }].append(packet);
+
+    const auto decoded = decodeState(encodeState(state));
+
+    expectStatesEqual(state, decoded);
+}
+
+TEST(CargoDistSave, RejectsManualOrUnsortedHolidayState)
+{
+    State state;
+    state.holidaySources[{ station(1), 0 }] = { 1, 0 };
+    EXPECT_THROW(encodeState(state), std::runtime_error);
+
+    state.holidaySources.clear();
+    state.settings.modes[0] = DistributionMode::asymmetric;
+    state.pendingHolidayReturns.push_back({ 101, 1, station(2), station(1), TownId(3), IndustryId(2), 0 });
+    state.pendingHolidayReturns.push_back({ 100, 1, station(2), station(1), TownId(3), IndustryId(2), 0 });
+    EXPECT_THROW(encodeState(state), std::runtime_error);
+
+    state.pendingHolidayReturns = { { 100, 1, station(2), station(1), TownId(3), IndustryId(2), 0, 1 } };
+    EXPECT_THROW(encodeState(state), std::runtime_error);
 }
 
 TEST(CargoDistSave, RoundTripsStationCargoAboveNativeLimit)
@@ -557,7 +605,7 @@ TEST(CargoDistSave, RejectsPacketCountLargerThanPayload)
 TEST(CargoDistSave, RejectsUnknownVersion)
 {
     auto encoded = encodeState(populatedState());
-    encoded[8] = std::byte{ 10 };
+    encoded[8] = std::byte{ 11 };
 
     EXPECT_THROW(decodeState(encoded), std::runtime_error);
 }

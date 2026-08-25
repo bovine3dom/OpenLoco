@@ -588,7 +588,7 @@ TEST(SaveExtension, DecodesLegacyCargoDist)
 
     auto versionOne = CargoDist::encodeState(CargoDist::State{});
     versionOne[8] = std::byte{ 1 };
-    versionOne.resize(versionOne.size() - sizeof(uint32_t) * 5);
+    versionOne.resize(versionOne.size() - sizeof(uint32_t) * 8);
     writeU32(versionOne, 12, static_cast<uint32_t>(versionOne.size() - 16));
     const auto decodedVersionOne = S5::SaveExtension::decode(versionOne);
     ASSERT_TRUE(decodedVersionOne.cargoDistState.has_value());

@@ -749,12 +749,12 @@ namespace OpenLoco
     }
 
     // 0x0042F489
-    void Station::deliverCargoToStation(const uint8_t cargoType, const uint8_t cargoQuantity)
+    void Station::deliverCargoToStation(const uint8_t cargoType, const uint8_t cargoQuantity, const bool generateHolidays)
     {
         auto& stationCargoStat = cargoStats[cargoType];
         if (CargoDist::isEnabled(cargoType))
         {
-            CargoDist::addProducedCargo(id(), cargoType, stationCargoStat, cargoQuantity);
+            CargoDist::addProducedCargo(id(), cargoType, stationCargoStat, cargoQuantity, generateHolidays);
             updateCargoDistribution();
             return;
         }

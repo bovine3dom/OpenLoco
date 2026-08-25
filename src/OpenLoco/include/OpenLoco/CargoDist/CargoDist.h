@@ -22,6 +22,13 @@ namespace OpenLoco::CargoDist
         asymmetric,
     };
 
+    enum class PassengerTripKind : uint8_t
+    {
+        ordinary,
+        holidayOutbound,
+        holidayReturn,
+    };
+
     struct CargoPacket
     {
         uint16_t quantity{};
@@ -32,6 +39,9 @@ namespace OpenLoco::CargoDist
         ServicePoint arrival{};
         StationId destination = StationId::null;
         int64_t transferCredit{};
+        PassengerTripKind tripKind = PassengerTripKind::ordinary;
+        IndustryId holidayIndustry = IndustryId::null;
+        TownId homeTown = TownId::null;
 
         auto operator<=>(const CargoPacket&) const = default;
 
@@ -70,6 +80,7 @@ namespace OpenLoco::CargoDist
         PacketList takeFor(StationId nextHop, ServicePoint departure, uint32_t quantity);
         PacketList takeForJourney(StationId destination, StationId nextHop, ServicePoint departure, uint32_t quantity);
         uint32_t remove(uint32_t quantity);
+        uint32_t removeForRating(uint32_t quantity);
         void removeStationReferences(StationId station);
         void removeServiceReferences(ServiceId service, bool preserveNextHop = false);
         void ageAtStation(StationId station);
@@ -244,6 +255,40 @@ namespace OpenLoco::CargoDist
         uint16_t recalculationInterval = 8;
     };
 
+    struct PendingHolidayReturn
+    {
+        uint32_t releaseDay{};
+        uint16_t quantity{};
+        StationId resortStation = StationId::null;
+        StationId homeStation = StationId::null;
+        TownId homeTown = TownId::null;
+        IndustryId resort = IndustryId::null;
+        uint8_t cargo{};
+        uint8_t age{};
+        bool released{};
+        int64_t transferCredit{};
+
+        auto operator<=>(const PendingHolidayReturn&) const = default;
+    };
+
+    struct ResortActivity
+    {
+        uint32_t guestDays{};
+        uint16_t capacity{};
+        uint16_t liveSlopes{};
+        uint8_t popularity{};
+
+        auto operator<=>(const ResortActivity&) const = default;
+    };
+
+    struct HolidaySourceState
+    {
+        uint8_t remainder{};
+        uint32_t sequence{};
+
+        auto operator<=>(const HolidaySourceState&) const = default;
+    };
+
     struct State
     {
         Settings settings{};
@@ -255,6 +300,9 @@ namespace OpenLoco::CargoDist
         std::map<EntityId, std::vector<VehicleServiceLeg>> vehicleServiceLegs;
         std::map<StationId, uint32_t> stationAccessibility;
         bool hasStationAccessibilitySnapshot{};
+        std::map<IndustryId, ResortActivity> resorts;
+        std::map<StationCargoKey, HolidaySourceState> holidaySources;
+        std::vector<PendingHolidayReturn> pendingHolidayReturns;
         std::map<FlowKey, std::vector<FlowOption>> flows;
         std::map<DestinationFlowKey, std::vector<DestinationOption>> destinationFlows;
         std::map<EntityId, int64_t> pendingVehicleRevenueAdjustments;
@@ -292,6 +340,8 @@ namespace OpenLoco::CargoDist
     void setFlows(uint8_t cargo, std::span<const FlowShare> shares);
     void rebuildDestinationFlows(uint8_t cargo);
     void buildFlowMaps(std::map<FlowKey, std::vector<FlowOption>>& flows, std::map<DestinationFlowKey, std::vector<DestinationOption>>& destinationFlows, uint8_t cargo, std::span<const FlowShare> shares);
+    std::vector<ViaShare> allocateFixedVia(std::map<FlowKey, std::vector<FlowOption>>& flows, uint8_t cargo, StationId station, StationId origin, StationId destination, uint32_t quantity, ServicePoint incoming = {}, StationId excluded = StationId::null, StationId excluded2 = StationId::null);
+    std::vector<ViaShare> previewFixedVia(const std::map<FlowKey, std::vector<FlowOption>>& flows, uint8_t cargo, StationId station, StationId origin, StationId destination, uint32_t quantity, ServicePoint incoming = {}, StationId excluded = StationId::null, StationId excluded2 = StationId::null);
     std::vector<ViaShare> allocateVia(uint8_t cargo, StationId station, StationId origin, StationId destination, uint32_t quantity, ServicePoint incoming = {}, StationId excluded = StationId::null, StationId excluded2 = StationId::null);
     std::vector<ViaShare> previewVia(uint8_t cargo, StationId station, StationId origin, StationId destination, uint32_t quantity, ServicePoint incoming = {}, StationId excluded = StationId::null, StationId excluded2 = StationId::null);
 

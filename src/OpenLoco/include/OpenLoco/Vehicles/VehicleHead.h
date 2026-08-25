@@ -186,7 +186,7 @@ namespace OpenLoco::Vehicles
         void getSecondStatus(VehicleStatus& vehStatus) const;
         void applyVehicleRevenue(int64_t revenue);
         void updateLastIncomeStats(uint8_t cargoType, uint16_t cargoQty, uint16_t cargoDist, uint8_t cargoAge, int64_t profit);
-        void deliverCargoPacket(Station& station, StationCargoStats& cargoStats, uint8_t cargoType, uint16_t quantity, StationId origin, uint8_t age, int64_t transferCredit = 0);
+        void deliverCargoPacket(Station& station, StationCargoStats& cargoStats, uint8_t cargoType, uint16_t quantity, StationId origin, uint8_t age, int64_t transferCredit = 0, bool holidayArrival = false);
         void calculateRefundCost();
     };
     static_assert(sizeof(VehicleHead) <= sizeof(Entity));

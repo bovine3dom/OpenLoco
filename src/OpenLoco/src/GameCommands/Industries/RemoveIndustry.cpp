@@ -1,4 +1,5 @@
 #include "GameCommands/Industries/RemoveIndustry.h"
+#include <OpenLoco/CargoDist/Simulation.h>
 #include "Economy/Economy.h"
 #include "Economy/Expenditures.h"
 #include "GameCommands/GameCommands.h"
@@ -146,6 +147,7 @@ namespace OpenLoco::GameCommands
 
             Scenario::getOptions().madeAnyChanges = 1;
             Ui::WindowManager::close(Ui::WindowType::industry, enumValue(id));
+            CargoDist::removeIndustry(id);
             StringManager::emptyUserString(industry->name);
             industry->name = StringIds::null;
             Ui::Windows::IndustryList::removeIndustry(id);

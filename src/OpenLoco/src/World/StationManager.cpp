@@ -517,7 +517,7 @@ namespace OpenLoco::StationManager
         return foundStations;
     }
 
-    static uint16_t deliverCargoToStations(const CargoStations& foundStations, const uint8_t cargoType, const uint8_t cargoQty)
+    static uint16_t deliverCargoToStations(const CargoStations& foundStations, const uint8_t cargoType, const uint8_t cargoQty, const bool generateHolidays)
     {
         const auto ratingTotal = std::accumulate(foundStations.begin(), foundStations.end(), 0, [](const int32_t a, const std::pair<StationId, uint8_t>& b) { return a + b.second * b.second; });
         if (ratingTotal == 0)
@@ -542,7 +542,7 @@ namespace OpenLoco::StationManager
                 share++;
             }
             cargoQtyDelivered += share;
-            station->deliverCargoToStation(cargoType, share);
+            station->deliverCargoToStation(cargoType, share, generateHolidays);
         }
 
         return std::min<uint16_t>(cargoQtyDelivered, cargoQty);
@@ -557,7 +557,7 @@ namespace OpenLoco::StationManager
             return 0;
         }
 
-        return deliverCargoToStations(foundStations, cargoType, cargoQty);
+        return deliverCargoToStations(foundStations, cargoType, cargoQty, true);
     }
 
     // 0x0042F2BF
@@ -579,7 +579,7 @@ namespace OpenLoco::StationManager
             return 0;
         }
 
-        return deliverCargoToStations(foundStations, cargoType, cargoQty);
+        return deliverCargoToStations(foundStations, cargoType, cargoQty, false);
     }
 
     // 0x0048FEF4

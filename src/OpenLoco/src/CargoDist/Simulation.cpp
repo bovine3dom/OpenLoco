@@ -3,6 +3,8 @@
 
 #include "Date.h"
 #include "GameState.h"
+#include "Map/SurfaceElement.h"
+#include "Map/TileManager.h"
 #include "Objects/CargoObject.h"
 #include "Objects/IndustryObject.h"
 #include "Objects/ObjectManager.h"
@@ -20,7 +22,9 @@
 #include "World/IndustryManager.h"
 #include "World/Station.h"
 #include "World/StationManager.h"
+#include "World/TownManager.h"
 #include <OpenLoco/Math/Vector.hpp>
+#include <OpenLoco/Math/Bound.hpp>
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -30,6 +34,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <numeric>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -111,6 +116,7 @@ namespace OpenLoco::CargoDist
         {
             RoutingSettings settings;
             std::array<std::optional<RoutingGraph>, 32> graphs;
+            std::array<std::vector<RoutingDemand>, 32> holidayDemands;
             uint32_t flowCargoMask{};
         };
 
@@ -118,6 +124,8 @@ namespace OpenLoco::CargoDist
         {
             std::map<FlowKey, std::vector<FlowOption>> flows;
             std::map<DestinationFlowKey, std::vector<DestinationOption>> destinationFlows;
+            std::map<FlowKey, std::vector<FlowOption>> holidayFlows;
+            std::map<DestinationFlowKey, std::vector<DestinationOption>> holidayDestinationFlows;
             std::map<StationId, uint32_t> stationAccessibility;
             std::vector<uint8_t> computedCargoes;
             uint64_t solveNanoseconds{};
@@ -156,6 +164,19 @@ namespace OpenLoco::CargoDist
         };
 
         JourneyCache _journeyCache;
+        std::map<FlowKey, std::vector<FlowOption>> _holidayFlows;
+        std::map<DestinationFlowKey, std::vector<DestinationOption>> _holidayDestinationFlows;
+
+        void clearHolidayRouting()
+        {
+            _holidayFlows.clear();
+            _holidayDestinationFlows.clear();
+        }
+
+        void clearJourneyCache()
+        {
+            _journeyCache = {};
+        }
 
         void synchroniseJourneyCacheRevision()
         {
@@ -882,6 +903,40 @@ namespace OpenLoco::CargoDist
             return true;
         }
 
+        StationId findResortStation(const PendingHolidayReturn& pending)
+        {
+            const auto* preferred = StationManager::get(pending.resortStation);
+            if (preferred != nullptr && !preferred->empty())
+            {
+                return pending.resortStation;
+            }
+            for (const auto& station : StationManager::stations())
+            {
+                if (!station.empty() && station.cargoStats[pending.cargo].industryId == pending.resort)
+                {
+                    return station.id();
+                }
+            }
+            return StationId::null;
+        }
+
+        StationId findHomeStation(const PendingHolidayReturn& pending)
+        {
+            const auto* preferred = StationManager::get(pending.homeStation);
+            if (preferred != nullptr && !preferred->empty() && preferred->town == pending.homeTown && preferred->cargoStats[pending.cargo].isAccepted())
+            {
+                return pending.homeStation;
+            }
+            for (const auto& station : StationManager::stations())
+            {
+                if (!station.empty() && station.town == pending.homeTown && station.cargoStats[pending.cargo].isAccepted())
+                {
+                    return station.id();
+                }
+            }
+            return StationId::null;
+        }
+
         std::map<std::tuple<StationId, StationId, ServicePoint, StationId>, uint32_t> getRoutingDemands(uint8_t cargo)
         {
             const auto& state = getStateConst();
@@ -895,7 +950,7 @@ namespace OpenLoco::CargoDist
                 }
                 for (const auto& packet : packets->packets())
                 {
-                    if (packet.origin != StationId::null)
+                    if (packet.tripKind == PassengerTripKind::ordinary && packet.origin != StationId::null)
                     {
                         const auto destination = releaseDestinations && packet.origin == source ? StationId::null : packet.destination;
                         auto& amount = outstanding[{ source, packet.origin, {}, destination }];
@@ -910,7 +965,7 @@ namespace OpenLoco::CargoDist
                 }
                 for (const auto& packet : packets->packets())
                 {
-                    if (packet.origin != StationId::null && packet.nextHop != StationId::null)
+                    if (packet.tripKind == PassengerTripKind::ordinary && packet.origin != StationId::null && packet.nextHop != StationId::null)
                     {
                         auto& amount = outstanding[{ packet.nextHop, packet.origin, packet.arrival, packet.destination }];
                         amount = saturatedAdd(amount, packet.quantity);
@@ -958,6 +1013,88 @@ namespace OpenLoco::CargoDist
             return demands;
         }
 
+        std::vector<RoutingDemand> getHolidayRoutingDemands(const uint8_t cargo)
+        {
+            using DemandKey = std::tuple<StationId, StationId, ServicePoint, StationId>;
+            std::map<DemandKey, uint32_t> amounts;
+            const auto addPacket = [&amounts, cargo](const StationId source, const ServicePoint incoming, const CargoPacket& packet) {
+                if (packet.tripKind == PassengerTripKind::ordinary || packet.origin == StationId::null || packet.destination == StationId::null)
+                {
+                    return;
+                }
+                auto& amount = amounts[{ source, packet.origin, incoming, packet.destination }];
+                amount = saturatedAdd(amount, packet.quantity);
+                if (packet.tripKind == PassengerTripKind::holidayOutbound)
+                {
+                    const PendingHolidayReturn futureReturn{ 0, packet.quantity, packet.destination, packet.origin, packet.homeTown, packet.holidayIndustry, cargo };
+                    const auto resortStation = findResortStation(futureReturn);
+                    const auto homeStation = findHomeStation(futureReturn);
+                    if (resortStation != StationId::null && homeStation != StationId::null)
+                    {
+                        auto& returnAmount = amounts[{ resortStation, resortStation, {}, homeStation }];
+                        returnAmount = saturatedAdd(returnAmount, packet.quantity);
+                    }
+                }
+            };
+            const auto addPackets = [&addPacket](const StationId source, const ServicePoint incoming, const PacketList* packets) {
+                if (packets == nullptr)
+                {
+                    return;
+                }
+                for (const auto& packet : packets->packets())
+                {
+                    addPacket(source, incoming, packet);
+                }
+            };
+            for (const auto& [key, packets] : getStateConst().stationCargo)
+            {
+                if (key.cargo == cargo)
+                {
+                    addPackets(key.station, {}, &packets);
+                }
+            }
+            forEachVehicleCargo([&](const auto&, const VehicleCargoKey key, const auto& nativeCargo) {
+                if (nativeCargo.type != cargo)
+                {
+                    return;
+                }
+                const auto* packets = getVehicleCargoConst(key);
+                if (packets == nullptr)
+                {
+                    return;
+                }
+                for (const auto& packet : packets->packets())
+                {
+                    if (packet.nextHop != StationId::null)
+                    {
+                        addPacket(packet.nextHop, packet.arrival, packet);
+                    }
+                }
+            });
+            for (const auto& pending : getStateConst().pendingHolidayReturns)
+            {
+                if (pending.cargo == cargo)
+                {
+                    const auto resortStation = findResortStation(pending);
+                    const auto homeStation = findHomeStation(pending);
+                    if (resortStation != StationId::null && homeStation != StationId::null)
+                    {
+                        auto& amount = amounts[{ resortStation, resortStation, {}, homeStation }];
+                        amount = saturatedAdd(amount, pending.quantity);
+                    }
+                }
+            }
+
+            std::vector<RoutingDemand> demands;
+            demands.reserve(amounts.size());
+            for (const auto& [key, amount] : amounts)
+            {
+                const auto& [source, origin, incoming, destination] = key;
+                demands.push_back({ source, origin, amount, incoming, destination });
+            }
+            return demands;
+        }
+
         struct PassengerIndustryActivity
         {
             uint32_t previousMonthVisitors{};
@@ -989,12 +1126,65 @@ namespace OpenLoco::CargoDist
             return requiresPassengers ? std::optional<PassengerIndustryActivity>{ activity } : std::nullopt;
         }
 
+        bool isHolidayResortObject(const IndustryObject& object, const uint8_t cargo)
+        {
+            return isPassengerCargo(cargo)
+                && object.hasFlags(IndustryObjectFlags::farmTilesDrawAboveSnow)
+                && object.hasFlags(IndustryObjectFlags::farmTilesPartialCoverage)
+                && std::find(std::begin(object.requiredCargoType), std::end(object.requiredCargoType), cargo) != std::end(object.requiredCargoType)
+                && std::find(std::begin(object.producedCargoType), std::end(object.producedCargoType), cargo) != std::end(object.producedCargoType);
+        }
+
+        uint32_t getHolidayGuests(const State& state, const IndustryId industry)
+        {
+            uint32_t guests = 0;
+            for (const auto& pending : state.pendingHolidayReturns)
+            {
+                if (!pending.released && pending.resort == industry)
+                {
+                    guests = saturatedAdd(guests, pending.quantity);
+                }
+            }
+            const auto addPackets = [&](const PacketList& packets) {
+                for (const auto& packet : packets.packets())
+                {
+                    if (packet.tripKind == PassengerTripKind::holidayOutbound && packet.holidayIndustry == industry)
+                    {
+                        guests = saturatedAdd(guests, packet.quantity);
+                    }
+                }
+            };
+            for (const auto& [key, packets] : state.stationCargo)
+            {
+                addPackets(packets);
+            }
+            for (const auto& [key, packets] : state.vehicleCargo)
+            {
+                addPackets(packets);
+            }
+            return guests;
+        }
+
+        uint32_t getHolidayDemand(const State& state, const Station& station, const uint8_t cargo)
+        {
+            const auto supply = state.supply.find({ cargo, station.id() });
+            const auto* town = TownManager::get(station.town);
+            if (supply == state.supply.end() || supply->second == 0 || !state.holidaySources.contains({ station.id(), cargo }) || town == nullptr || town->empty())
+            {
+                return 0;
+            }
+            return std::max<uint32_t>(1, static_cast<uint64_t>(supply->second) * getHolidayPercentage(town->size) / 100);
+        }
+
         RoutingGraph buildGraph(uint8_t cargo, bool includeDemands = true)
         {
             struct PassengerIndustryGroup
             {
                 uint32_t bonus{};
+                uint32_t holidayCapacity{};
+                uint8_t holidayPopularity{};
                 bool hasOutboundSupply{};
+                bool holidayResort{};
                 std::vector<size_t> nodes;
             };
 
@@ -1022,6 +1212,8 @@ namespace OpenLoco::CargoDist
                 const auto industryIndex = enumValue(industryId);
                 const auto hasValidPassengerIndustry = industryPassengerSink && industryIndex < passengerIndustries.size();
                 const auto industryActivity = hasValidPassengerIndustry ? getPassengerIndustryActivity(industryId, cargo) : std::nullopt;
+                const auto* industry = hasValidPassengerIndustry ? IndustryManager::get(industryId) : nullptr;
+                const auto holidayResort = industry != nullptr && !industry->empty() && isHolidayResortObject(*industry->getObject(), cargo);
                 graph.nodes.push_back({
                     station.id(),
                     station.x,
@@ -1031,21 +1223,39 @@ namespace OpenLoco::CargoDist
                     attraction,
                     industryPassengerSink && !hasValidPassengerIndustry,
                     station.town,
+                    graph.passengerRouting ? getHolidayDemand(state, station, cargo) : 0,
+                    0,
+                    0,
+                    IndustryId::null,
                 });
                 if (hasValidPassengerIndustry)
                 {
                     auto& group = passengerIndustries[industryIndex];
                     group.nodes.push_back(graph.nodes.size() - 1);
+                    group.holidayResort |= holidayResort;
                     if (industryActivity.has_value())
                     {
                         group.bonus = getPassengerIndustryBonus(industryActivity->previousMonthVisitors);
                         const auto supply = state.supply.find({ cargo, station.id() });
                         group.hasOutboundSupply |= supply != state.supply.end() && supply->second != 0;
                     }
+                    if (holidayResort && group.nodes.size() == 1)
+                    {
+                        const auto activity = state.resorts.find(industryId);
+                        if (activity != state.resorts.end())
+                        {
+                            group.holidayPopularity = activity->second.popularity;
+                            const auto guests = getHolidayGuests(state, industryId);
+                            group.holidayCapacity = activity->second.capacity > guests
+                                ? activity->second.capacity - guests
+                                : 0;
+                        }
+                    }
                 }
             }
-            for (auto& group : passengerIndustries)
+            for (size_t industryIndex = 0; industryIndex < passengerIndustries.size(); ++industryIndex)
             {
+                auto& group = passengerIndustries[industryIndex];
                 std::sort(group.nodes.begin(), group.nodes.end(), [&graph](const auto lhs, const auto rhs) {
                     return enumValue(graph.nodes[lhs].station) < enumValue(graph.nodes[rhs].station);
                 });
@@ -1054,6 +1264,12 @@ namespace OpenLoco::CargoDist
                 for (uint32_t i = 0; i < stationCount; ++i)
                 {
                     auto& node = graph.nodes[group.nodes[i]];
+                    if (group.holidayResort)
+                    {
+                        node.holidayIndustry = IndustryId(static_cast<uint8_t>(industryIndex));
+                        node.holidayCapacity = group.holidayCapacity;
+                        node.holidayPopularity = group.holidayPopularity;
+                    }
                     node.passengerSink = isPassengerIndustrySink(producesPassengers, group.hasOutboundSupply);
                     if (!producesPassengers)
                     {
@@ -1082,6 +1298,184 @@ namespace OpenLoco::CargoDist
             return graph;
         }
 
+        struct HolidayFlowCalculation
+        {
+            std::vector<FlowShare> shares;
+            std::map<DestinationFlowKey, std::vector<DestinationOption>> destinations;
+        };
+
+        HolidayFlowCalculation calculateHolidayFlows(const uint8_t cargo, const RoutingGraph& graph, const std::vector<RoutingDemand>& existingDemands, const RoutingSettings& settings)
+        {
+            struct Candidate
+            {
+                size_t source{};
+                size_t destination{};
+                IndustryId industry = IndustryId::null;
+                uint32_t weight{};
+                uint32_t amount{};
+                uint64_t remainder{};
+            };
+
+            const auto getCost = [](const std::vector<StationJourneyCost>& costs, const StationId station) {
+                const auto found = std::find_if(costs.begin(), costs.end(), [station](const auto& item) { return item.destination == station; });
+                return found == costs.end() ? kUnreachableJourneyCost : found->cost;
+            };
+
+            std::map<IndustryId, uint32_t> capacities;
+            for (const auto& node : graph.nodes)
+            {
+                if (node.holidayIndustry != IndustryId::null)
+                {
+                    capacities[node.holidayIndustry] = std::max(capacities[node.holidayIndustry], node.holidayCapacity);
+                }
+            }
+            if (capacities.empty() && existingDemands.empty())
+            {
+                return {};
+            }
+
+            std::map<StationId, std::vector<StationJourneyCost>> reverseCosts;
+            std::vector<Candidate> candidates;
+            for (size_t source = 0; source < graph.nodes.size(); ++source)
+            {
+                if (graph.nodes[source].holidayDemand == 0)
+                {
+                    continue;
+                }
+                const auto outwardCosts = calculateJourneyCosts(graph, graph.nodes[source].station);
+                std::map<IndustryId, Candidate> bestByIndustry;
+                for (size_t destination = 0; destination < graph.nodes.size(); ++destination)
+                {
+                    const auto& destinationNode = graph.nodes[destination];
+                    if (destinationNode.holidayIndustry == IndustryId::null || destinationNode.holidayCapacity == 0 || !destinationNode.accepts || source == destination)
+                    {
+                        continue;
+                    }
+                    const auto outward = getCost(outwardCosts, destinationNode.station);
+                    if (outward == kUnreachableJourneyCost)
+                    {
+                        continue;
+                    }
+                    auto [reverse, inserted] = reverseCosts.try_emplace(destinationNode.station);
+                    if (inserted)
+                    {
+                        reverse->second = calculateJourneyCosts(graph, destinationNode.station);
+                    }
+                    const auto returnCost = getCost(reverse->second, graph.nodes[source].station);
+                    if (returnCost == kUnreachableJourneyCost)
+                    {
+                        continue;
+                    }
+                    const auto averageCost = outward / 2 + returnCost / 2 + (outward % 2 + returnCost % 2) / 2;
+                    const auto scaledWeight = static_cast<uint64_t>(std::max<uint8_t>(1, destinationNode.holidayPopularity)) * 65536;
+                    const auto weight = static_cast<uint32_t>(std::clamp<uint64_t>(scaledWeight / std::max<uint64_t>(1, averageCost), 1, std::numeric_limits<uint32_t>::max()));
+                    Candidate candidate{ source, destination, destinationNode.holidayIndustry, weight };
+                    const auto found = bestByIndustry.find(candidate.industry);
+                    if (found == bestByIndustry.end() || std::tie(candidate.weight, destinationNode.station) > std::tie(found->second.weight, graph.nodes[found->second.destination].station))
+                    {
+                        bestByIndustry[candidate.industry] = candidate;
+                    }
+                }
+
+                uint64_t totalWeight = 0;
+                for (const auto& [industry, candidate] : bestByIndustry)
+                {
+                    totalWeight += candidate.weight;
+                }
+                if (totalWeight == 0)
+                {
+                    continue;
+                }
+                const auto first = candidates.size();
+                uint32_t allocated = 0;
+                for (auto& [industry, candidate] : bestByIndustry)
+                {
+                    const auto scaled = static_cast<uint64_t>(graph.nodes[source].holidayDemand) * candidate.weight;
+                    candidate.amount = static_cast<uint32_t>(scaled / totalWeight);
+                    candidate.remainder = scaled % totalWeight;
+                    allocated += candidate.amount;
+                    candidates.push_back(candidate);
+                }
+                auto remaining = graph.nodes[source].holidayDemand - allocated;
+                std::vector<size_t> order(candidates.size() - first);
+                std::iota(order.begin(), order.end(), first);
+                std::sort(order.begin(), order.end(), [&](const auto lhs, const auto rhs) {
+                    return std::tie(candidates[lhs].remainder, candidates[lhs].industry) > std::tie(candidates[rhs].remainder, candidates[rhs].industry);
+                });
+                for (size_t i = 0; remaining != 0 && !order.empty(); ++i, --remaining)
+                {
+                    ++candidates[order[i % order.size()]].amount;
+                }
+            }
+
+            for (const auto& [industry, capacity] : capacities)
+            {
+                uint64_t requested = 0;
+                for (const auto& candidate : candidates)
+                {
+                    if (candidate.industry == industry)
+                    {
+                        requested += candidate.amount;
+                    }
+                }
+                if (requested <= capacity || requested == 0)
+                {
+                    continue;
+                }
+                uint32_t allocated = 0;
+                std::vector<size_t> order;
+                for (size_t i = 0; i < candidates.size(); ++i)
+                {
+                    auto& candidate = candidates[i];
+                    if (candidate.industry != industry)
+                    {
+                        continue;
+                    }
+                    const auto scaled = static_cast<uint64_t>(candidate.amount) * capacity;
+                    candidate.amount = static_cast<uint32_t>(scaled / requested);
+                    candidate.remainder = scaled % requested;
+                    allocated += candidate.amount;
+                    order.push_back(i);
+                }
+                std::sort(order.begin(), order.end(), [&](const auto lhs, const auto rhs) {
+                    return std::tie(candidates[lhs].remainder, candidates[lhs].source) > std::tie(candidates[rhs].remainder, candidates[rhs].source);
+                });
+                auto remaining = capacity - allocated;
+                for (size_t i = 0; remaining != 0 && !order.empty(); ++i, --remaining)
+                {
+                    ++candidates[order[i % order.size()]].amount;
+                }
+            }
+
+            auto holidayGraph = graph;
+            holidayGraph.demands = existingDemands;
+            for (auto& node : holidayGraph.nodes)
+            {
+                node.supply = 0;
+                node.accepts = true;
+                node.passengerSink = false;
+            }
+            HolidayFlowCalculation result;
+            for (const auto& candidate : candidates)
+            {
+                if (candidate.amount == 0)
+                {
+                    continue;
+                }
+                const auto source = graph.nodes[candidate.source].station;
+                const auto destination = graph.nodes[candidate.destination].station;
+                result.destinations[{ cargo, source, source, {} }].push_back({ destination, candidate.amount, 0 });
+                holidayGraph.demands.push_back({ source, source, candidate.amount, {}, destination });
+                holidayGraph.demands.push_back({ destination, destination, candidate.amount, {}, source });
+            }
+            for (auto& [key, options] : result.destinations)
+            {
+                std::sort(options.begin(), options.end(), [](const auto& lhs, const auto& rhs) { return lhs.destination < rhs.destination; });
+            }
+            result.shares = calculateAsymmetricFlows(holidayGraph, settings);
+            return result;
+        }
+
         std::map<ServiceEdgeKey, CommittedServiceDemand> calculateCommittedServiceDemands(uint8_t cargo)
         {
             const auto& state = getStateConst();
@@ -1103,7 +1497,7 @@ namespace OpenLoco::CargoDist
                 }
             }
 
-            std::map<FlowKey, uint32_t> inbound;
+            std::map<std::pair<FlowKey, bool>, uint32_t> inbound;
             if (!state.vehicleCargo.empty())
             {
                 forEachVehicleCargo([&](const auto&, VehicleCargoKey key, const auto& nativeCargo) {
@@ -1122,17 +1516,23 @@ namespace OpenLoco::CargoDist
                         {
                             continue;
                         }
-                        auto& quantity = inbound[{ cargo, packet.nextHop, packet.origin, packet.arrival, packet.destination }];
+                        const FlowKey flow{ cargo, packet.nextHop, packet.origin, packet.arrival, packet.destination };
+                        auto& quantity = inbound[{ flow, packet.tripKind != PassengerTripKind::ordinary }];
                         quantity = saturatedAdd(quantity, packet.quantity);
                     }
                 });
             }
-            for (const auto& [key, quantity] : inbound)
+            for (const auto& [entry, quantity] : inbound)
             {
-                auto shares = previewVia(cargo, key.station, key.origin, key.destination, quantity, key.incoming);
+                const auto& [key, holiday] = entry;
+                auto shares = holiday
+                    ? previewFixedVia(_holidayFlows, cargo, key.station, key.origin, key.destination, quantity, key.incoming)
+                    : previewVia(cargo, key.station, key.origin, key.destination, quantity, key.incoming);
                 if (shares.empty() && !key.incoming.empty())
                 {
-                    shares = previewVia(cargo, key.station, key.origin, key.destination, quantity);
+                    shares = holiday
+                        ? previewFixedVia(_holidayFlows, cargo, key.station, key.origin, key.destination, quantity)
+                        : previewVia(cargo, key.station, key.origin, key.destination, quantity);
                 }
                 for (const auto& share : shares)
                 {
@@ -1286,6 +1686,15 @@ namespace OpenLoco::CargoDist
             return candidates;
         }
 
+        std::vector<ViaShare> allocatePacketVia(const uint8_t cargo, const StationId station, const CargoPacket& packet, const ServicePoint incoming = {}, const StationId excluded = StationId::null)
+        {
+            if (packet.tripKind == PassengerTripKind::ordinary)
+            {
+                return allocateVia(cargo, station, packet.origin, packet.destination, packet.quantity, incoming, excluded);
+            }
+            return allocateFixedVia(_holidayFlows, cargo, station, packet.origin, packet.destination, packet.quantity, incoming, excluded);
+        }
+
         void rerouteWaitingCargo(uint8_t cargo)
         {
             auto& state = getState();
@@ -1300,9 +1709,10 @@ namespace OpenLoco::CargoDist
                 for (auto packet : packets.packets())
                 {
                     const auto requested = packet.quantity;
-                    const auto releaseDestination = isPassengerCargo(cargo) && packet.origin == key.station;
+                    const auto releaseDestination = isPassengerCargo(cargo) && packet.origin == key.station && packet.tripKind == PassengerTripKind::ordinary;
                     const auto destination = releaseDestination ? StationId::null : packet.destination;
-                    const auto shares = allocateVia(cargo, key.station, packet.origin, destination, packet.quantity, ServicePoint{}, key.station);
+                    packet.destination = destination;
+                    const auto shares = allocatePacketVia(cargo, key.station, packet, ServicePoint{}, key.station);
                     if (shares.empty())
                     {
                         const auto existingRoute = ServiceEdgeKey{ cargo, key.station, packet.nextHop, packet.departure, packet.arrival };
@@ -1350,11 +1760,63 @@ namespace OpenLoco::CargoDist
             }
         }
 
+        StationId findHolidayDestination(const CargoPacket& packet, const uint8_t cargo)
+        {
+            const auto matches = [&](const Station& station) {
+                if (station.empty() || !station.cargoStats[cargo].isAccepted())
+                {
+                    return false;
+                }
+                return packet.tripKind == PassengerTripKind::holidayOutbound
+                    ? station.cargoStats[cargo].industryId == packet.holidayIndustry
+                    : station.town == packet.homeTown;
+            };
+            const auto* current = StationManager::get(packet.destination);
+            if (current != nullptr && matches(*current))
+            {
+                return packet.destination;
+            }
+            for (const auto& station : StationManager::stations())
+            {
+                if (matches(station))
+                {
+                    return station.id();
+                }
+            }
+            return StationId::null;
+        }
+
+        bool repairHolidayDestination(CargoPacket& packet, const uint8_t cargo, const bool clearRoute)
+        {
+            if (packet.tripKind == PassengerTripKind::ordinary)
+            {
+                return false;
+            }
+            const auto destination = findHolidayDestination(packet, cargo);
+            if (destination == packet.destination)
+            {
+                return false;
+            }
+            packet.destination = destination;
+            if (clearRoute)
+            {
+                packet.nextHop = StationId::null;
+                packet.departure = {};
+                packet.arrival = {};
+            }
+            return true;
+        }
+
         void releaseRejectedDestinations()
         {
             bool changed = false;
             const auto release = [&changed](PacketList& packets, uint8_t cargo, bool clearRoute) {
                 packets.transform([&changed, cargo, clearRoute](CargoPacket& packet) {
+                    if (packet.tripKind != PassengerTripKind::ordinary)
+                    {
+                        changed |= repairHolidayDestination(packet, cargo, clearRoute);
+                        return;
+                    }
                     if (packet.destination != StationId::null)
                     {
                         const auto* destination = StationManager::get(packet.destination);
@@ -1403,6 +1865,8 @@ namespace OpenLoco::CargoDist
             std::erase_if(state.serviceEdges, [cargo](const auto& item) { return item.first.cargo == cargo; });
             std::erase_if(state.flows, [cargo](const auto& item) { return item.first.cargo == cargo; });
             std::erase_if(state.destinationFlows, [cargo](const auto& item) { return item.first.cargo == cargo; });
+            std::erase_if(_holidayFlows, [cargo](const auto& item) { return item.first.cargo == cargo; });
+            std::erase_if(_holidayDestinationFlows, [cargo](const auto& item) { return item.first.cargo == cargo; });
         }
 
         FlowCalculationInput captureFlowCalculationInput(bool includeFlowGraphs = true)
@@ -1416,6 +1880,10 @@ namespace OpenLoco::CargoDist
                 if (flow || passenger)
                 {
                     input.graphs[cargo] = buildGraph(cargo, flow);
+                    if (flow && passenger)
+                    {
+                        input.holidayDemands[cargo] = getHolidayRoutingDemands(cargo);
+                    }
                     input.flowCargoMask |= static_cast<uint32_t>(flow) << cargo;
                 }
             }
@@ -1448,6 +1916,13 @@ namespace OpenLoco::CargoDist
                 if ((input.flowCargoMask & (1U << cargo)) != 0)
                 {
                     buildFlowMaps(result.flows, result.destinationFlows, cargo, calculateAsymmetricFlows(*input.graphs[cargo], input.settings));
+                    if (input.graphs[cargo]->passengerRouting)
+                    {
+                        auto holiday = calculateHolidayFlows(cargo, *input.graphs[cargo], input.holidayDemands[cargo], input.settings);
+                        std::map<DestinationFlowKey, std::vector<DestinationOption>> ignoredDestinations;
+                        buildFlowMaps(result.holidayFlows, ignoredDestinations, cargo, holiday.shares);
+                        result.holidayDestinationFlows.merge(holiday.destinations);
+                    }
                     result.computedCargoes.push_back(cargo);
                 }
             }
@@ -1631,6 +2106,8 @@ namespace OpenLoco::CargoDist
             auto& state = getState();
             state.flows = std::move(result.flows);
             state.destinationFlows = std::move(result.destinationFlows);
+            _holidayFlows = std::move(result.holidayFlows);
+            _holidayDestinationFlows = std::move(result.holidayDestinationFlows);
             state.stationAccessibility = std::move(result.stationAccessibility);
             state.hasStationAccessibilitySnapshot = true;
             ++state.routingRevision;
@@ -1654,6 +2131,23 @@ namespace OpenLoco::CargoDist
             releaseRejectedDestinations();
             auto input = captureFlowCalculationInput();
             commitFlowCalculation(solveFlowCalculation(input));
+        }
+
+        void recalculateHolidayFlows()
+        {
+            clearHolidayRouting();
+            for (uint8_t cargo = 0; cargo < getStateConst().settings.modes.size(); ++cargo)
+            {
+                if (!isEnabled(cargo) || !isPassengerCargo(cargo))
+                {
+                    continue;
+                }
+                const auto graph = buildGraph(cargo, false);
+                auto holiday = calculateHolidayFlows(cargo, graph, getHolidayRoutingDemands(cargo), getStateConst().settings.routing);
+                std::map<DestinationFlowKey, std::vector<DestinationOption>> ignoredDestinations;
+                buildFlowMaps(_holidayFlows, ignoredDestinations, cargo, holiday.shares);
+                _holidayDestinationFlows.merge(holiday.destinations);
+            }
         }
     }
 
@@ -1710,7 +2204,190 @@ namespace OpenLoco::CargoDist
         }
     }
 
-    void addProducedCargo(StationId station, uint8_t cargo, StationCargoStats& nativeCargo, uint16_t quantity)
+    bool isHolidayResort(const IndustryId industryId, const uint8_t cargo)
+    {
+        const auto* industry = IndustryManager::get(industryId);
+        return industry != nullptr && !industry->empty() && industry->getObject() != nullptr && isHolidayResortObject(*industry->getObject(), cargo);
+    }
+
+    static uint16_t countLiveResortSlopes(const Industry& industry)
+    {
+        const auto* object = industry.getObject();
+        if (object == nullptr)
+        {
+            return 0;
+        }
+        constexpr auto kRadius = 18;
+        const auto centre = World::toTileSpace(World::Pos2{ industry.x, industry.y });
+        const auto topLeft = centre - World::TilePos2{ kRadius, kRadius };
+        const auto bottomRight = centre + World::TilePos2{ kRadius, kRadius };
+        uint16_t count = 0;
+        for (const auto& tilePos : World::getClampedRange(topLeft, bottomRight))
+        {
+            const auto* surface = World::TileManager::get(tilePos).surface();
+            if (surface == nullptr || !surface->isIndustrial() || surface->industryId() != industry.id() || surface->snowCoverage() < 4)
+            {
+                continue;
+            }
+            const auto stage = surface->getGrowthStage();
+            if (stage == 0 || stage != object->farmTileGrowthStageNoProduction)
+            {
+                count = Math::Bound::add(count, 1);
+            }
+        }
+        return count;
+    }
+
+    static void refreshResorts(const bool advanceMonth)
+    {
+        auto& state = getState();
+        std::set<IndustryId> active;
+        for (const auto& industry : IndustryManager::industries())
+        {
+            if (industry.empty() || industry.getObject() == nullptr)
+            {
+                continue;
+            }
+            bool activeResort = false;
+            for (uint8_t cargo = 0; cargo < state.settings.modes.size(); ++cargo)
+            {
+                if (getMode(cargo) == DistributionMode::asymmetric && isHolidayResortObject(*industry.getObject(), cargo))
+                {
+                    activeResort = true;
+                    break;
+                }
+            }
+            if (!activeResort)
+            {
+                continue;
+            }
+            active.insert(industry.id());
+            const auto [found, inserted] = state.resorts.try_emplace(industry.id());
+            auto& activity = found->second;
+            const auto liveSlopes = countLiveResortSlopes(industry);
+            const auto baseCapacity = static_cast<uint32_t>(liveSlopes) * 4;
+            const auto occupancyScore = baseCapacity == 0 ? 0 : std::min<uint64_t>(100, static_cast<uint64_t>(activity.guestDays) * 100 / (baseCapacity * 30));
+            const auto slopeScore = static_cast<uint8_t>(std::min<uint32_t>(100, static_cast<uint32_t>(liveSlopes) * 4));
+            if (inserted)
+            {
+                activity.popularity = slopeScore / 2;
+            }
+            else if (advanceMonth)
+            {
+                activity.popularity = updateResortPopularity(activity.popularity, slopeScore, static_cast<uint8_t>(occupancyScore));
+            }
+            activity.liveSlopes = liveSlopes;
+            activity.capacity = getResortCapacity(liveSlopes, activity.popularity);
+            if (advanceMonth)
+            {
+                activity.guestDays = 0;
+            }
+        }
+        std::erase_if(state.resorts, [&](const auto& item) { return !active.contains(item.first); });
+    }
+
+    void updateResortsMonthly()
+    {
+        refreshResorts(true);
+    }
+
+    void scheduleHolidayReturn(const uint8_t cargo, const StationId resortStation, const CargoPacket& packet)
+    {
+        const auto* station = StationManager::get(resortStation);
+        const auto resort = station == nullptr || station->empty() ? IndustryId::null : station->cargoStats[cargo].industryId;
+        if (packet.tripKind != PassengerTripKind::holidayOutbound || packet.quantity == 0 || packet.origin == StationId::null || packet.homeTown == TownId::null
+            || resort != packet.holidayIndustry || !isHolidayResort(resort, cargo))
+        {
+            return;
+        }
+        auto& state = getState();
+        const auto firstDay = getCurrentDay() + 7;
+        const auto each = packet.quantity / 8;
+        const auto remainder = static_cast<uint16_t>(packet.quantity % 8);
+        const auto rotation = (enumValue(packet.origin) + enumValue(resortStation) + getCurrentDay()) % 8;
+        for (uint8_t i = 0; i < 8; ++i)
+        {
+            const auto offset = static_cast<uint16_t>((i + 8 - rotation) % 8);
+            const auto quantity = static_cast<uint16_t>(each + (offset < remainder));
+            if (quantity == 0)
+            {
+                continue;
+            }
+            state.pendingHolidayReturns.push_back({ firstDay + i, quantity, resortStation, packet.origin, packet.homeTown, resort, cargo });
+        }
+        std::sort(state.pendingHolidayReturns.begin(), state.pendingHolidayReturns.end());
+        markCargoChanged();
+        markGraphDirty();
+    }
+
+    static std::optional<CargoPacket> createHolidayPacket(const StationId source, const uint8_t cargo, HolidaySourceState& sourceState)
+    {
+        auto& state = getState();
+        const auto options = _holidayDestinationFlows.find({ cargo, source, source, {} });
+        const auto* sourceStation = StationManager::get(source);
+        if (options == _holidayDestinationFlows.end() || sourceStation == nullptr || sourceStation->empty())
+        {
+            return std::nullopt;
+        }
+
+        struct Candidate
+        {
+            const DestinationOption* option;
+            IndustryId industry;
+        };
+        std::vector<Candidate> candidates;
+        uint64_t totalWeight = 0;
+        for (const auto& option : options->second)
+        {
+            const auto* destination = StationManager::get(option.destination);
+            if (destination == nullptr || destination->empty())
+            {
+                continue;
+            }
+            const auto industry = destination->cargoStats[cargo].industryId;
+            const auto activity = state.resorts.find(industry);
+            if (!isHolidayResort(industry, cargo) || activity == state.resorts.end() || getHolidayGuests(state, industry) >= activity->second.capacity
+                || !_holidayFlows.contains({ cargo, source, source, {}, option.destination }))
+            {
+                continue;
+            }
+            candidates.push_back({ &option, industry });
+            totalWeight += option.weight;
+        }
+        if (candidates.empty() || totalWeight == 0)
+        {
+            return std::nullopt;
+        }
+
+        auto ticket = static_cast<uint64_t>(sourceState.sequence++) % totalWeight;
+        const Candidate* selected = nullptr;
+        for (const auto& candidate : candidates)
+        {
+            if (ticket < candidate.option->weight)
+            {
+                selected = &candidate;
+                break;
+            }
+            ticket -= candidate.option->weight;
+        }
+        if (selected == nullptr)
+        {
+            return std::nullopt;
+        }
+        const auto route = allocateFixedVia(_holidayFlows, cargo, source, source, selected->option->destination, 1);
+        if (route.empty())
+        {
+            return std::nullopt;
+        }
+        const auto& share = route.front();
+        CargoPacket packet{ 1, source, share.via, 0, share.departure, share.arrival, share.destination };
+        packet.tripKind = PassengerTripKind::holidayOutbound;
+        packet.holidayIndustry = selected->industry;
+        packet.homeTown = sourceStation->town;
+        return packet;
+    }
+
+    void addProducedCargo(StationId station, uint8_t cargo, StationCargoStats& nativeCargo, uint16_t quantity, bool generateHolidays)
     {
         if (quantity == 0)
         {
@@ -1734,6 +2411,28 @@ namespace OpenLoco::CargoDist
                 }
             }
             markCargoChanged();
+        }
+        if (generateHolidays && isPassengerCargo(cargo) && getMode(cargo) == DistributionMode::asymmetric)
+        {
+            const auto* sourceStation = StationManager::get(station);
+            const auto* town = sourceStation == nullptr ? nullptr : TownManager::get(sourceStation->town);
+            if (town != nullptr && !town->empty())
+            {
+                auto& holidaySource = getState().holidaySources[{ station, cargo }];
+                const auto scaled = static_cast<uint32_t>(holidaySource.remainder) + static_cast<uint32_t>(quantity) * getHolidayPercentage(town->size);
+                auto holidayQuantity = scaled / 100;
+                holidaySource.remainder = static_cast<uint8_t>(scaled % 100);
+                while (holidayQuantity-- != 0 && packets.quantity() != std::numeric_limits<uint32_t>::max())
+                {
+                    const auto packet = createHolidayPacket(station, cargo, holidaySource);
+                    if (!packet.has_value())
+                    {
+                        break;
+                    }
+                    packets.append(*packet);
+                    markCargoChanged();
+                }
+            }
         }
         auto& supply = getState().supply[{ cargo, station }];
         const auto isNewSource = supply == 0;
@@ -1761,8 +2460,7 @@ namespace OpenLoco::CargoDist
         packets->ageAtStation(station);
         if (nativeCargo.quantity < quantityBeforeUpdate)
         {
-            const auto removed = packets->take(quantityBeforeUpdate - nativeCargo.quantity);
-            if (!removed.empty())
+            if (packets->removeForRating(quantityBeforeUpdate - nativeCargo.quantity) != 0)
             {
                 invalidateJourneyGraph(cargo);
                 markCargoChanged();
@@ -1961,7 +2659,7 @@ namespace OpenLoco::CargoDist
         bool needsRecalculation = false;
         for (auto packet : arriving.packets())
         {
-            if (forceUnload && nativeStationCargo.isAccepted())
+            if (forceUnload && nativeStationCargo.isAccepted() && packet.tripKind == PassengerTripKind::ordinary)
             {
                 result.delivered.append(packet);
                 continue;
@@ -1978,10 +2676,10 @@ namespace OpenLoco::CargoDist
                 needsRecalculation = true;
             }
             const auto excluded = rejectedDestination ? station : StationId::null;
-            auto shares = allocateVia(nativeCargo.type, station, packet.origin, packet.destination, packet.quantity, packet.arrival, excluded);
+            auto shares = allocatePacketVia(nativeCargo.type, station, packet, packet.arrival, excluded);
             if (shares.empty() && !packet.arrival.empty())
             {
-                shares = allocateVia(nativeCargo.type, station, packet.origin, packet.destination, packet.quantity, ServicePoint{}, excluded);
+                shares = allocatePacketVia(nativeCargo.type, station, packet, ServicePoint{}, excluded);
             }
             const auto returnsToPreviousOccurrence = !forceUnload && onwardLeg.has_value()
                 && onwardLeg->from == station
@@ -2134,6 +2832,10 @@ namespace OpenLoco::CargoDist
             return std::any_of(packets.packets().begin(), packets.packets().end(), [](const auto& packet) { return packet.transferCredit != 0; });
         };
         const auto& state = getStateConst();
+        if (std::any_of(state.pendingHolidayReturns.begin(), state.pendingHolidayReturns.end(), [cargo](const auto& pending) { return pending.cargo == cargo && pending.transferCredit != 0; }))
+        {
+            return true;
+        }
         if (std::any_of(state.stationCargo.begin(), state.stationCargo.end(), [&](const auto& item) { return item.first.cargo == cargo && hasCredits(item.second); }))
         {
             return true;
@@ -2148,10 +2850,23 @@ namespace OpenLoco::CargoDist
 
     bool canDisableDistribution(const uint8_t cargo)
     {
-        const auto& stationCargo = getStateConst().stationCargo;
+        const auto& state = getStateConst();
+        const auto& stationCargo = state.stationCargo;
+        const auto hasHolidayPackets = [cargo](const auto& item) {
+            return item.first.cargo == cargo && std::any_of(item.second.packets().begin(), item.second.packets().end(), [](const auto& packet) { return packet.tripKind != PassengerTripKind::ordinary; });
+        };
+        bool hasVehicleHolidayPackets = false;
+        forEachVehicleCargo([&](const auto&, const VehicleCargoKey key, const auto& nativeCargo) {
+            const auto* packets = getVehicleCargoConst(key);
+            hasVehicleHolidayPackets |= nativeCargo.type == cargo && packets != nullptr
+                && std::any_of(packets->packets().begin(), packets->packets().end(), [](const auto& packet) { return packet.tripKind != PassengerTripKind::ordinary; });
+        });
         return std::none_of(stationCargo.begin(), stationCargo.end(), [cargo](const auto& item) {
                    return item.first.cargo == cargo && item.second.quantity() > std::numeric_limits<uint16_t>::max();
                })
+            && std::none_of(stationCargo.begin(), stationCargo.end(), hasHolidayPackets)
+            && !hasVehicleHolidayPackets
+            && std::none_of(state.pendingHolidayReturns.begin(), state.pendingHolidayReturns.end(), [cargo](const auto& pending) { return pending.cargo == cargo; })
             && !hasOutstandingTransferCredits(cargo);
     }
 
@@ -2204,7 +2919,12 @@ namespace OpenLoco::CargoDist
                 }
             });
             clearRoutingState(cargo);
+            std::erase_if(state.holidaySources, [cargo](const auto& item) { return item.first.cargo == cargo; });
             state.settings.modes[cargo] = mode;
+        }
+        if (isPassengerCargo(cargo))
+        {
+            refreshResorts(false);
         }
         state.nextRecalculationDay = 0;
         state.graphDirty = true;
@@ -2219,6 +2939,7 @@ namespace OpenLoco::CargoDist
         auto& state = getState();
         if (getServiceCargoMask() == 0)
         {
+            clearHolidayRouting();
             state.stationAccessibility.clear();
             state.hasStationAccessibilitySnapshot = true;
             state.graphDirty = false;
@@ -2306,6 +3027,7 @@ namespace OpenLoco::CargoDist
         ++_flowCalculationGeneration;
         _pendingFlowCalculation.reset();
         _flowWorker.reset();
+        clearHolidayRouting();
     }
 
     RecalculationMetrics getRecalculationMetrics()
@@ -2323,9 +3045,15 @@ namespace OpenLoco::CargoDist
             return cargo < state.settings.modes.size() && state.settings.modes[cargo] != DistributionMode::manual;
         };
 
-        const auto validatePackets = [&](const PacketList& packets) {
+        const auto validatePackets = [&](const PacketList& packets, const uint8_t cargo) {
             return std::all_of(packets.packets().begin(), packets.packets().end(), [&](const auto& packet) {
-                return isActiveStation(packet.origin)
+                const auto validKind = packet.tripKind == PassengerTripKind::ordinary || packet.tripKind == PassengerTripKind::holidayOutbound || packet.tripKind == PassengerTripKind::holidayReturn;
+                const auto town = enumValue(packet.homeTown);
+                const auto validHoliday = packet.tripKind == PassengerTripKind::ordinary
+                    ? packet.holidayIndustry == IndustryId::null && packet.homeTown == TownId::null
+                    : isPassengerCargo(cargo) && enumValue(packet.holidayIndustry) < std::size(gameState.industries) && town < std::size(gameState.towns) && !gameState.towns[town].empty();
+                return validKind && validHoliday
+                    && isActiveStation(packet.origin)
                     && (packet.destination == StationId::null || isActiveStation(packet.destination))
                     && (packet.nextHop == StationId::null || isActiveStation(packet.nextHop));
             });
@@ -2348,9 +3076,42 @@ namespace OpenLoco::CargoDist
                 throw std::runtime_error("Invalid CargoDist station accessibility state");
             }
         }
+        for (const auto& [industry, activity] : state.resorts)
+        {
+            const auto index = enumValue(industry);
+            if (index >= std::size(gameState.industries) || activity.popularity > 100)
+            {
+                throw std::runtime_error("Invalid CargoDist resort activity state");
+            }
+        }
+        for (const auto& [key, source] : state.holidaySources)
+        {
+            if (!isEnabled(key.cargo) || !isPassengerCargo(key.cargo) || !isActiveStation(key.station) || source.remainder >= 100)
+            {
+                throw std::runtime_error("Invalid CargoDist holiday source state");
+            }
+        }
+        if (!std::is_sorted(state.pendingHolidayReturns.begin(), state.pendingHolidayReturns.end()))
+        {
+            throw std::runtime_error("Non-canonical CargoDist pending holiday return state");
+        }
+        for (const auto& pending : state.pendingHolidayReturns)
+        {
+            const auto industry = enumValue(pending.resort);
+            const auto town = enumValue(pending.homeTown);
+            if (pending.quantity == 0 || !isEnabled(pending.cargo) || !isPassengerCargo(pending.cargo) || industry >= std::size(gameState.industries)
+                || town >= std::size(gameState.towns) || gameState.towns[town].empty()
+                || (pending.resortStation != StationId::null && !isActiveStation(pending.resortStation))
+                || (pending.homeStation != StationId::null && !isActiveStation(pending.homeStation))
+                || pending.transferCredit < 0 || pending.transferCredit > static_cast<int64_t>(std::numeric_limits<int32_t>::max()) * pending.quantity
+                || (!pending.released && (pending.age != 0 || pending.transferCredit != 0)))
+            {
+                throw std::runtime_error("Invalid CargoDist pending holiday return state");
+            }
+        }
         for (const auto& [key, packets] : state.stationCargo)
         {
-            if (!isEnabled(key.cargo) || !isActiveStation(key.station) || !validatePackets(packets))
+            if (!isEnabled(key.cargo) || !isActiveStation(key.station) || !validatePackets(packets, key.cargo))
             {
                 throw std::runtime_error("Invalid CargoDist station cargo state");
             }
@@ -2397,7 +3158,7 @@ namespace OpenLoco::CargoDist
                 const auto quantity = packets == state.vehicleCargo.end() ? 0 : packets->second.quantity();
                 if (nativeCargo.qty != quantity
                     || (quantity != 0 && (nativeCargo.townFrom != packets->second.representativeOrigin() || nativeCargo.numDays != packets->second.averageAge()))
-                    || (packets != state.vehicleCargo.end() && !validatePackets(packets->second)))
+                    || (packets != state.vehicleCargo.end() && !validatePackets(packets->second, nativeCargo.type)))
                 {
                     throw std::runtime_error("CargoDist vehicle cargo does not match native state");
                 }
@@ -2471,6 +3232,7 @@ namespace OpenLoco::CargoDist
                 station.refreshCargoRoutingMetadata();
             }
         }
+        refreshResorts(false);
         rebuildServiceEdges();
         const auto needsRecalculation = getStateConst().graphDirty || !hasValidServicePlans();
         if (needsRecalculation)
@@ -2479,9 +3241,13 @@ namespace OpenLoco::CargoDist
             // Keep the committed snapshot until the normal worker can replace it.
             getState().graphDirty = hasSavedStationAccessibility;
         }
-        else if (!hasSavedStationAccessibility)
+        else
         {
-            rebuildStationAccessibility();
+            recalculateHolidayFlows();
+            if (!hasSavedStationAccessibility)
+            {
+                rebuildStationAccessibility();
+            }
         }
         if (hasSavedStationAccessibility)
         {
@@ -2490,8 +3256,138 @@ namespace OpenLoco::CargoDist
         }
     }
 
+    static void processHolidayReturns(const bool accrueGuestDays)
+    {
+        auto& state = getState();
+        bool repaired = false;
+        for (auto& [key, packets] : state.stationCargo)
+        {
+            packets.transform([&](auto& packet) { repaired |= repairHolidayDestination(packet, key.cargo, true); });
+        }
+        forEachVehicleCargo([&](const auto&, const VehicleCargoKey key, const auto& nativeCargo) {
+            if (auto* packets = getVehicleCargo(key); packets != nullptr)
+            {
+                packets->transform([&](auto& packet) { repaired |= repairHolidayDestination(packet, nativeCargo.type, false); });
+            }
+        });
+        if (repaired)
+        {
+            markGraphDirty();
+        }
+        bool pendingChanged = false;
+        if (accrueGuestDays)
+        {
+            for (auto& pending : state.pendingHolidayReturns)
+            {
+                if (pending.released)
+                {
+                    pendingChanged |= pending.age != std::numeric_limits<uint8_t>::max();
+                    pending.age = Math::Bound::add(pending.age, 1);
+                    continue;
+                }
+                const auto activity = state.resorts.find(pending.resort);
+                if (activity != state.resorts.end())
+                {
+                    activity->second.guestDays = saturatedAdd(activity->second.guestDays, pending.quantity);
+                }
+            }
+        }
+
+        bool changed = false;
+        for (auto it = state.pendingHolidayReturns.begin(); it != state.pendingHolidayReturns.end();)
+        {
+            if (it->releaseDay > getCurrentDay())
+            {
+                break;
+            }
+            const auto resortStation = findResortStation(*it);
+            const auto homeStation = findHomeStation(*it);
+            if (resortStation == StationId::null || homeStation == StationId::null)
+            {
+                ++it;
+                continue;
+            }
+            if (resortStation == homeStation)
+            {
+                invalidateJourneyGraph(it->cargo);
+                changed = true;
+                it = state.pendingHolidayReturns.erase(it);
+                continue;
+            }
+
+            auto& packets = getOrCreateStationCargo(resortStation, it->cargo);
+            const auto available = std::numeric_limits<uint32_t>::max() - packets.quantity();
+            const auto releaseQuantity = static_cast<uint16_t>(std::min<uint32_t>(available, it->quantity));
+            if (releaseQuantity == 0)
+            {
+                ++it;
+                continue;
+            }
+
+            CargoPacket remainingPacket{ it->quantity, resortStation, StationId::null, it->age, {}, {}, homeStation, it->transferCredit };
+            remainingPacket.tripKind = PassengerTripKind::holidayReturn;
+            remainingPacket.holidayIndustry = it->resort;
+            remainingPacket.homeTown = it->homeTown;
+            auto returnPacket = remainingPacket.extract(releaseQuantity);
+            const auto shares = allocateFixedVia(_holidayFlows, it->cargo, resortStation, resortStation, homeStation, releaseQuantity);
+            if (shares.empty())
+            {
+                packets.append(returnPacket);
+            }
+            else
+            {
+                for (const auto& share : shares)
+                {
+                    auto packet = returnPacket.extract(static_cast<uint16_t>(share.amount));
+                    packet.nextHop = share.via;
+                    packet.departure = share.departure;
+                    packet.arrival = share.arrival;
+                    packets.append(packet);
+                }
+            }
+            auto* station = StationManager::get(resortStation);
+            synchroniseStationCargo(resortStation, it->cargo, station->cargoStats[it->cargo]);
+            station->updateCargoDistribution();
+            auto* industry = IndustryManager::get(it->resort);
+            if (!it->released && industry != nullptr && !industry->empty() && industry->getObject() != nullptr)
+            {
+                for (uint8_t output = 0; output < 2; ++output)
+                {
+                    if (industry->getObject()->producedCargoType[output] == it->cargo)
+                    {
+                        industry->producedCargoQuantityMonthlyTotal[output] = Math::Bound::add(industry->producedCargoQuantityMonthlyTotal[output], releaseQuantity);
+                        industry->producedCargoQuantityDeliveredMonthlyTotal[output] = Math::Bound::add(industry->producedCargoQuantityDeliveredMonthlyTotal[output], releaseQuantity);
+                    }
+                }
+            }
+            invalidateJourneyGraph(it->cargo);
+            changed = true;
+            if (remainingPacket.quantity == 0)
+            {
+                it = state.pendingHolidayReturns.erase(it);
+            }
+            else
+            {
+                it->quantity = remainingPacket.quantity;
+                it->transferCredit = remainingPacket.transferCredit;
+                pendingChanged = true;
+                ++it;
+            }
+        }
+        if (pendingChanged)
+        {
+            std::sort(state.pendingHolidayReturns.begin(), state.pendingHolidayReturns.end());
+        }
+        if (changed)
+        {
+            markCargoChanged();
+            markGraphDirty();
+        }
+    }
+
     void updateDaily()
     {
+        processHolidayReturns(true);
         if (getServiceCargoMask() == 0)
         {
             return;
@@ -2517,10 +3413,163 @@ namespace OpenLoco::CargoDist
         startFlowCalculation(scheduled, true);
     }
 
+    void removeIndustry(const IndustryId industry)
+    {
+        auto& state = getState();
+        for (auto& pending : state.pendingHolidayReturns)
+        {
+            if (pending.resort == industry)
+            {
+                pending.resortStation = findResortStation(pending);
+                pending.releaseDay = std::min(pending.releaseDay, getCurrentDay());
+            }
+        }
+        std::sort(state.pendingHolidayReturns.begin(), state.pendingHolidayReturns.end());
+        processHolidayReturns(false);
+        bool pendingChanged = std::erase_if(state.pendingHolidayReturns, [industry](const auto& pending) {
+            return pending.resort == industry && pending.resortStation == StationId::null;
+        }) != 0;
+        for (auto& pending : state.pendingHolidayReturns)
+        {
+            if (pending.resort == industry)
+            {
+                pendingChanged |= !pending.released;
+                pending.released = true;
+            }
+        }
+        std::sort(state.pendingHolidayReturns.begin(), state.pendingHolidayReturns.end());
+
+        bool cargoChanged = false;
+        const auto cancelOutbound = [&](PacketList& packets, const uint8_t cargo, const StationId currentStation) {
+            packets.transform([&](auto& packet) {
+                if (packet.tripKind == PassengerTripKind::holidayOutbound && packet.holidayIndustry == industry)
+                {
+                    cargoChanged = true;
+                    const auto* current = StationManager::get(currentStation);
+                    if (current != nullptr && !current->empty() && current->town == packet.homeTown)
+                    {
+                        packet.quantity = 0;
+                        return;
+                    }
+                    packet.tripKind = PassengerTripKind::holidayReturn;
+                    repairHolidayDestination(packet, cargo, true);
+                }
+            });
+        };
+        for (auto& [key, packets] : state.stationCargo)
+        {
+            cancelOutbound(packets, key.cargo, key.station);
+            if (auto* station = StationManager::get(key.station); station != nullptr && !station->empty())
+            {
+                synchroniseStationCargo(key.station, key.cargo, station->cargoStats[key.cargo]);
+            }
+        }
+        forEachVehicleCargo([&](const auto&, const VehicleCargoKey key, auto& nativeCargo) {
+            if (auto* packets = getVehicleCargo(key); packets != nullptr)
+            {
+                cancelOutbound(*packets, nativeCargo.type, StationId::null);
+                synchroniseVehicleCargo(key, nativeCargo);
+            }
+        });
+        std::erase_if(state.stationCargo, [](const auto& item) { return item.second.empty(); });
+        std::erase_if(state.vehicleCargo, [](const auto& item) { return item.second.empty(); });
+        state.resorts.erase(industry);
+        clearHolidayRouting();
+        clearJourneyCache();
+        markGraphDirty();
+        if (cargoChanged || pendingChanged)
+        {
+            markCargoChanged();
+        }
+    }
+
+    void removeTown(const TownId town)
+    {
+        auto& state = getState();
+        bool changed = std::erase_if(state.pendingHolidayReturns, [town](const auto& pending) { return pending.homeTown == town; }) != 0;
+        const auto removePackets = [town](PacketList& packets) {
+            bool removed = false;
+            packets.transform([&](auto& packet) {
+                if (packet.tripKind != PassengerTripKind::ordinary && packet.homeTown == town)
+                {
+                    packet.quantity = 0;
+                    removed = true;
+                }
+            });
+            return removed;
+        };
+        for (auto& [key, packets] : state.stationCargo)
+        {
+            if (removePackets(packets))
+            {
+                changed = true;
+                if (auto* station = StationManager::get(key.station); station != nullptr && !station->empty())
+                {
+                    synchroniseStationCargo(key.station, key.cargo, station->cargoStats[key.cargo]);
+                }
+            }
+        }
+        forEachVehicleCargo([&](const auto&, const VehicleCargoKey key, auto& nativeCargo) {
+            if (auto* packets = getVehicleCargo(key); packets != nullptr)
+            {
+                if (removePackets(*packets))
+                {
+                    changed = true;
+                    synchroniseVehicleCargo(key, nativeCargo);
+                }
+            }
+        });
+        std::erase_if(state.stationCargo, [](const auto& item) { return item.second.empty(); });
+        std::erase_if(state.vehicleCargo, [](const auto& item) { return item.second.empty(); });
+        changed |= std::erase_if(state.holidaySources, [town](const auto& item) {
+            const auto* station = StationManager::get(item.first.station);
+            return station == nullptr || station->empty() || station->town == town;
+        }) != 0;
+        if (changed)
+        {
+            clearHolidayRouting();
+            clearJourneyCache();
+            markCargoChanged();
+            markGraphDirty();
+        }
+    }
+
     void removeStation(StationId station)
     {
         auto& state = getState();
         std::set<uint8_t> affectedCargo;
+        bool preservedReturns = false;
+        for (const auto& [key, packets] : state.stationCargo)
+        {
+            if (key.station != station)
+            {
+                continue;
+            }
+            for (const auto& packet : packets.packets())
+            {
+                if (packet.tripKind == PassengerTripKind::holidayReturn)
+                {
+                    PendingHolidayReturn pending;
+                    pending.releaseDay = getCurrentDay();
+                    pending.quantity = packet.quantity;
+                    pending.resortStation = packet.origin == station ? StationId::null : packet.origin;
+                    pending.homeStation = packet.destination;
+                    pending.homeTown = packet.homeTown;
+                    pending.resort = packet.holidayIndustry;
+                    pending.cargo = key.cargo;
+                    pending.age = packet.age;
+                    pending.released = true;
+                    pending.transferCredit = packet.transferCredit;
+                    state.pendingHolidayReturns.push_back(pending);
+                    preservedReturns = true;
+                }
+            }
+        }
+        if (preservedReturns)
+        {
+            std::sort(state.pendingHolidayReturns.begin(), state.pendingHolidayReturns.end());
+            markCargoChanged();
+        }
         std::erase_if(state.stationCargo, [station](const auto& item) { return item.first.station == station; });
         for (auto& [key, packets] : state.stationCargo)
         {
@@ -2534,6 +3583,19 @@ namespace OpenLoco::CargoDist
         std::erase_if(state.vehicleCargo, [](const auto& item) { return item.second.empty(); });
         std::erase_if(state.supply, [station](const auto& item) { return item.first.second == station; });
         std::erase_if(state.stationAttraction, [station](const auto& item) { return item.first.station == station; });
+        std::erase_if(state.holidaySources, [station](const auto& item) { return item.first.station == station; });
+        for (auto& pending : state.pendingHolidayReturns)
+        {
+            if (pending.resortStation == station)
+            {
+                pending.resortStation = StationId::null;
+            }
+            if (pending.homeStation == station)
+            {
+                pending.homeStation = StationId::null;
+            }
+        }
+        clearHolidayRouting();
         state.stationAccessibility.erase(station);
         std::erase_if(state.serviceEdges, [station](const auto& item) { return item.first.from == station || item.first.to == station; });
         for (auto it = state.flows.begin(); it != state.flows.end();)
@@ -2642,6 +3704,7 @@ namespace OpenLoco::CargoDist
         {
             rebuildDestinationFlows(cargo);
         }
+        clearHolidayRouting();
         state.graphDirty = true;
         state.servicesDirty = true;
         ++state.routingRevision;

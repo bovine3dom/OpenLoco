@@ -368,8 +368,8 @@ namespace OpenLoco::CargoDist
     void PacketList::canonicalise()
     {
         std::sort(_packets.begin(), _packets.end(), [](const auto& lhs, const auto& rhs) {
-            return std::tie(lhs.destination, lhs.nextHop, lhs.origin, lhs.age, lhs.departure, lhs.arrival, lhs.transferCredit)
-                < std::tie(rhs.destination, rhs.nextHop, rhs.origin, rhs.age, rhs.departure, rhs.arrival, rhs.transferCredit);
+            return std::tie(lhs.destination, lhs.nextHop, lhs.origin, lhs.age, lhs.departure, lhs.arrival, lhs.tripKind, lhs.holidayIndustry, lhs.homeTown, lhs.transferCredit)
+                < std::tie(rhs.destination, rhs.nextHop, rhs.origin, rhs.age, rhs.departure, rhs.arrival, rhs.tripKind, rhs.holidayIndustry, rhs.homeTown, rhs.transferCredit);
         });
         Container canonical;
         canonical.reserve(_packets.size());
@@ -383,7 +383,8 @@ namespace OpenLoco::CargoDist
             {
                 auto& previous = canonical.back();
                 if (previous.origin == packet.origin && previous.destination == packet.destination && previous.nextHop == packet.nextHop && previous.age == packet.age
-                    && previous.departure == packet.departure && previous.arrival == packet.arrival)
+                    && previous.departure == packet.departure && previous.arrival == packet.arrival && previous.tripKind == packet.tripKind
+                    && previous.holidayIndustry == packet.holidayIndustry && previous.homeTown == packet.homeTown)
                 {
                     const auto room = static_cast<uint32_t>(std::numeric_limits<uint16_t>::max() - previous.quantity);
                     const auto merged = std::min<uint32_t>(room, packet.quantity);
@@ -472,13 +473,54 @@ namespace OpenLoco::CargoDist
         return before - quantity();
     }
 
+    uint32_t PacketList::removeForRating(uint32_t requested)
+    {
+        const auto before = quantity();
+        for (auto it = _packets.begin(); it != _packets.end() && requested != 0;)
+        {
+            if (it->tripKind == PassengerTripKind::holidayReturn)
+            {
+                ++it;
+                continue;
+            }
+            const auto removed = static_cast<uint16_t>(std::min<uint32_t>(requested, it->quantity));
+            it->extract(removed);
+            requested -= removed;
+            if (it->quantity == 0)
+            {
+                it = _packets.erase(it);
+            }
+            else
+            {
+                ++it;
+            }
+        }
+        const auto removed = before - quantity();
+        canonicalise();
+        return removed;
+    }
+
     void PacketList::removeStationReferences(StationId station)
     {
-        std::erase_if(_packets, [station](const auto& packet) {
-            return packet.origin == station;
-        });
         for (auto& packet : _packets)
         {
+            if (packet.origin == station)
+            {
+                if (packet.tripKind == PassengerTripKind::ordinary)
+                {
+                    packet.quantity = 0;
+                    continue;
+                }
+                const auto replacement = packet.nextHop != StationId::null && packet.nextHop != station
+                    ? packet.nextHop
+                    : packet.destination;
+                if (replacement == StationId::null || replacement == station)
+                {
+                    packet.quantity = 0;
+                    continue;
+                }
+                packet.origin = replacement;
+            }
             if (packet.nextHop == station || packet.destination == station)
             {
                 if (packet.destination == station)
@@ -490,6 +532,7 @@ namespace OpenLoco::CargoDist
                 packet.arrival = {};
             }
         }
+        std::erase_if(_packets, [](const auto& packet) { return packet.quantity == 0; });
         canonicalise();
     }
 
@@ -807,6 +850,44 @@ namespace OpenLoco::CargoDist
             }
         }
         return result;
+    }
+
+    static std::vector<ViaShare> allocateFixedOptions(std::vector<FlowOption>& options, const StationId destination, const uint32_t quantity, const StationId excluded, const StationId excluded2)
+    {
+        std::vector<ViaShare> result;
+        for (const auto& candidate : allocateWeighted(options, quantity, [&](const auto& option) { return option.via != excluded && option.via != excluded2; }, [](const auto& option) { return std::tie(option.via, option.departure, option.arrival); }))
+        {
+            if (candidate.amount != 0)
+            {
+                result.push_back({ candidate.option->via, candidate.amount, candidate.option->departure, candidate.option->arrival, destination });
+            }
+        }
+        return result;
+    }
+
+    std::vector<ViaShare> allocateFixedVia(std::map<FlowKey, std::vector<FlowOption>>& flows, const uint8_t cargo, const StationId station, const StationId origin, const StationId destination, const uint32_t quantity, const ServicePoint incoming, const StationId excluded, const StationId excluded2)
+    {
+        if (quantity == 0 || destination == StationId::null)
+        {
+            return {};
+        }
+        const auto flow = flows.find({ cargo, station, origin, incoming, destination });
+        if (flow == flows.end())
+        {
+            return {};
+        }
+        return allocateFixedOptions(flow->second, destination, quantity, excluded, excluded2);
+    }
+
+    std::vector<ViaShare> previewFixedVia(const std::map<FlowKey, std::vector<FlowOption>>& flows, const uint8_t cargo, const StationId station, const StationId origin, const StationId destination, const uint32_t quantity, const ServicePoint incoming, const StationId excluded, const StationId excluded2)
+    {
+        const auto flow = flows.find({ cargo, station, origin, incoming, destination });
+        if (quantity == 0 || destination == StationId::null || flow == flows.end())
+        {
+            return {};
+        }
+        auto options = flow->second;
+        return allocateFixedOptions(options, destination, quantity, excluded, excluded2);
     }
 
     std::vector<ViaShare> allocateVia(uint8_t cargo, StationId station, StationId origin, StationId destination, uint32_t quantity, ServicePoint incoming, StationId excluded, StationId excluded2)

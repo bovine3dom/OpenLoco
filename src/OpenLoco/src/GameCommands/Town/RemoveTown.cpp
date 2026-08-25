@@ -1,4 +1,5 @@
 #include "GameCommands/Town/RemoveTown.h"
+#include <OpenLoco/CargoDist/Simulation.h>
 #include "Audio/Audio.h"
 #include "Economy/Expenditures.h"
 #include "GameCommands/Buildings/RemoveBuilding.h"
@@ -137,6 +138,7 @@ namespace OpenLoco::GameCommands
         auto* town = TownManager::get(args.townId);
         auto oldTownCentre = Pos2(town->x, town->y);
 
+        CargoDist::removeTown(args.townId);
         StringManager::emptyUserString(town->name);
         town->name = StringIds::null;
 

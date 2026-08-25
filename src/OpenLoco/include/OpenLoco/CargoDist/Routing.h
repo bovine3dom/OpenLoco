@@ -39,6 +39,10 @@ namespace OpenLoco::CargoDist
         uint32_t attraction = 1;
         bool passengerSink = false;
         TownId town = TownId::null;
+        uint32_t holidayDemand{};
+        uint32_t holidayCapacity{};
+        uint8_t holidayPopularity{};
+        IndustryId holidayIndustry = IndustryId::null;
     };
 
     struct RoutingEdge

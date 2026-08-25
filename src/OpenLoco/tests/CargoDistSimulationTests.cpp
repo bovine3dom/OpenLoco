@@ -1136,6 +1136,22 @@ TEST_F(CargoDistServiceSimulationTest, KeepsRoutingEnabledForCreditedOnboardCarg
     EXPECT_EQ(getMode(0), DistributionMode::asymmetric);
 }
 
+TEST_F(CargoDistServiceSimulationTest, KeepsRoutingEnabledForOnboardHolidayPassengers)
+{
+    auto* head = createVehicle();
+    Vehicles::Vehicle train(*head);
+    const VehicleCargoKey key{ train.cars.firstCar.body->id, VehicleCargoSlot::primary };
+    CargoPacket packet{ 10, station(1), station(2), 0, {}, {}, station(2) };
+    packet.tripKind = PassengerTripKind::holidayOutbound;
+    packet.holidayIndustry = IndustryId(2);
+    packet.homeTown = TownId(3);
+    getOrCreateVehicleCargo(key).append(packet);
+
+    setMode(0, DistributionMode::manual);
+
+    EXPECT_EQ(getMode(0), DistributionMode::asymmetric);
+}
+
 TEST(CargoDistSimulation, SynchronisesNativeCargoMirrors)
 {
     reset();
@@ -1474,6 +1490,28 @@ TEST(CargoDistSimulation, ForcedUnloadDeliversAllAtAcceptingStation)
     EXPECT_EQ(vehicleCargo.qty, 0);
 }
 
+TEST(CargoDistSimulation, ForcedUnloadKeepsHolidayPassengersForTheirExactDestination)
+{
+    reset();
+    const VehicleCargoKey key{ entity(10), VehicleCargoSlot::primary };
+    CargoPacket packet{ 20, station(1), station(4), 3, {}, {}, station(3) };
+    packet.tripKind = PassengerTripKind::holidayReturn;
+    packet.holidayIndustry = IndustryId(3);
+    packet.homeTown = TownId(4);
+    getOrCreateVehicleCargo(key).append(packet);
+    Vehicles::VehicleCargo vehicleCargo{ 1, 0, 30, station(1), 3, 20 };
+    StationCargoStats stationCargo{};
+    stationCargo.isAccepted(true);
+
+    const auto result = unloadVehicleCargo(key, vehicleCargo, station(2), stationCargo, {}, true, std::nullopt);
+
+    EXPECT_TRUE(result.delivered.empty());
+    EXPECT_EQ(result.transferred, 20);
+    const auto& waiting = getStationCargoConst(station(2), 0)->packets().front();
+    EXPECT_EQ(waiting.destination, station(3));
+    EXPECT_EQ(waiting.tripKind, PassengerTripKind::holidayReturn);
+}
+
 TEST(CargoDistSimulation, StoresTransferredCargoAboveNativeStationLimit)
 {
     reset();
@@ -1689,4 +1727,228 @@ TEST(CargoDistSimulation, StationAttractionMarksEnabledGraphDirty)
     setStationAttraction(station(1), 0, 0);
     EXPECT_FALSE(getStateConst().stationAttraction.contains({ station(1), 0 }));
     EXPECT_TRUE(getStateConst().graphDirty);
+}
+
+TEST(CargoDistSimulation, HolidayPolicyUsesTownTiersAndBoundedPopularityCapacity)
+{
+    EXPECT_EQ(getHolidayPercentage(TownSize::hamlet), 1);
+    EXPECT_EQ(getHolidayPercentage(TownSize::village), 1);
+    EXPECT_EQ(getHolidayPercentage(TownSize::town), 3);
+    EXPECT_EQ(getHolidayPercentage(TownSize::city), 6);
+    EXPECT_EQ(getHolidayPercentage(TownSize::metropolis), 8);
+    EXPECT_EQ(getResortCapacity(10, 0), 40);
+    EXPECT_EQ(getResortCapacity(10, 100), 60);
+    EXPECT_EQ(updateResortPopularity(80, 60, 30), 60);
+    EXPECT_EQ(updateResortPopularity(80, 0, 0), 40);
+}
+
+class CargoDistHolidayReturnTest : public ::testing::Test
+{
+protected:
+    static constexpr auto kHomeTown = TownId(10);
+    static constexpr auto kResort = IndustryId(2);
+
+    void SetUp() override
+    {
+        _home = getGameState().stations[10];
+        _fallbackHome = getGameState().stations[11];
+        _resort = getGameState().stations[12];
+        _town = getGameState().towns[enumValue(kHomeTown)];
+        _currentDay = getGameState().currentDay;
+        reset();
+
+        auto& town = getGameState().towns[enumValue(kHomeTown)];
+        town = {};
+        town.name = StringId(1);
+
+        initialiseStation(10, kHomeTown);
+        initialiseStation(11, kHomeTown);
+        initialiseStation(12, TownId(11));
+        getGameState().stations[10].cargoStats[0].isAccepted(true);
+        getGameState().stations[12].cargoStats[0].industryId = kResort;
+
+        getGameState().currentDay = 100;
+        auto& state = getState();
+        state.settings.modes[0] = DistributionMode::asymmetric;
+        state.nextRecalculationDay = 200;
+    }
+
+    void TearDown() override
+    {
+        reset();
+        getGameState().stations[10] = _home;
+        getGameState().stations[11] = _fallbackHome;
+        getGameState().stations[12] = _resort;
+        getGameState().towns[enumValue(kHomeTown)] = _town;
+        getGameState().currentDay = _currentDay;
+    }
+
+    static void initialiseStation(const uint16_t id, const TownId town)
+    {
+        auto& value = getGameState().stations[id];
+        value = {};
+        value.name = StringId(1);
+        value.town = town;
+    }
+
+    static CargoPacket holidayPacket(const PassengerTripKind kind, const uint16_t quantity, const StationId origin, const StationId destination, const int64_t transferCredit = 0)
+    {
+        CargoPacket packet{ quantity, origin, destination, 0, {}, {}, destination, transferCredit };
+        packet.tripKind = kind;
+        packet.holidayIndustry = kResort;
+        packet.homeTown = kHomeTown;
+        return packet;
+    }
+
+private:
+    Station _home{};
+    Station _fallbackHome{};
+    Station _resort{};
+    Town _town{};
+    uint32_t _currentDay{};
+};
+
+TEST_F(CargoDistHolidayReturnTest, ReleasesDuePassengersAsExactHomeboundCargo)
+{
+    getState().pendingHolidayReturns.push_back({ 100, 12, station(12), station(10), kHomeTown, kResort, 0 });
+
+    updateDaily();
+
+    EXPECT_TRUE(getStateConst().pendingHolidayReturns.empty());
+    const auto* packets = getStationCargoConst(station(12), 0);
+    ASSERT_NE(packets, nullptr);
+    ASSERT_EQ(packets->packets().size(), 1);
+    const auto& packet = packets->packets().front();
+    EXPECT_EQ(packet.quantity, 12);
+    EXPECT_EQ(packet.origin, station(12));
+    EXPECT_EQ(packet.destination, station(10));
+    EXPECT_EQ(packet.tripKind, PassengerTripKind::holidayReturn);
+    EXPECT_EQ(packet.holidayIndustry, kResort);
+    EXPECT_EQ(packet.homeTown, kHomeTown);
+    EXPECT_EQ(getGameState().stations[12].cargoStats[0].quantity, 12);
+}
+
+TEST_F(CargoDistHolidayReturnTest, DefersReturnUntilSameTownFallbackAcceptsPassengers)
+{
+    getGameState().stations[10].cargoStats[0].isAccepted(false);
+    getState().pendingHolidayReturns.push_back({ 100, 9, station(12), station(10), kHomeTown, kResort, 0 });
+
+    updateDaily();
+
+    ASSERT_EQ(getStateConst().pendingHolidayReturns.size(), 1);
+    EXPECT_EQ(getStationCargoConst(station(12), 0), nullptr);
+
+    getGameState().stations[11].cargoStats[0].isAccepted(true);
+    updateDaily();
+
+    EXPECT_TRUE(getStateConst().pendingHolidayReturns.empty());
+    const auto* packets = getStationCargoConst(station(12), 0);
+    ASSERT_NE(packets, nullptr);
+    EXPECT_EQ(packets->packets().front().destination, station(11));
+}
+
+TEST_F(CargoDistHolidayReturnTest, CompletesReturnAlreadyAtAHomeTownStation)
+{
+    getGameState().stations[12].town = kHomeTown;
+    getGameState().stations[12].cargoStats[0].isAccepted(true);
+    getState().pendingHolidayReturns.push_back({ 100, 9, station(12), station(12), kHomeTown, kResort, 0 });
+
+    updateDaily();
+
+    EXPECT_TRUE(getStateConst().pendingHolidayReturns.empty());
+    EXPECT_EQ(getStationCargoConst(station(12), 0), nullptr);
+}
+
+TEST_F(CargoDistHolidayReturnTest, RepairsRejectedHomeDestinationWithinOriginalTown)
+{
+    getGameState().stations[10].cargoStats[0].isAccepted(false);
+    getGameState().stations[11].cargoStats[0].isAccepted(true);
+    getOrCreateStationCargo(station(12), 0).append(holidayPacket(PassengerTripKind::holidayReturn, 7, station(12), station(10)));
+
+    updateDaily();
+
+    const auto& repaired = getStationCargoConst(station(12), 0)->packets().front();
+    EXPECT_EQ(repaired.destination, station(11));
+    EXPECT_EQ(repaired.nextHop, StationId::null);
+}
+
+TEST_F(CargoDistHolidayReturnTest, RemovingDepartureStationPreservesReleasedReturn)
+{
+    auto packet = holidayPacket(PassengerTripKind::holidayReturn, 6, station(12), station(10), 42);
+    packet.nextHop = StationId::null;
+    packet.age = 9;
+    getOrCreateStationCargo(station(12), 0).append(packet);
+
+    removeStation(station(12));
+
+    ASSERT_EQ(getStateConst().pendingHolidayReturns.size(), 1);
+    EXPECT_EQ(getStateConst().pendingHolidayReturns.front().quantity, 6);
+    EXPECT_EQ(getStateConst().pendingHolidayReturns.front().homeStation, station(10));
+    EXPECT_EQ(getStateConst().pendingHolidayReturns.front().age, 9);
+    EXPECT_TRUE(getStateConst().pendingHolidayReturns.front().released);
+    EXPECT_EQ(getStateConst().pendingHolidayReturns.front().transferCredit, 42);
+    EXPECT_EQ(getStationCargoConst(station(12), 0), nullptr);
+
+    getGameState().stations[10].cargoStats[0].isAccepted(false);
+    updateDaily();
+    EXPECT_EQ(getStateConst().pendingHolidayReturns.front().age, 10);
+    EXPECT_EQ(getStateConst().pendingHolidayReturns.front().transferCredit, 42);
+}
+
+TEST_F(CargoDistHolidayReturnTest, ClosingResortCancelsOutboundTripsAndReleasesGuests)
+{
+    getState().pendingHolidayReturns.push_back({ 120, 5, station(12), station(10), kHomeTown, kResort, 0 });
+    getState().pendingHolidayReturns.push_back({ 120, 3, station(12), station(10), kHomeTown, IndustryId(3), 0 });
+    getState().resorts[IndustryId(3)].guestDays = 17;
+    getOrCreateStationCargo(station(10), 0).append(holidayPacket(PassengerTripKind::holidayOutbound, 7, station(10), station(12), 35));
+
+    removeIndustry(kResort);
+
+    ASSERT_EQ(getStateConst().pendingHolidayReturns.size(), 1);
+    EXPECT_EQ(getStateConst().pendingHolidayReturns.front().resort, IndustryId(3));
+    EXPECT_EQ(getStateConst().resorts.at(IndustryId(3)).guestDays, 17);
+    EXPECT_EQ(getStationCargoConst(station(10), 0), nullptr);
+    const auto* returning = getStationCargoConst(station(12), 0);
+    ASSERT_NE(returning, nullptr);
+    EXPECT_EQ(returning->quantity(), 5);
+    EXPECT_EQ(returning->packets().front().tripKind, PassengerTripKind::holidayReturn);
+}
+
+TEST_F(CargoDistHolidayReturnTest, ClosingResortTurnsInTransitPassengersBackTowardHome)
+{
+    getOrCreateStationCargo(station(12), 0).append(holidayPacket(PassengerTripKind::holidayOutbound, 7, station(10), station(12), 35));
+
+    removeIndustry(kResort);
+
+    const auto* returning = getStationCargoConst(station(12), 0);
+    ASSERT_NE(returning, nullptr);
+    ASSERT_EQ(returning->packets().size(), 1);
+    EXPECT_EQ(returning->packets().front().quantity, 7);
+    EXPECT_EQ(returning->packets().front().tripKind, PassengerTripKind::holidayReturn);
+    EXPECT_EQ(returning->packets().front().destination, station(10));
+    EXPECT_EQ(returning->packets().front().nextHop, StationId::null);
+    EXPECT_EQ(returning->packets().front().transferCredit, 35);
+}
+
+TEST_F(CargoDistHolidayReturnTest, ClosingResortDropsSourceLessGuestState)
+{
+    getGameState().stations[12].cargoStats[0].industryId = IndustryId::null;
+    getState().pendingHolidayReturns.push_back({ 120, 5, StationId::null, station(10), kHomeTown, kResort, 0 });
+
+    removeIndustry(kResort);
+
+    EXPECT_TRUE(getStateConst().pendingHolidayReturns.empty());
+}
+
+TEST_F(CargoDistHolidayReturnTest, RemovingHomeTownClearsImpossibleHolidayState)
+{
+    getOrCreateStationCargo(station(12), 0).append(holidayPacket(PassengerTripKind::holidayReturn, 6, station(12), station(10), 42));
+    getState().pendingHolidayReturns.push_back({ 120, 5, station(12), station(10), kHomeTown, kResort, 0 });
+    getState().holidaySources[{ station(10), 0 }] = {};
+
+    removeTown(kHomeTown);
+
+    EXPECT_TRUE(getStateConst().pendingHolidayReturns.empty());
+    EXPECT_TRUE(getStateConst().holidaySources.empty());
+    EXPECT_EQ(getStationCargoConst(station(12), 0), nullptr);
 }
