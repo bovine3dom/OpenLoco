@@ -86,6 +86,7 @@ namespace OpenLoco::Vehicles::RailTraffic
     TravelTime getHeuristicTime(const SpeedProfile& profile, uint32_t distance);
     TravelTime getLiveSignalPenalty(const SpeedProfile& profile, uint16_t routing, uint8_t trackType);
     std::optional<Speed16> getAverageSpeed(const Edge& edge);
+    std::vector<Speed16> getAverageSpeeds();
     uint32_t getHistoryRevision();
 
     void reset();

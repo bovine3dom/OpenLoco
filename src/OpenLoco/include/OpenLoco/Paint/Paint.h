@@ -100,6 +100,7 @@ namespace OpenLoco::Paint
     {
         none = 0U,
         hasMaskedImage = 1U << 0,
+        isSolid = 1U << 1,
     };
     OPENLOCO_ENABLE_ENUM_OPERATORS(PaintStructFlags);
 

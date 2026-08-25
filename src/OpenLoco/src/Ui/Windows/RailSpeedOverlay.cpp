@@ -6,42 +6,35 @@
 #include "Graphics/TextRenderer.h"
 #include "Localisation/FormatArguments.hpp"
 #include "Localisation/StringIds.h"
+#include "Map/TileElementEntry.h"
 #include "Map/Track/TrackData.h"
 #include "Map/TrackElement.h"
 #include "Objects/InterfaceSkinObject.h"
 #include "Objects/ObjectManager.h"
+#include "Ui/ViewportInteraction.h"
 #include "Ui/Widgets/CaptionWidget.h"
 #include "Ui/Widgets/FrameWidget.h"
 #include "Ui/Widgets/ImageButtonWidget.h"
 #include "Ui/Widgets/PanelWidget.h"
 #include "Ui/WindowManager.h"
+#include "Ui/Windows/ProductionHeatmap.h"
 #include "Vehicles/RailTraffic.h"
+#include "Viewport.hpp"
 #include <OpenLoco/Math/Vector.hpp>
 #include <algorithm>
 #include <array>
-
-using namespace OpenLoco::Literals;
+#include <vector>
 
 namespace OpenLoco::Ui::Windows::RailSpeedOverlay
 {
     namespace
     {
-        constexpr Ui::Size kWindowSize = { 252, 73 };
-        constexpr int16_t kLegendLeft = 18;
-        constexpr int16_t kLegendTop = 45;
-        constexpr int16_t kLegendCellWidth = 27;
+        constexpr Ui::Size kWindowSize = { 252, 62 };
+        constexpr int16_t kLegendLeft = 46;
+        constexpr int16_t kLegendTop = 34;
+        constexpr int16_t kLegendCellWidth = 20;
 
-        constexpr std::array kSpeedThresholds = {
-            10_mph,
-            20_mph,
-            30_mph,
-            45_mph,
-            60_mph,
-            80_mph,
-            120_mph,
-        };
-
-        constexpr std::array kBucketColours = {
+        constexpr std::array<Colour, kBucketCount> kBucketColours = {
             Colour::red,
             Colour::darkOrange,
             Colour::orange,
@@ -68,6 +61,7 @@ namespace OpenLoco::Ui::Windows::RailSpeedOverlay
 
         uint32_t _historyRevision{};
         uint8_t _refreshTicks{};
+        SpeedThresholds _speedThresholds{};
 
         void invalidateMainViewport()
         {
@@ -77,18 +71,15 @@ namespace OpenLoco::Ui::Windows::RailSpeedOverlay
             }
         }
 
-        void drawSpeed(Gfx::TextRenderer& tr, const Point& pos, const Speed16 speed, const bool centred)
+        uint64_t getPercentileValue(const Speed16 speed)
         {
-            FormatArguments args{};
-            args.push(speed);
-            if (centred)
-            {
-                tr.drawStringCentred(pos, Colour::white, StringIds::velocity, args);
-            }
-            else
-            {
-                tr.drawStringLeft(pos, Colour::white, StringIds::velocity, args);
-            }
+            return static_cast<uint64_t>(std::max<int32_t>(0, speed.getRaw())) + 1;
+        }
+
+        void refreshSpeedThresholds()
+        {
+            const auto speeds = Vehicles::RailTraffic::getAverageSpeeds();
+            _speedThresholds = calculateSpeedPercentileThresholds(speeds);
         }
 
         void onClose(Window&)
@@ -115,6 +106,7 @@ namespace OpenLoco::Ui::Windows::RailSpeedOverlay
             if (_historyRevision != revision)
             {
                 _historyRevision = revision;
+                refreshSpeedThresholds();
                 invalidateMainViewport();
             }
         }
@@ -124,18 +116,17 @@ namespace OpenLoco::Ui::Windows::RailSpeedOverlay
             self.draw(drawingCtx);
             auto tr = Gfx::TextRenderer(drawingCtx);
             tr.setCurrentFont(Gfx::Font::small);
-            tr.drawStringCentred({ kWindowSize.width / 2, 20 }, Colour::white, StringIds::rail_speed_overlay_description);
-            tr.drawStringCentred({ kWindowSize.width / 2, 29 }, Colour::white, StringIds::rail_speed_overlay_no_data);
+            const auto colour = self.getColour(WindowColour::secondary).opaque();
+            tr.drawStringCentred({ kWindowSize.width / 2, 20 }, colour, StringIds::rail_speed_overlay_description);
             for (size_t i = 0; i < kBucketColours.size(); ++i)
             {
                 const auto left = kLegendLeft + static_cast<int16_t>(i) * kLegendCellWidth;
                 drawingCtx.fillRect(left, kLegendTop, left + kLegendCellWidth - 2, kLegendTop + 7, Colours::getShade(kBucketColours[i], 7), Gfx::RectFlags::none);
             }
-            constexpr auto kLegendLabelY = kLegendTop + 11;
-            drawSpeed(tr, { kLegendLeft, kLegendLabelY }, 0_mph, false);
-            drawSpeed(tr, { kLegendLeft + kLegendCellWidth * 3, kLegendLabelY }, 30_mph, true);
-            drawSpeed(tr, { kLegendLeft + kLegendCellWidth * 5, kLegendLabelY }, 60_mph, true);
-            drawSpeed(tr, { kLegendLeft + kLegendCellWidth * 7, kLegendLabelY }, 120_mph, true);
+            constexpr auto kLegendLabelY = kLegendTop + 13;
+            tr.drawStringLeft({ kLegendLeft, kLegendLabelY }, colour, StringIds::low);
+            tr.drawStringCentred({ kLegendLeft + kLegendCellWidth * 4, kLegendLabelY }, colour, StringIds::medium);
+            tr.drawStringRight({ kLegendLeft + kLegendCellWidth * kBucketCount - 1, kLegendLabelY }, colour, StringIds::high);
         }
 
         constexpr WindowEventList kEvents = {
@@ -181,14 +172,61 @@ namespace OpenLoco::Ui::Windows::RailSpeedOverlay
         return speed;
     }
 
+    SpeedThresholds calculateSpeedPercentileThresholds(const std::span<const Speed16> speeds)
+    {
+        std::vector<uint64_t> values;
+        values.reserve(speeds.size());
+        for (const auto speed : speeds)
+        {
+            values.push_back(getPercentileValue(speed));
+        }
+        return ProductionHeatmap::calculatePercentileThresholds(values);
+    }
+
     uint8_t getSpeedBucket(const Speed16 speed)
     {
-        return static_cast<uint8_t>(1 + std::ranges::count_if(kSpeedThresholds, [speed](const auto threshold) { return speed >= threshold; }));
+        return getSpeedBucket(speed, _speedThresholds);
+    }
+
+    uint8_t getSpeedBucket(const Speed16 speed, const SpeedThresholds& thresholds)
+    {
+        return ProductionHeatmap::getPercentileBucket(getPercentileValue(speed), thresholds);
     }
 
     Colour getBucketColour(const uint8_t bucket)
     {
         return bucket == 0 || bucket > kBucketColours.size() ? Colour::black : kBucketColours[bucket - 1];
+    }
+
+    bool setTooltip(const Viewport& viewport, const Point cursor)
+    {
+        const auto* main = WindowManager::getMainWindow();
+        if (!isOpen() || main == nullptr || main->viewports[0] != &viewport || viewport.hasFlags(ViewportFlags::seeThroughTracks))
+        {
+            return false;
+        }
+
+        const auto [interaction, hitViewport] = ViewportInteraction::getMapCoordinatesFromPos(cursor.x, cursor.y, ~ViewportInteraction::InteractionItemFlags::track);
+        if (hitViewport != &viewport || interaction.type != ViewportInteraction::InteractionItem::track)
+        {
+            return false;
+        }
+        const auto* track = static_cast<const World::TileElementEntry*>(interaction.object)->as<World::TrackElement>();
+        if (track == nullptr)
+        {
+            return false;
+        }
+        const auto speed = getTrackSpeed(interaction.pos, *track);
+        if (!speed.has_value())
+        {
+            return false;
+        }
+
+        auto args = FormatArguments::mapToolTip(StringIds::rail_speed_overlay_tooltip);
+        args.push(*speed);
+        args.push<int32_t>(getSpeedBucket(*speed));
+        args.push<int32_t>(kBucketCount);
+        return true;
     }
 
     bool isOpen()
@@ -210,6 +248,7 @@ namespace OpenLoco::Ui::Windows::RailSpeedOverlay
         window->setColour(WindowColour::secondary, ObjectManager::get<InterfaceSkinObject>()->windowOptionsColour);
         window->initScrollWidgets();
         _historyRevision = Vehicles::RailTraffic::getHistoryRevision();
+        refreshSpeedThresholds();
         _refreshTicks = 0;
         invalidateMainViewport();
         return window;

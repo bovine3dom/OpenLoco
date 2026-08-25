@@ -10,6 +10,7 @@
 #include <OpenLoco/Vehicles/Vehicle.h>
 #include <OpenLoco/Vehicles/Vehicle1.h>
 #include <OpenLoco/Vehicles/VehicleHead.h>
+#include <algorithm>
 #include <array>
 #include <gtest/gtest.h>
 #include <limits>
@@ -117,7 +118,18 @@ TEST_F(RailTrafficTest, ReportsMeasuredAverageSpeed)
     EXPECT_EQ(*speed, 30_mph);
 }
 
-TEST_F(RailTrafficTest, RetainsOverlayHistoryAfterRoutingConfidenceDecays)
+TEST_F(RailTrafficTest, ReportsAllMeasuredAverageSpeeds)
+{
+    RailTraffic::recordTraversal(kEdge, 12 * RailTraffic::kOneTick);
+    RailTraffic::recordTraversal(kSecondEdge, 24 * RailTraffic::kOneTick);
+
+    const auto speeds = RailTraffic::getAverageSpeeds();
+    ASSERT_EQ(speeds.size(), 2U);
+    EXPECT_NE(std::ranges::find(speeds, *RailTraffic::getAverageSpeed(kEdge)), speeds.end());
+    EXPECT_NE(std::ranges::find(speeds, *RailTraffic::getAverageSpeed(kSecondEdge)), speeds.end());
+}
+
+TEST_F(RailTrafficTest, RetainsOverlayHistoryForTwelveMonthsAfterRoutingConfidenceDecays)
 {
     const RailTraffic::SpeedProfile profile{ 60_mph, 60_mph };
     const auto freeFlow = RailTraffic::getFreeFlowTime(profile, kEdge.tad, kEdge.trackType);
@@ -128,14 +140,14 @@ TEST_F(RailTrafficTest, RetainsOverlayHistoryAfterRoutingConfidenceDecays)
     ASSERT_TRUE(RailTraffic::getAverageSpeed(kEdge).has_value());
     EXPECT_EQ(RailTraffic::getTravelTime(profile, { kEdge.x, kEdge.y, kEdge.z }, kEdge.tad, kEdge.trackType), freeFlow);
 
-    for (uint32_t day = 2; day <= 30; ++day)
+    for (uint32_t day = 2; day <= 365; ++day)
     {
         setCurrentDay(day);
         RailTraffic::updateDaily();
     }
     EXPECT_TRUE(RailTraffic::getAverageSpeed(kEdge).has_value());
 
-    setCurrentDay(31);
+    setCurrentDay(366);
     RailTraffic::updateDaily();
     EXPECT_FALSE(RailTraffic::getAverageSpeed(kEdge).has_value());
 }
@@ -196,18 +208,20 @@ TEST_F(RailTrafficTest, OverlayFindsReverseEdgeWithDiagonalEndpoint)
     EXPECT_EQ(Ui::Windows::RailSpeedOverlay::getTrackSpeed({ 320, 320 }, track), RailTraffic::getAverageSpeed(reverseEdge));
 }
 
-TEST(RailSpeedOverlay, UsesAbsoluteSpeedBands)
+TEST(RailSpeedOverlay, UsesPercentileSpeedBands)
 {
+    constexpr std::array speeds = { 10_mph, 20_mph, 30_mph, 40_mph, 50_mph, 60_mph, 70_mph, 80_mph };
+    const auto thresholds = Ui::Windows::RailSpeedOverlay::calculateSpeedPercentileThresholds(speeds);
     using Ui::Windows::RailSpeedOverlay::getSpeedBucket;
-    EXPECT_EQ(getSpeedBucket(0_mph), 1);
-    EXPECT_EQ(getSpeedBucket(9_mph), 1);
-    EXPECT_EQ(getSpeedBucket(10_mph), 2);
-    EXPECT_EQ(getSpeedBucket(29_mph), 3);
-    EXPECT_EQ(getSpeedBucket(30_mph), 4);
-    EXPECT_EQ(getSpeedBucket(45_mph), 5);
-    EXPECT_EQ(getSpeedBucket(60_mph), 6);
-    EXPECT_EQ(getSpeedBucket(80_mph), 7);
-    EXPECT_EQ(getSpeedBucket(120_mph), 8);
+    for (size_t i = 0; i < speeds.size(); ++i)
+    {
+        EXPECT_EQ(getSpeedBucket(speeds[i], thresholds), i + 1);
+    }
+
+    constexpr std::array sparseSpeeds = { 10_mph, 80_mph };
+    const auto sparseThresholds = Ui::Windows::RailSpeedOverlay::calculateSpeedPercentileThresholds(sparseSpeeds);
+    EXPECT_EQ(getSpeedBucket(sparseSpeeds.front(), sparseThresholds), 1);
+    EXPECT_EQ(getSpeedBucket(sparseSpeeds.back(), sparseThresholds), Ui::Windows::RailSpeedOverlay::kBucketCount);
 }
 
 TEST_F(RailTrafficTest, TraversalIncludesAllElapsedOccupancyTime)

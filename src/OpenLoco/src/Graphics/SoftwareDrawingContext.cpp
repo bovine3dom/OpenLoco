@@ -42,7 +42,7 @@ namespace OpenLoco::Gfx
         };
 
         static void drawRect(const RenderTarget& rt, int32_t x, int32_t y, int32_t dx, int32_t dy, uint8_t colour, RectFlags flags);
-        static void drawImageSolid(const RenderTarget& rt, const Ui::Point& pos, const ImageId& image, PaletteIndex_t paletteIndex);
+        static void drawImageSolid(const RenderTarget& rt, ZoomLevel zoom, const Ui::Point& pos, const ImageId& image, PaletteIndex_t paletteIndex, const Ui::Point& rasterOffset);
 
         // 0x00447485
         // edi: rt
@@ -692,14 +692,14 @@ namespace OpenLoco::Gfx
             assert(false);
         }
 
-        static void drawImageSolid(const RenderTarget& rt, const Ui::Point& pos, const ImageId& image, PaletteIndex_t paletteIndex)
+        static void drawImageSolid(const RenderTarget& rt, ZoomLevel zoom, const Ui::Point& pos, const ImageId& image, PaletteIndex_t paletteIndex, const Ui::Point& rasterOffset)
         {
             PaletteMap::Buffer<PaletteMap::kDefaultSize> palette;
             std::fill(palette.begin(), palette.end(), paletteIndex);
             palette[0] = 0;
 
             // Set the image primary flag to tell drawImagePaletteSet to recolour with the palette (Colour::black is not actually used)
-            drawImagePaletteSet(rt, ZoomLevel::full, pos, image.withPrimary(Colour::black), PaletteMap::View{ palette }, {});
+            drawImagePaletteSet(rt, zoom, pos, image.withPrimary(Colour::black), PaletteMap::View{ palette }, {}, rasterOffset);
         }
 
         // 0x004474BA
@@ -1211,10 +1211,10 @@ namespace OpenLoco::Gfx
         return Impl::drawImageMasked(rt, zoom, worldPos, image, maskImage, rasterOffset);
     }
 
-    void SoftwareDrawingContext::drawImageSolid(const Ui::Point& pos, const ImageId& image, PaletteIndex_t paletteIndex)
+    void SoftwareDrawingContext::drawImageSolid(ZoomLevel zoom, const Ui::Point& pos, const ImageId& image, PaletteIndex_t paletteIndex, const Ui::Point& rasterOffset)
     {
         auto& rt = currentRenderTarget();
-        return Impl::drawImageSolid(rt, pos, image, paletteIndex);
+        return Impl::drawImageSolid(rt, zoom, pos, image, paletteIndex, rasterOffset);
     }
 
     void SoftwareDrawingContext::drawImagePaletteSet(const Ui::Point& pos, const ImageId& image, PaletteMap::View palette, const G1Element* noiseImage)

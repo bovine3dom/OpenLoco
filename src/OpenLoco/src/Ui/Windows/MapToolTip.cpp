@@ -125,7 +125,7 @@ namespace OpenLoco::Ui::Windows::MapToolTip
         {
             return;
         }
-        const auto outlineColour = firstArg == StringIds::cargo_flow_tooltip || firstArg == StringIds::cargo_flow_tooltip_no_capacity || firstArg == StringIds::production_heatmap_tooltip
+        const auto outlineColour = firstArg == StringIds::cargo_flow_tooltip || firstArg == StringIds::cargo_flow_tooltip_no_capacity || firstArg == StringIds::production_heatmap_tooltip || firstArg == StringIds::rail_speed_overlay_tooltip
             ? std::optional<Colour>{ Colour::white }
             : std::nullopt;
 

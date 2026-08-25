@@ -99,7 +99,12 @@ namespace OpenLoco::Gfx
 
         virtual void drawImageMasked(ZoomLevel zoom, const Ui::Point& pos, const ImageId& image, const ImageId& maskImage, const Ui::Point& rasterOffset = {}) = 0;
 
-        virtual void drawImageSolid(const Ui::Point& pos, const ImageId& image, PaletteIndex_t paletteIndex) = 0;
+        void drawImageSolid(const Ui::Point& pos, const ImageId& image, PaletteIndex_t paletteIndex)
+        {
+            drawImageSolid(ZoomLevel::full, pos, image, paletteIndex);
+        }
+
+        virtual void drawImageSolid(ZoomLevel zoom, const Ui::Point& pos, const ImageId& image, PaletteIndex_t paletteIndex, const Ui::Point& rasterOffset = {}) = 0;
 
         virtual void drawImagePaletteSet(const Ui::Point& pos, const ImageId& image, PaletteMap::View palette, const G1Element* noiseImage) = 0;
     };

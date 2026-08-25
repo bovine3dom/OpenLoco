@@ -1034,7 +1034,11 @@ namespace OpenLoco::Paint
             imagePos.y = Numerics::floor2(imagePos.y, zoomAlign);
         }
 
-        if ((ps.flags & PaintStructFlags::hasMaskedImage) != PaintStructFlags::none)
+        if (!shouldCull && (ps.flags & PaintStructFlags::isSolid) != PaintStructFlags::none)
+        {
+            drawingCtx.drawImageSolid(zoom, imagePos, ImageId(imageId.getIndex()), Colours::getShade(imageId.getPrimary(), 7), ps.rasterOffset);
+        }
+        else if ((ps.flags & PaintStructFlags::hasMaskedImage) != PaintStructFlags::none)
         {
             drawingCtx.drawImageMasked(zoom, imagePos, imageId, ps.maskedImageId, ps.rasterOffset);
         }

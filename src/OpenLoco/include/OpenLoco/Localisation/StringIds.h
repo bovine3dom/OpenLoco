@@ -2271,7 +2271,7 @@ namespace OpenLoco::StringIds
     constexpr StringId production_heatmap_linear = 2559;
     constexpr StringId rail_speed_overlay = 2560;
     constexpr StringId rail_speed_overlay_description = 2561;
-    constexpr StringId rail_speed_overlay_no_data = 2562;
+    constexpr StringId rail_speed_overlay_tooltip = 2562;
     constexpr StringId tooltip_town_growth = 2563;
     constexpr StringId title_town_growth = 2564;
     constexpr StringId town_growth_last_check = 2565;

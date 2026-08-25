@@ -19,6 +19,8 @@ namespace OpenLoco::Gfx
         std::unique_ptr<SoftwareDrawingContextState> _state;
 
     public:
+        using DrawingContext::drawImageSolid;
+
         SoftwareDrawingContext();
         ~SoftwareDrawingContext() override;
 
@@ -38,7 +40,7 @@ namespace OpenLoco::Gfx
         void drawCircle(const Ui::Point& centre, int32_t radius, int32_t lineWidth, PaletteIndex_t colour) override;
         void drawImage(ZoomLevel zoom, const Ui::Point& worldPos, const ImageId& image, const Ui::Point& rasterOffset = {}) override;
         void drawImageMasked(ZoomLevel zoom, const Ui::Point& worldPos, const ImageId& image, const ImageId& maskImage, const Ui::Point& rasterOffset = {}) override;
-        void drawImageSolid(const Ui::Point& pos, const ImageId& image, PaletteIndex_t paletteIndex) override;
+        void drawImageSolid(ZoomLevel zoom, const Ui::Point& pos, const ImageId& image, PaletteIndex_t paletteIndex, const Ui::Point& rasterOffset = {}) override;
         void drawImagePaletteSet(const Ui::Point& pos, const ImageId& image, PaletteMap::View palette, const G1Element* noiseImage) override;
     };
 }

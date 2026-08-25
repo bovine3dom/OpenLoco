@@ -26,7 +26,7 @@ namespace OpenLoco::Vehicles::RailTraffic
     {
         constexpr uint8_t kMaxConfidence = 16;
         constexpr uint8_t kPriorConfidence = 4;
-        constexpr uint32_t kOverlayHistoryRetentionDays = 30;
+        constexpr uint32_t kOverlayHistoryRetentionDays = 365;
         constexpr uint64_t kLandModeModifier = 21;
         constexpr TravelTime kMaxTraversalTime = static_cast<TravelTime>(std::numeric_limits<int32_t>::max()) << kFractionBits;
         constexpr TravelTime kTimestampMask = (TravelTime{ 1 } << 48) - 1;
@@ -204,6 +204,14 @@ namespace OpenLoco::Vehicles::RailTraffic
             return add(numerator, static_cast<uint16_t>(speed.getRaw()) - 1) / static_cast<uint16_t>(speed.getRaw());
         }
 
+        Speed16 calculateAverageSpeed(const Edge& edge, const TravelTime meanTraversalTime)
+        {
+            const auto distance = World::TrackData::getTrackMiscData(edge.tad >> 3).unkWeighting;
+            const auto numerator = multiply(multiply(distance, kLandModeModifier), kOneTick);
+            const auto speed = add(numerator, meanTraversalTime / 2) / meanTraversalTime;
+            return Speed16(static_cast<int16_t>(std::min<uint64_t>(speed, kSpeed16Max.getRaw())));
+        }
+
         bool isCurrentTraversal(const ActiveTraversal& traversal)
         {
             auto* vehicle = EntityManager::get<VehicleBase>(traversal.vehicle);
@@ -306,10 +314,18 @@ namespace OpenLoco::Vehicles::RailTraffic
             return std::nullopt;
         }
 
-        const auto distance = World::TrackData::getTrackMiscData(edge.tad >> 3).unkWeighting;
-        const auto numerator = multiply(multiply(distance, kLandModeModifier), kOneTick);
-        const auto speed = add(numerator, it->second.meanTraversalTime / 2) / it->second.meanTraversalTime;
-        return Speed16(static_cast<int16_t>(std::min<uint64_t>(speed, kSpeed16Max.getRaw())));
+        return calculateAverageSpeed(edge, it->second.meanTraversalTime);
+    }
+
+    std::vector<Speed16> getAverageSpeeds()
+    {
+        std::vector<Speed16> result;
+        result.reserve(_history.size());
+        for (const auto& [edge, entry] : _history)
+        {
+            result.push_back(calculateAverageSpeed(edge, entry.meanTraversalTime));
+        }
+        return result;
     }
 
     uint32_t getHistoryRevision()

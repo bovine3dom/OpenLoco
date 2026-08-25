@@ -123,6 +123,21 @@ TEST(SoftwareDrawingContextTest, AppliesRasterOffsetToMaskedSprites)
     expectFilledRect(pixels, 10, 10, Ui::Rect::fromLTRB(5, 5, 9, 9), 3);
 }
 
+TEST(SoftwareDrawingContextTest, DrawsMagnifiedSpritesAsAnOpaqueSolidColour)
+{
+    constexpr uint32_t kImage = 0;
+    std::array<uint8_t, 5> sourcePixels{ 2, 0, 0x81, 0, 7 };
+    const G1ElementGuard imageGuard(kImage, sourcePixels.data(), 1, 1, Gfx::G1ElementFlags::isRLECompressed);
+
+    std::array<uint8_t, 12 * 12> pixels{};
+    const Gfx::RenderTarget target{ pixels.data(), 0, 0, 12, 12, 0 };
+    Gfx::SoftwareDrawingContext drawingCtx;
+    drawingCtx.pushRenderTarget(target);
+    drawingCtx.drawImageSolid(ZoomLevel::quadrupled, { 1, 1 }, ImageId(kImage), 42, { 1, 2 });
+
+    expectFilledRect(pixels, 12, 12, Ui::Rect::fromLTRB(5, 6, 9, 10), 42);
+}
+
 TEST(PaintInteractionTest, AppliesRasterOffsetAfterMagnification)
 {
     uint8_t sourcePixel = 7;
