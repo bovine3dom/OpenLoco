@@ -9,6 +9,75 @@
 
 namespace OpenLoco::TownGrowth
 {
+    enum class UpdateKind : uint8_t
+    {
+        disabled,
+        maintenance,
+        construction,
+    };
+
+    enum class Outcome : uint8_t
+    {
+        disabled,
+        maintenance,
+        grew,
+        initialRoadBuilt,
+        noRoad,
+        noRoadType,
+        noSuitableSite,
+        noChange,
+    };
+
+    struct GrowthDiagnostics
+    {
+        uint16_t roadStatesVisited{};
+        uint16_t buildingSitesAttempted{};
+        uint16_t buildingsConstructed{};
+        uint8_t buildSpeed{};
+        uint8_t growthCalls{};
+        uint8_t noRoadCalls{};
+        uint8_t noIdealRoadCalls{};
+        uint8_t initialRoadsBuilt{};
+        UpdateKind kind = UpdateKind::disabled;
+    };
+
+    constexpr Outcome getOutcome(const GrowthDiagnostics& diagnostics)
+    {
+        if (diagnostics.kind == UpdateKind::disabled)
+        {
+            return Outcome::disabled;
+        }
+        if (diagnostics.buildingsConstructed != 0)
+        {
+            return Outcome::grew;
+        }
+        if (diagnostics.initialRoadsBuilt != 0)
+        {
+            return Outcome::initialRoadBuilt;
+        }
+        if (diagnostics.kind == UpdateKind::maintenance)
+        {
+            return Outcome::maintenance;
+        }
+        if (diagnostics.growthCalls != 0 && diagnostics.noRoadCalls == diagnostics.growthCalls)
+        {
+            return Outcome::noRoad;
+        }
+        if (diagnostics.growthCalls != 0 && diagnostics.noIdealRoadCalls == diagnostics.growthCalls)
+        {
+            return Outcome::noRoadType;
+        }
+        if (diagnostics.buildingSitesAttempted != 0)
+        {
+            return Outcome::noSuitableSite;
+        }
+        return Outcome::noChange;
+    }
+
+    const GrowthDiagnostics* getLastGrowth(TownId id);
+    void resetLastGrowth();
+    void resetLastGrowth(TownId id);
+
     struct RoadTraversalState
     {
         World::Pos3 pos;

@@ -1,4 +1,5 @@
 #include "World/TownManager.h"
+#include "World/TownGrowth.h"
 #include "CargoDist/CargoDist.h"
 #include "Game.h"
 #include "GameCommands/GameCommands.h"
@@ -366,6 +367,7 @@ namespace OpenLoco::TownManager
         // Initialise the new town
         const auto townIndex = enumValue(town->id());
         _runtimeMetrics[townIndex] = {};
+        TownGrowth::resetLastGrowth(town->id());
         town->x = pos.x;
         town->y = pos.y;
         town->flags = TownFlags::none;
@@ -526,6 +528,7 @@ namespace OpenLoco::TownManager
 
     void rebuildRuntimeMetrics()
     {
+        TownGrowth::resetLastGrowth();
         rebuildBuildingMetrics(false);
     }
 
@@ -540,6 +543,7 @@ namespace OpenLoco::TownManager
     void reset()
     {
         _runtimeMetrics = {};
+        TownGrowth::resetLastGrowth();
         for (auto& town : rawTowns())
         {
             town.name = StringIds::null;

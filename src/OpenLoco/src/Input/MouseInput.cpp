@@ -1574,7 +1574,7 @@ namespace OpenLoco::Input
         {
             oldWindow->callPrepareDraw();
 
-            Ui::Widget* oldWidget = widgetIdx != kWidgetIndexNull ? &oldWindow->widgets[widgetIdx] : nullptr;
+            Ui::Widget* oldWidget = widgetIdx >= 0 && static_cast<size_t>(widgetIdx) < oldWindow->widgets.size() ? &oldWindow->widgets[widgetIdx] : nullptr;
             if (oldWidget != nullptr
                 && (oldWidget->type == Ui::WidgetType::buttonWithColour || oldWidget->type == Ui::WidgetType::buttonWithImage))
             {

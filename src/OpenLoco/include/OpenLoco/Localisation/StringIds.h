@@ -2272,6 +2272,23 @@ namespace OpenLoco::StringIds
     constexpr StringId rail_speed_overlay = 2560;
     constexpr StringId rail_speed_overlay_description = 2561;
     constexpr StringId rail_speed_overlay_no_data = 2562;
+    constexpr StringId tooltip_town_growth = 2563;
+    constexpr StringId title_town_growth = 2564;
+    constexpr StringId town_growth_last_check = 2565;
+    constexpr StringId town_growth_waiting = 2566;
+    constexpr StringId town_growth_disabled = 2567;
+    constexpr StringId town_growth_maintenance = 2568;
+    constexpr StringId town_growth_succeeded = 2569;
+    constexpr StringId town_growth_initial_road = 2570;
+    constexpr StringId town_growth_no_road = 2571;
+    constexpr StringId town_growth_no_road_type = 2572;
+    constexpr StringId town_growth_no_site = 2573;
+    constexpr StringId town_growth_no_change = 2574;
+    constexpr StringId town_growth_details = 2575;
+    constexpr StringId town_growth_detail_values = 2576;
+    constexpr StringId town_growth_next_rate = 2577;
+    constexpr StringId town_growth_no_cargo_limit = 2578;
+    constexpr StringId town_growth_limiting_cargo = 2579;
 
     constexpr StringId temporary_object_load_str_0 = 8192;
     constexpr StringId temporary_object_load_str_1 = 8193;

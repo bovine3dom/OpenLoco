@@ -45,6 +45,46 @@ namespace OpenLoco
 {
     constexpr auto kMaxTownBridgeLength = 15U;
 
+    namespace
+    {
+        std::array<std::optional<TownGrowth::GrowthDiagnostics>, Limits::kMaxTowns> _lastGrowth;
+        TownGrowth::GrowthDiagnostics* _activeGrowth{};
+        TownId _activeGrowthTown = TownId::null;
+
+        TownGrowth::GrowthDiagnostics* getActiveGrowth(const Town& town)
+        {
+            return _activeGrowthTown == town.id() ? _activeGrowth : nullptr;
+        }
+    }
+
+    namespace TownGrowth
+    {
+        const GrowthDiagnostics* getLastGrowth(const TownId id)
+        {
+            const auto index = enumValue(id);
+            const auto* town = TownManager::get(id);
+            return index < _lastGrowth.size() && town != nullptr && !town->empty() && _lastGrowth[index].has_value()
+                ? &*_lastGrowth[index]
+                : nullptr;
+        }
+
+        void resetLastGrowth()
+        {
+            _lastGrowth = {};
+            _activeGrowth = nullptr;
+            _activeGrowthTown = TownId::null;
+        }
+
+        void resetLastGrowth(const TownId id)
+        {
+            const auto index = enumValue(id);
+            if (index < _lastGrowth.size())
+            {
+                _lastGrowth[index].reset();
+            }
+        }
+    }
+
     bool Town::empty() const
     {
         return name == StringIds::null;
@@ -60,24 +100,34 @@ namespace OpenLoco
     {
         recalculateSize();
 
+        auto& diagnostics = _lastGrowth[enumValue(id())].emplace();
+        diagnostics.buildSpeed = buildSpeed;
+
         if (Config::get().townGrowthDisabled)
         {
+            diagnostics.kind = TownGrowth::UpdateKind::disabled;
             return;
         }
 
         static constexpr std::array<uint8_t, 12> kBuildSpeedToGrowthPerTick = { 0, 1, 3, 5, 7, 9, 12, 16, 22, 0, 0, 0 };
         auto growthPerTick = kBuildSpeedToGrowthPerTick[this->buildSpeed];
+        _activeGrowth = &diagnostics;
+        _activeGrowthTown = id();
         if (growthPerTick == 0 || (growthPerTick == 1 && (gPrng1().randNext() & 7)))
         {
+            diagnostics.kind = TownGrowth::UpdateKind::maintenance;
             grow(TownGrowFlags::buildInitialRoad | TownGrowFlags::roadUpdate | TownGrowFlags::neutralRoadTakeover);
         }
         else
         {
+            diagnostics.kind = TownGrowth::UpdateKind::construction;
             for (int32_t counter = 0; counter < growthPerTick; ++counter)
             {
                 grow(TownGrowFlags::buildInitialRoad | TownGrowFlags::roadUpdate | TownGrowFlags::neutralRoadTakeover | TownGrowFlags::allowRoadExpansion | TownGrowFlags::allowRoadBranching | TownGrowFlags::constructBuildings);
             }
         }
+        _activeGrowth = nullptr;
+        _activeGrowthTown = TownId::null;
     }
 
     // 0x004FF6F4
@@ -1458,12 +1508,12 @@ namespace OpenLoco
     }
 
     // 0x00498320
-    static void constructBuilding(Town& town, const World::Pos3 pos, const Vehicles::TrackAndDirection::_RoadAndDirection tad, const TownGrowFlags growFlags)
+    static bool constructBuilding(Town& town, const World::Pos3 pos, const Vehicles::TrackAndDirection::_RoadAndDirection tad, const TownGrowFlags growFlags)
     {
         auto* surface = TileManager::get(pos).surface();
         if (pos.z < surface->baseHeight())
         {
-            return;
+            return false;
         }
 
         const auto nextToData = TrackData::getRoadUnkNextTo(tad._data);
@@ -1498,7 +1548,7 @@ namespace OpenLoco
         const auto maxHeight = getMaxHeightOfNewBuilding(buildingPos, isLarge, allowBuildingUpdate);
         if (maxHeight == 0)
         {
-            return;
+            return false;
         }
 
         auto args = generateNewBuildingArgs(town.id(), buildingPos, maxHeight, buildingRot, isLarge, false, desiredDensity, densityUpgrade);
@@ -1508,8 +1558,9 @@ namespace OpenLoco
             {
                 args->buildImmediately = true;
             }
-            GameCommands::doCommand(args.value(), GameCommands::Flags::apply);
+            return GameCommands::doCommand(args.value(), GameCommands::Flags::apply) != GameCommands::kFailure;
         }
+        return false;
     }
 
     template<size_t searchSize>
@@ -1711,10 +1762,11 @@ namespace OpenLoco
     }
 
     // 0x00498101
-    static void buildInitialRoad(Town& town)
+    static bool buildInitialRoad(Town& town)
     {
+        bool built = false;
         // 0x0049807D
-        auto placeRoadAtTile = [&town](const World::Pos2& loc) {
+        auto placeRoadAtTile = [&town, &built](const World::Pos2& loc) {
             auto tile = World::TileManager::get(loc);
             auto* elSurface = tile.surface();
             auto height = elSurface->baseHeight();
@@ -1741,9 +1793,11 @@ namespace OpenLoco
             args.bridge = 0xFF;
             args.roadObjectId = roadObjId.value();
             args.unkFlags = 0;
-            return GameCommands::doCommand(args, GameCommands::Flags::apply) == GameCommands::kFailure;
+            built = GameCommands::doCommand(args, GameCommands::Flags::apply) != GameCommands::kFailure;
+            return !built;
         };
         squareSearch({ town.x, town.y }, 9, placeRoadAtTile);
+        return built;
     }
 
     /**
@@ -1755,15 +1809,28 @@ namespace OpenLoco
      */
     void Town::grow(TownGrowFlags growFlags)
     {
+        auto* diagnostics = getActiveGrowth(*this);
+        if (diagnostics != nullptr)
+        {
+            diagnostics->growthCalls++;
+        }
+
         const auto oldUpatingCompany = GameCommands::getUpdatingCompanyId();
         GameCommands::setUpdatingCompanyId(CompanyId::neutral);
 
         const auto extent = findGrowthRoadExtent(*this);
         if (!extent.has_value())
         {
+            if (diagnostics != nullptr)
+            {
+                diagnostics->noRoadCalls++;
+            }
             if ((growFlags & TownGrowFlags::buildInitialRoad) != TownGrowFlags::none)
             {
-                buildInitialRoad(*this);
+                if (buildInitialRoad(*this) && diagnostics != nullptr)
+                {
+                    diagnostics->initialRoadsBuilt++;
+                }
             }
             GameCommands::setUpdatingCompanyId(oldUpatingCompany);
             return;
@@ -1792,6 +1859,10 @@ namespace OpenLoco
         const auto idealRoadId = getIdealTownRoadId(*this);
         if (!idealRoadId.has_value())
         {
+            if (diagnostics != nullptr)
+            {
+                diagnostics->noIdealRoadCalls++;
+            }
             GameCommands::setUpdatingCompanyId(oldUpatingCompany);
             return;
         }
@@ -1830,6 +1901,10 @@ namespace OpenLoco
                 break;
             }
             visited.push_back({ curRoadPos, tad._data, curOnBridge, curRoadDepth });
+            if (diagnostics != nullptr)
+            {
+                diagnostics->roadStatesVisited++;
+            }
 
             const auto closestTown = TownManager::getClosestTown(curRoadPos);
             if (!closestTown.has_value() || *closestTown != id())
@@ -1895,7 +1970,14 @@ namespace OpenLoco
 
             if ((growFlags & TownGrowFlags::constructBuildings) != TownGrowFlags::none && !curOnBridge)
             {
-                constructBuilding(*this, curRoadPos, tad, growFlags);
+                if (diagnostics != nullptr)
+                {
+                    diagnostics->buildingSitesAttempted++;
+                }
+                if (constructBuilding(*this, curRoadPos, tad, growFlags) && diagnostics != nullptr)
+                {
+                    diagnostics->buildingsConstructed++;
+                }
             }
 
             const auto roadEnd = World::Track::getRoadConnectionEnd(curRoadPos, tad._data);

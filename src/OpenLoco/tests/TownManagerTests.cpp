@@ -1,4 +1,5 @@
 #include "CargoDist/CargoDist.h"
+#include "Config.h"
 #include "GameState.h"
 #include "Localisation/StringIds.h"
 #include "Map/TileManager.h"
@@ -208,6 +209,58 @@ TEST_F(TownManagerTest, RoadTraversalVisitsEachPositionAndDirectionOnce)
     auto bridgeVariant = visited;
     bridgeVariant[0].isBridge = true;
     EXPECT_TRUE(TownGrowth::wasRoadStateVisited(bridgeVariant, pos, 3));
+}
+
+TEST(TownGrowthDiagnostics, ClassifiesLastUpdateOutcome)
+{
+    TownGrowth::GrowthDiagnostics diagnostics{};
+    EXPECT_EQ(TownGrowth::getOutcome(diagnostics), TownGrowth::Outcome::disabled);
+
+    diagnostics.kind = TownGrowth::UpdateKind::maintenance;
+    EXPECT_EQ(TownGrowth::getOutcome(diagnostics), TownGrowth::Outcome::maintenance);
+
+    diagnostics.initialRoadsBuilt = 1;
+    EXPECT_EQ(TownGrowth::getOutcome(diagnostics), TownGrowth::Outcome::initialRoadBuilt);
+    diagnostics.initialRoadsBuilt = 0;
+
+    diagnostics.kind = TownGrowth::UpdateKind::construction;
+    diagnostics.growthCalls = 2;
+    diagnostics.noRoadCalls = 2;
+    EXPECT_EQ(TownGrowth::getOutcome(diagnostics), TownGrowth::Outcome::noRoad);
+
+    diagnostics.noRoadCalls = 0;
+    diagnostics.noIdealRoadCalls = 2;
+    EXPECT_EQ(TownGrowth::getOutcome(diagnostics), TownGrowth::Outcome::noRoadType);
+
+    diagnostics.noIdealRoadCalls = 0;
+    diagnostics.buildingSitesAttempted = 1;
+    EXPECT_EQ(TownGrowth::getOutcome(diagnostics), TownGrowth::Outcome::noSuitableSite);
+
+    diagnostics.initialRoadsBuilt = 1;
+    EXPECT_EQ(TownGrowth::getOutcome(diagnostics), TownGrowth::Outcome::initialRoadBuilt);
+
+    diagnostics.buildingsConstructed = 1;
+    EXPECT_EQ(TownGrowth::getOutcome(diagnostics), TownGrowth::Outcome::grew);
+}
+
+TEST_F(TownManagerTest, DisabledGrowthRecordsWhyTheTownWasSkipped)
+{
+    constexpr TownId kTownId{ 0 };
+    auto& town = addTown(kTownId, { 32, 32 });
+    town.buildSpeed = 3;
+    const auto wasDisabled = Config::get().townGrowthDisabled;
+    Config::get().townGrowthDisabled = true;
+
+    town.tick();
+
+    Config::get().townGrowthDisabled = wasDisabled;
+    const auto* diagnostics = TownGrowth::getLastGrowth(kTownId);
+    ASSERT_NE(diagnostics, nullptr);
+    EXPECT_EQ(diagnostics->buildSpeed, 3);
+    EXPECT_EQ(TownGrowth::getOutcome(*diagnostics), TownGrowth::Outcome::disabled);
+
+    town.name = StringIds::null;
+    EXPECT_EQ(TownGrowth::getLastGrowth(kTownId), nullptr);
 }
 
 TEST_F(TownManagerTest, RuntimeMetricsRebuildPreservesPopulationAndCapacity)
