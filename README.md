@@ -10,7 +10,7 @@ so far:
 - water pathfinding including diagonals
 - construction while paused
 - ~30x faster partial development (coding...) rebuilds
-- cargo visualisation
+- cargo flow visualisation
 - unbunching
 - shared orders (hold control while cloning or 'filter' vehicle list by matching orders then click the ghostly button
 - increase station join radius from 2 to 3 (and the equivalent for height)
@@ -31,6 +31,9 @@ so far:
 - source/via/destination shown on station and vehicle cargo tabs
 - carrying capacity bikeshedded. generally trams increased and trains decreased
 - random demolitions disabled to encourage more building variety. demolition for growth still allowed
+- cargo production visualisation overlay
+- realised rail speed overlay
+- stations can 'seed' town growth rather than it always starting at the centre
 
 
 
