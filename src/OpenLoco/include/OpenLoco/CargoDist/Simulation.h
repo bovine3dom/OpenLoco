@@ -114,7 +114,7 @@ namespace OpenLoco::CargoDist
     void cancelPendingRecalculation();
     RecalculationMetrics getRecalculationMetrics();
     void recalculateNow();
-    void validateState(const State& state, const GameState& gameState);
+    void validateState(const State& state, const GameState& gameState, bool validatePassengerCargoTypes = true);
     void restoreState(State state);
     void updateDaily();
 

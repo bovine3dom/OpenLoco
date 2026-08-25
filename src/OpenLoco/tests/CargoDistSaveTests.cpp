@@ -551,6 +551,17 @@ TEST(CargoDistSave, ValidatesNativeStateBeforeRestore)
     EXPECT_THROW(validateState(state, *gameState), std::runtime_error);
 }
 
+TEST(CargoDistSave, DefersPassengerCargoValidationUntilObjectsLoad)
+{
+    State state;
+    state.settings.modes[0] = DistributionMode::asymmetric;
+    state.holidaySources[{ station(1), 0 }] = {};
+    auto gameState = std::make_unique<GameState>();
+    gameState->stations[1].name = StringId(1);
+
+    EXPECT_NO_THROW(validateState(state, *gameState, false));
+}
+
 TEST(CargoDistSave, ValidatesExtendedStationCargoAgainstClampedNativeState)
 {
     State state;

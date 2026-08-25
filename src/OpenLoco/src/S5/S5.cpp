@@ -1246,7 +1246,8 @@ namespace OpenLoco::S5
             if (file->cargoDistState.has_value() && !hasLoadFlags(flags, LoadFlags::titleSequence))
             {
                 validateCargoDistObjects(*file->cargoDistState, file->requiredObjects);
-                CargoDist::validateState(*file->cargoDistState, *importedGameState);
+                // Passenger cargo types are validated after loading this save's objects.
+                CargoDist::validateState(*file->cargoDistState, *importedGameState, false);
             }
             if (file->sharedOrderState.has_value() && !hasLoadFlags(flags, LoadFlags::titleSequence)
                 && !Vehicles::SharedOrderManager::validateState(*file->sharedOrderState, *importedGameState))
@@ -1301,6 +1302,10 @@ namespace OpenLoco::S5
             }
 
             ObjectManager::reloadAll();
+            if (file->cargoDistState.has_value() && !hasLoadFlags(flags, LoadFlags::titleSequence))
+            {
+                CargoDist::validateState(*file->cargoDistState, *importedGameState);
+            }
             Ui::ProgressBar::setProgress(200);
 
             Audio::stopVehicleNoise();

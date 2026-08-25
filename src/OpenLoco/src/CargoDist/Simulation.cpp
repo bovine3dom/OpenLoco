@@ -3035,7 +3035,7 @@ namespace OpenLoco::CargoDist
         return _recalculationMetrics;
     }
 
-    void validateState(const State& state, const GameState& gameState)
+    void validateState(const State& state, const GameState& gameState, const bool validatePassengerCargoTypes)
     {
         const auto isActiveStation = [&gameState](StationId id) {
             const auto index = enumValue(id);
@@ -3044,6 +3044,9 @@ namespace OpenLoco::CargoDist
         const auto isEnabled = [&state](uint8_t cargo) {
             return cargo < state.settings.modes.size() && state.settings.modes[cargo] != DistributionMode::manual;
         };
+        const auto isValidPassengerCargo = [validatePassengerCargoTypes](uint8_t cargo) {
+            return !validatePassengerCargoTypes || isPassengerCargo(cargo);
+        };
 
         const auto validatePackets = [&](const PacketList& packets, const uint8_t cargo) {
             return std::all_of(packets.packets().begin(), packets.packets().end(), [&](const auto& packet) {
@@ -3051,7 +3054,7 @@ namespace OpenLoco::CargoDist
                 const auto town = enumValue(packet.homeTown);
                 const auto validHoliday = packet.tripKind == PassengerTripKind::ordinary
                     ? packet.holidayIndustry == IndustryId::null && packet.homeTown == TownId::null
-                    : isPassengerCargo(cargo) && enumValue(packet.holidayIndustry) < std::size(gameState.industries) && town < std::size(gameState.towns) && !gameState.towns[town].empty();
+                    : isValidPassengerCargo(cargo) && enumValue(packet.holidayIndustry) < std::size(gameState.industries) && town < std::size(gameState.towns) && !gameState.towns[town].empty();
                 return validKind && validHoliday
                     && isActiveStation(packet.origin)
                     && (packet.destination == StationId::null || isActiveStation(packet.destination))
@@ -3086,7 +3089,7 @@ namespace OpenLoco::CargoDist
         }
         for (const auto& [key, source] : state.holidaySources)
         {
-            if (!isEnabled(key.cargo) || !isPassengerCargo(key.cargo) || !isActiveStation(key.station) || source.remainder >= 100)
+            if (!isEnabled(key.cargo) || !isValidPassengerCargo(key.cargo) || !isActiveStation(key.station) || source.remainder >= 100)
             {
                 throw std::runtime_error("Invalid CargoDist holiday source state");
             }
@@ -3099,7 +3102,7 @@ namespace OpenLoco::CargoDist
         {
             const auto industry = enumValue(pending.resort);
             const auto town = enumValue(pending.homeTown);
-            if (pending.quantity == 0 || !isEnabled(pending.cargo) || !isPassengerCargo(pending.cargo) || industry >= std::size(gameState.industries)
+            if (pending.quantity == 0 || !isEnabled(pending.cargo) || !isValidPassengerCargo(pending.cargo) || industry >= std::size(gameState.industries)
                 || town >= std::size(gameState.towns) || gameState.towns[town].empty()
                 || (pending.resortStation != StationId::null && !isActiveStation(pending.resortStation))
                 || (pending.homeStation != StationId::null && !isActiveStation(pending.homeStation))
