@@ -26,6 +26,7 @@ namespace OpenLoco::Vehicles::RailTraffic
     {
         constexpr uint8_t kMaxConfidence = 16;
         constexpr uint8_t kPriorConfidence = 4;
+        constexpr uint32_t kOverlayHistoryRetentionDays = 30;
         constexpr uint64_t kLandModeModifier = 21;
         constexpr TravelTime kMaxTraversalTime = static_cast<TravelTime>(std::numeric_limits<int32_t>::max()) << kFractionBits;
         constexpr TravelTime kTimestampMask = (TravelTime{ 1 } << 48) - 1;
@@ -359,7 +360,12 @@ namespace OpenLoco::Vehicles::RailTraffic
         bool erased = false;
         for (auto it = _history.begin(); it != _history.end();)
         {
-            if (it->second.lastObservedDay != today && --it->second.confidence == 0)
+            if (it->second.lastObservedDay != today && it->second.confidence != 0)
+            {
+                it->second.confidence--;
+            }
+            if (it->second.lastObservedDay > today
+                || today - it->second.lastObservedDay > kOverlayHistoryRetentionDays)
             {
                 it = _history.erase(it);
                 erased = true;
@@ -462,7 +468,7 @@ namespace OpenLoco::Vehicles::RailTraffic
         for (const auto& entry : state.history)
         {
             if (!isValidEdge(entry.edge) || entry.meanTraversalTime == 0 || entry.meanTraversalTime > kMaxTraversalTime
-                || entry.confidence == 0 || entry.confidence > kMaxConfidence || !edges.emplace(entry.edge, true).second)
+                || entry.confidence > kMaxConfidence || !edges.emplace(entry.edge, true).second)
             {
                 return false;
             }

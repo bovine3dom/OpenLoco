@@ -1,3 +1,4 @@
+#include <OpenLoco/Date.h>
 #include <OpenLoco/Entities/EntityManager.h>
 #include <OpenLoco/GameState.h>
 #include <OpenLoco/Map/Track/TrackData.h>
@@ -27,6 +28,7 @@ namespace
             EntityManager::reset();
             RailTraffic::reset();
             ScenarioManager::setScenarioTicks(0);
+            setCurrentDay(0);
         }
 
         void TearDown() override
@@ -113,6 +115,40 @@ TEST_F(RailTrafficTest, ReportsMeasuredAverageSpeed)
     const auto speed = RailTraffic::getAverageSpeed(kEdge);
     ASSERT_TRUE(speed.has_value());
     EXPECT_EQ(*speed, 30_mph);
+}
+
+TEST_F(RailTrafficTest, RetainsOverlayHistoryAfterRoutingConfidenceDecays)
+{
+    const RailTraffic::SpeedProfile profile{ 60_mph, 60_mph };
+    const auto freeFlow = RailTraffic::getFreeFlowTime(profile, kEdge.tad, kEdge.trackType);
+    RailTraffic::recordTraversal(kEdge, 30 * RailTraffic::kOneTick);
+
+    setCurrentDay(1);
+    RailTraffic::updateDaily();
+    ASSERT_TRUE(RailTraffic::getAverageSpeed(kEdge).has_value());
+    EXPECT_EQ(RailTraffic::getTravelTime(profile, { kEdge.x, kEdge.y, kEdge.z }, kEdge.tad, kEdge.trackType), freeFlow);
+
+    for (uint32_t day = 2; day <= 30; ++day)
+    {
+        setCurrentDay(day);
+        RailTraffic::updateDaily();
+    }
+    EXPECT_TRUE(RailTraffic::getAverageSpeed(kEdge).has_value());
+
+    setCurrentDay(31);
+    RailTraffic::updateDaily();
+    EXPECT_FALSE(RailTraffic::getAverageSpeed(kEdge).has_value());
+}
+
+TEST_F(RailTrafficTest, DropsHistoryAfterDateMovesBackwards)
+{
+    setCurrentDay(1);
+    RailTraffic::recordTraversal(kEdge, 12 * RailTraffic::kOneTick);
+
+    setCurrentDay(0);
+    RailTraffic::updateDaily();
+
+    EXPECT_FALSE(RailTraffic::getAverageSpeed(kEdge).has_value());
 }
 
 TEST_F(RailTrafficTest, OverlayUsesSlowestObservedDirection)

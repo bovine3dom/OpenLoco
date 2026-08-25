@@ -59,7 +59,7 @@ namespace
     Vehicles::RailTraffic::State railTrafficState()
     {
         Vehicles::RailTraffic::State state;
-        state.history.push_back({ { 320, 352, 32, 4, 0 }, 12 * Vehicles::RailTraffic::kOneTick, 123, 7 });
+        state.history.push_back({ { 320, 352, 32, 4, 0 }, 12 * Vehicles::RailTraffic::kOneTick, 123, 0 });
         state.active.push_back({ entity(9), entity(3), { 288, 352, 32, 0, 0 }, 100 * Vehicles::RailTraffic::kOneTick, true });
         return state;
     }
