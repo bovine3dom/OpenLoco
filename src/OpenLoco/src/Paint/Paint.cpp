@@ -1036,7 +1036,7 @@ namespace OpenLoco::Paint
 
         if (!shouldCull && (ps.flags & PaintStructFlags::isSolid) != PaintStructFlags::none)
         {
-            drawingCtx.drawImageSolid(zoom, imagePos, ImageId(imageId.getIndex()), Colours::getShade(imageId.getPrimary(), 7), ps.rasterOffset);
+            drawingCtx.drawImageSolid(zoom, imagePos, ImageId(imageId.getIndex()), ps.solidColour, ps.rasterOffset);
         }
         else if ((ps.flags & PaintStructFlags::hasMaskedImage) != PaintStructFlags::none)
         {

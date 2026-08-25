@@ -144,13 +144,15 @@ namespace OpenLoco::Paint
         ImageId bridgeColoursBaseImageId; // 0x01135F36 with only the colours set (image index not set!)
         uint8_t tunnelType;               // 0x0113605E
         bool isSolid;
+        PaletteIndex_t solidColour;
     };
 
-    static void setSolid(PaintStruct* paintStruct, const bool isSolid)
+    static void setSolid(PaintStruct* paintStruct, const bool isSolid, const PaletteIndex_t colour)
     {
         if (isSolid && paintStruct != nullptr)
         {
             paintStruct->flags |= PaintStructFlags::isSolid;
+            paintStruct->solidColour = colour;
         }
     }
 
@@ -176,9 +178,9 @@ namespace OpenLoco::Paint
 
         const auto baseImage = trackSession.trackBaseImageId;
 
-        setSolid(session.addToPlotListTrackRoad(baseImage.withIndexOffset(tpp.imageIndexOffsets[rotation][0]), 0, heightOffset, tpp.boundingBoxOffsets[rotation] + heightOffset, tpp.boundingBoxSizes[rotation]), trackSession.isSolid);
-        setSolid(session.addToPlotListTrackRoad(baseImage.withIndexOffset(tpp.imageIndexOffsets[rotation][1]), 1, heightOffset, tpp.boundingBoxOffsets[rotation] + heightOffset, tpp.boundingBoxSizes[rotation]), trackSession.isSolid);
-        setSolid(session.addToPlotListTrackRoad(baseImage.withIndexOffset(tpp.imageIndexOffsets[rotation][2]), 3, heightOffset, tpp.boundingBoxOffsets[rotation] + heightOffset, tpp.boundingBoxSizes[rotation]), trackSession.isSolid);
+        setSolid(session.addToPlotListTrackRoad(baseImage.withIndexOffset(tpp.imageIndexOffsets[rotation][0]), 0, heightOffset, tpp.boundingBoxOffsets[rotation] + heightOffset, tpp.boundingBoxSizes[rotation]), trackSession.isSolid, trackSession.solidColour);
+        setSolid(session.addToPlotListTrackRoad(baseImage.withIndexOffset(tpp.imageIndexOffsets[rotation][1]), 1, heightOffset, tpp.boundingBoxOffsets[rotation] + heightOffset, tpp.boundingBoxSizes[rotation]), trackSession.isSolid, trackSession.solidColour);
+        setSolid(session.addToPlotListTrackRoad(baseImage.withIndexOffset(tpp.imageIndexOffsets[rotation][2]), 3, heightOffset, tpp.boundingBoxOffsets[rotation] + heightOffset, tpp.boundingBoxSizes[rotation]), trackSession.isSolid, trackSession.solidColour);
 
         session.insertTunnels(tpp.tunnelHeights[rotation], height, trackSession.tunnelType);
 
@@ -208,7 +210,7 @@ namespace OpenLoco::Paint
 
         const auto baseImage = trackSession.trackBaseImageId;
 
-        setSolid(session.addToPlotList4FD150(baseImage.withIndexOffset(tpp.imageIndexOffsets[rotation][0]), heightOffset, tpp.boundingBoxOffsets[rotation] + heightOffset, tpp.boundingBoxSizes[rotation]), trackSession.isSolid);
+        setSolid(session.addToPlotList4FD150(baseImage.withIndexOffset(tpp.imageIndexOffsets[rotation][0]), heightOffset, tpp.boundingBoxOffsets[rotation] + heightOffset, tpp.boundingBoxSizes[rotation]), trackSession.isSolid, trackSession.solidColour);
 
         session.insertTunnels(tpp.tunnelHeights[rotation], height, trackSession.tunnelType);
 
@@ -267,6 +269,7 @@ namespace OpenLoco::Paint
         auto baseTrackImageColour = ImageId(0, CompanyManager::getCompanyColour(elTrack.owner()));
         auto bridgeColoursBaseImageId = baseTrackImageColour;
         bool isSolid = false;
+        PaletteIndex_t solidColour = PaletteIndex::black5;
 
         if (elTrack.isGhost() || elTrack.isAiAllocated())
         {
@@ -287,18 +290,16 @@ namespace OpenLoco::Paint
             }
             else if (session.isRailSpeedOverlayEnabled())
             {
-                auto colour = Colour::grey;
                 if (const auto speed = Ui::Windows::RailSpeedOverlay::getTrackSpeed(session.getUnkPosition(), elTrack); speed.has_value())
                 {
                     const auto bucket = Ui::Windows::RailSpeedOverlay::getSpeedBucket(*speed);
-                    colour = Ui::Windows::RailSpeedOverlay::getBucketColour(bucket);
+                    solidColour = Ui::Windows::RailSpeedOverlay::getBucketColour(bucket);
                 }
-                baseTrackImageColour = ImageId(0, colour);
                 isSolid = true;
             }
         }
 
-        TrackPaintCommon trackSession{ baseTrackImageColour.withIndex(trackObj->image), bridgeColoursBaseImageId, trackObj->tunnel, isSolid };
+        TrackPaintCommon trackSession{ baseTrackImageColour.withIndex(trackObj->image), bridgeColoursBaseImageId, trackObj->tunnel, isSolid, solidColour };
 
         if (!session.skipTrackRoadSurfaces())
         {

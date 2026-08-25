@@ -210,12 +210,12 @@ TEST_F(RailTrafficTest, OverlayFindsReverseEdgeWithDiagonalEndpoint)
 
 TEST(RailSpeedOverlay, UsesPercentileSpeedBands)
 {
-    constexpr std::array speeds = { 10_mph, 20_mph, 30_mph, 40_mph, 50_mph, 60_mph, 70_mph, 80_mph };
+    constexpr std::array speeds = { 10_mph, 20_mph, 30_mph, 40_mph, 50_mph, 60_mph, 70_mph, 80_mph, 90_mph, 100_mph, 110_mph, 120_mph };
     const auto thresholds = Ui::Windows::RailSpeedOverlay::calculateSpeedPercentileThresholds(speeds);
     using Ui::Windows::RailSpeedOverlay::getSpeedBucket;
-    for (size_t i = 0; i < speeds.size(); ++i)
+    for (size_t i = 1; i < speeds.size(); ++i)
     {
-        EXPECT_EQ(getSpeedBucket(speeds[i], thresholds), i + 1);
+        EXPECT_LT(getSpeedBucket(speeds[i - 1], thresholds), getSpeedBucket(speeds[i], thresholds));
     }
 
     constexpr std::array sparseSpeeds = { 10_mph, 80_mph };

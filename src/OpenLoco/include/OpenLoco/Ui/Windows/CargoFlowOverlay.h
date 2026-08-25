@@ -33,6 +33,7 @@ namespace OpenLoco::Ui
         bool hasEnabledCargo();
 
         uint8_t getSaturationBucket(uint64_t plannedDemand, std::optional<uint32_t> capacity);
+        PaletteIndex_t getSaturationColour(uint8_t bucket);
         std::vector<ProjectedLink> projectLinks(const Viewport& viewport, bool windowCoordinates);
         void drawLinks(Gfx::DrawingContext& drawingCtx, std::span<const ProjectedLink> links);
         bool setTooltip(const Viewport& viewport, Point cursor);

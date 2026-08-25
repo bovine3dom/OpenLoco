@@ -17,12 +17,11 @@
 #include "Ui/Widgets/ImageButtonWidget.h"
 #include "Ui/Widgets/PanelWidget.h"
 #include "Ui/WindowManager.h"
-#include "Ui/Windows/ProductionHeatmap.h"
+#include "Ui/Windows/CargoFlowOverlay.h"
 #include "Vehicles/RailTraffic.h"
 #include "Viewport.hpp"
 #include <OpenLoco/Math/Vector.hpp>
 #include <algorithm>
-#include <array>
 #include <vector>
 
 namespace OpenLoco::Ui::Windows::RailSpeedOverlay
@@ -32,18 +31,7 @@ namespace OpenLoco::Ui::Windows::RailSpeedOverlay
         constexpr Ui::Size kWindowSize = { 252, 62 };
         constexpr int16_t kLegendLeft = 46;
         constexpr int16_t kLegendTop = 34;
-        constexpr int16_t kLegendCellWidth = 20;
-
-        constexpr std::array<Colour, kBucketCount> kBucketColours = {
-            Colour::red,
-            Colour::darkOrange,
-            Colour::orange,
-            Colour::amber,
-            Colour::yellow,
-            Colour::mutedAvocadoGreen,
-            Colour::mutedGrassGreen,
-            Colour::green,
-        };
+        constexpr int16_t kLegendCellWidth = 13;
 
         namespace Widx
         {
@@ -118,14 +106,15 @@ namespace OpenLoco::Ui::Windows::RailSpeedOverlay
             tr.setCurrentFont(Gfx::Font::small);
             const auto colour = self.getColour(WindowColour::secondary).opaque();
             tr.drawStringCentred({ kWindowSize.width / 2, 20 }, colour, StringIds::rail_speed_overlay_description);
-            for (size_t i = 0; i < kBucketColours.size(); ++i)
+            for (uint8_t i = 0; i < kBucketCount; ++i)
             {
                 const auto left = kLegendLeft + static_cast<int16_t>(i) * kLegendCellWidth;
-                drawingCtx.fillRect(left, kLegendTop, left + kLegendCellWidth - 2, kLegendTop + 7, Colours::getShade(kBucketColours[i], 7), Gfx::RectFlags::none);
+                const auto paletteBucket = i == 0 ? 0 : kBucketCount - i;
+                drawingCtx.fillRect(left, kLegendTop, left + kLegendCellWidth - 2, kLegendTop + 7, CargoFlowOverlay::getSaturationColour(paletteBucket), Gfx::RectFlags::none);
             }
             constexpr auto kLegendLabelY = kLegendTop + 13;
             tr.drawStringLeft({ kLegendLeft, kLegendLabelY }, colour, StringIds::low);
-            tr.drawStringCentred({ kLegendLeft + kLegendCellWidth * 4, kLegendLabelY }, colour, StringIds::medium);
+            tr.drawStringCentred({ kLegendLeft + kLegendCellWidth * (kBucketCount / 2), kLegendLabelY }, colour, StringIds::medium);
             tr.drawStringRight({ kLegendLeft + kLegendCellWidth * kBucketCount - 1, kLegendLabelY }, colour, StringIds::high);
         }
 
@@ -180,7 +169,19 @@ namespace OpenLoco::Ui::Windows::RailSpeedOverlay
         {
             values.push_back(getPercentileValue(speed));
         }
-        return ProductionHeatmap::calculatePercentileThresholds(values);
+        std::sort(values.begin(), values.end());
+        values.erase(std::remove(values.begin(), values.end(), 1), values.end());
+        SpeedThresholds thresholds{};
+        if (values.empty())
+        {
+            return thresholds;
+        }
+        for (size_t i = 1; i < kBucketCount; ++i)
+        {
+            const auto index = (i * values.size() + kBucketCount - 1) / kBucketCount;
+            thresholds[i - 1] = values[std::min(index, values.size() - 1)];
+        }
+        return thresholds;
     }
 
     uint8_t getSpeedBucket(const Speed16 speed)
@@ -190,12 +191,13 @@ namespace OpenLoco::Ui::Windows::RailSpeedOverlay
 
     uint8_t getSpeedBucket(const Speed16 speed, const SpeedThresholds& thresholds)
     {
-        return ProductionHeatmap::getPercentileBucket(getPercentileValue(speed), thresholds);
+        const auto value = getPercentileValue(speed);
+        return static_cast<uint8_t>(std::upper_bound(thresholds.begin(), thresholds.end(), value) - thresholds.begin() + 1);
     }
 
-    Colour getBucketColour(const uint8_t bucket)
+    PaletteIndex_t getBucketColour(const uint8_t bucket)
     {
-        return bucket == 0 || bucket > kBucketColours.size() ? Colour::black : kBucketColours[bucket - 1];
+        return bucket == 0 ? PaletteIndex::black5 : CargoFlowOverlay::getSaturationColour(bucket == 1 ? 0 : kBucketCount - bucket + 1);
     }
 
     bool setTooltip(const Viewport& viewport, const Point cursor)

@@ -460,6 +460,11 @@ namespace OpenLoco::Ui::Windows::CargoFlowOverlay
         return (cappedDemand * kSaturationColours.size() - 1) / doubledCapacity;
     }
 
+    PaletteIndex_t getSaturationColour(const uint8_t bucket)
+    {
+        return bucket >= kSaturationColours.size() ? PaletteIndex::black5 : kSaturationColours[bucket];
+    }
+
     std::vector<ProjectedLink> projectLinks(const Viewport& viewport, bool windowCoordinates)
     {
         if (!isOpen() || !isMainViewport(viewport))

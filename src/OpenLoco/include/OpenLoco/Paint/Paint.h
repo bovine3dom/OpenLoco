@@ -159,6 +159,7 @@ namespace OpenLoco::Paint
         PaintStructFlags flags;
         QuadrantFlags quadrantFlags;
         Ui::ViewportInteraction::InteractionItem type;
+        PaletteIndex_t solidColour;
 
         constexpr bool hasQuadrantFlags(QuadrantFlags flagsToTest) const
         {

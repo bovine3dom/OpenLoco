@@ -22,7 +22,7 @@ namespace OpenLoco::Ui
 
     namespace Windows::RailSpeedOverlay
     {
-        constexpr uint8_t kBucketCount = 8;
+        constexpr uint8_t kBucketCount = 12;
         using SpeedThresholds = std::array<uint64_t, kBucketCount - 1>;
 
         Window* open();
@@ -32,7 +32,7 @@ namespace OpenLoco::Ui
         SpeedThresholds calculateSpeedPercentileThresholds(std::span<const Speed16> speeds);
         uint8_t getSpeedBucket(Speed16 speed);
         uint8_t getSpeedBucket(Speed16 speed, const SpeedThresholds& thresholds);
-        Colour getBucketColour(uint8_t bucket);
+        PaletteIndex_t getBucketColour(uint8_t bucket);
         bool setTooltip(const Viewport& viewport, Point cursor);
     }
 }
