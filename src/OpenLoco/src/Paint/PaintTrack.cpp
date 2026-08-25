@@ -302,7 +302,7 @@ namespace OpenLoco::Paint
                     const auto bucket = Ui::Windows::RailSpeedOverlay::getSpeedBucket(*speed);
                     colour = Ui::Windows::RailSpeedOverlay::getBucketColour(bucket);
                 }
-                baseTrackImageColour = ImageId(0, Colours::getShadow(colour));
+                baseTrackImageColour = ImageId(0).withTranslucency(Colours::getTranslucent(colour));
             }
         }
 
