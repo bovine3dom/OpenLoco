@@ -4,6 +4,7 @@
 #include <OpenLoco/CargoDist/Save.h>
 #include <OpenLoco/GameRules.h>
 #include <OpenLoco/Vehicles/RailTraffic.h>
+#include <OpenLoco/Vehicles/TimetableManager.h>
 #include <OpenLoco/Vehicles/VehicleAutoRenewal.h>
 #include <algorithm>
 #include <cstdint>
@@ -61,6 +62,72 @@ namespace
         Vehicles::RailTraffic::State state;
         state.history.push_back({ { 320, 352, 32, 4, 0 }, 12 * Vehicles::RailTraffic::kOneTick, 123, 0 });
         state.active.push_back({ entity(9), entity(3), { 288, 352, 32, 0, 0 }, 100 * Vehicles::RailTraffic::kOneTick, true });
+        return state;
+    }
+
+    Vehicles::TimetableManager::State timetableState()
+    {
+        using namespace Vehicles::TimetableManager;
+
+        TimetableEntry firstEntry;
+        firstEntry.id = 1;
+        firstEntry.orderIndex = 0;
+        firstEntry.orderType = Vehicles::OrderType::StopAt;
+        firstEntry.station = static_cast<StationId>(3);
+        firstEntry.travelMinutes = 12;
+        firstEntry.dwellMinutes = 4;
+        firstEntry.dispatch = DispatchPattern{
+            .periodMinutes = 60,
+            .phaseMinutes = 7,
+            .maxDelayMinutes = 8,
+            .slots = { 7, 37 },
+            .lastClaimedMinute = 44,
+        };
+
+        TimetableEntry secondEntry;
+        secondEntry.id = 3;
+        secondEntry.orderIndex = 2;
+        secondEntry.orderType = Vehicles::OrderType::RouteThrough;
+        secondEntry.station = static_cast<StationId>(4);
+        secondEntry.travelMinutes = 18;
+
+        TimetableEntry thirdEntry;
+        thirdEntry.id = 4;
+        thirdEntry.orderIndex = 1;
+        thirdEntry.orderType = Vehicles::OrderType::RouteWaypoint;
+        thirdEntry.station = static_cast<StationId>(5);
+
+        State state;
+        state.ticksPerMinute = 45;
+        state.clockTicks = 0x0102030405060708ULL;
+        state.nextServiceId = 8;
+        state.nextEntryId = 10;
+        state.services = {
+            { 2, 3, { firstEntry, secondEntry } },
+            { 5, 11, { thirdEntry } },
+        };
+        state.assignments = { { entity(9), 2 }, { entity(12), 5 } };
+        state.vehicles = {
+            {
+                .vehicle = entity(9),
+                .service = 2,
+                .serviceRevision = 3,
+                .currentEntry = 1,
+                .scheduledArrivalTick = 0x1112131415161718ULL,
+                .scheduledDepartureTick = 0x2122232425262728ULL,
+                .assignedSlotMinute = 14,
+                .latenessTicks = -9,
+                .timetableStarted = true,
+                .atTimedStop = true,
+            },
+            {
+                .vehicle = entity(12),
+                .service = 5,
+                .serviceRevision = 11,
+                .assignedSlotMinute = std::nullopt,
+                .latenessTicks = 25,
+            },
+        };
         return state;
     }
 
@@ -304,6 +371,117 @@ TEST(SaveExtension, RoundTripsRailTraffic)
     expectTag(encoded, 16, "RTFC");
     EXPECT_EQ(readU16(encoded, 20), 1);
     EXPECT_EQ(readU16(encoded, 22), 1);
+}
+
+TEST(SaveExtension, RoundTripsRequiredTimetable)
+{
+    const auto timetable = timetableState();
+    const auto encoded = S5::SaveExtension::encode({ .timetableState = &timetable });
+    const auto decoded = S5::SaveExtension::decode(encoded);
+
+    ASSERT_TRUE(decoded.timetableState.has_value());
+    EXPECT_EQ(*decoded.timetableState, timetable);
+    EXPECT_EQ(S5::SaveExtension::encode(decoded), encoded);
+    expectTag(encoded, 16, "TTBL");
+    EXPECT_EQ(readU16(encoded, 20), 1);
+    EXPECT_EQ(readU16(encoded, 22), 1);
+    EXPECT_EQ(readU16(encoded, 28), 45);
+    EXPECT_EQ(readU32(encoded, 30), 0x05060708U);
+    EXPECT_EQ(readU32(encoded, 34), 0x01020304U);
+}
+
+TEST(SaveExtension, TimetableEncodingIsDeterministic)
+{
+    const auto canonical = timetableState();
+    auto shuffled = canonical;
+    std::ranges::reverse(shuffled.services);
+    for (auto& service : shuffled.services)
+    {
+        std::ranges::reverse(service.entries);
+        for (auto& entry : service.entries)
+        {
+            if (entry.dispatch.has_value())
+            {
+                std::ranges::reverse(entry.dispatch->slots);
+            }
+        }
+    }
+    std::ranges::reverse(shuffled.assignments);
+    std::ranges::reverse(shuffled.vehicles);
+
+    EXPECT_EQ(
+        S5::SaveExtension::encode({ .timetableState = &canonical }),
+        S5::SaveExtension::encode({ .timetableState = &shuffled }));
+}
+
+TEST(SaveExtension, RejectsInvalidTimetableSectionMetadataAndState)
+{
+    const auto timetable = timetableState();
+
+    auto optionalSection = S5::SaveExtension::encode({ .timetableState = &timetable });
+    writeU16(optionalSection, 22, 0);
+    EXPECT_THROW(S5::SaveExtension::decode(optionalSection), std::runtime_error);
+
+    auto unsupportedVersion = S5::SaveExtension::encode({ .timetableState = &timetable });
+    writeU16(unsupportedVersion, 20, 2);
+    EXPECT_THROW(S5::SaveExtension::decode(unsupportedVersion), std::runtime_error);
+
+    auto invalidRate = S5::SaveExtension::encode({ .timetableState = &timetable });
+    writeU16(invalidRate, 28, 0);
+    EXPECT_THROW(S5::SaveExtension::decode(invalidRate), std::runtime_error);
+
+    auto excessiveServices = S5::SaveExtension::encode({ .timetableState = &timetable });
+    writeU32(excessiveServices, 46, std::numeric_limits<uint32_t>::max());
+    EXPECT_THROW(S5::SaveExtension::decode(excessiveServices), std::runtime_error);
+}
+
+TEST(SaveExtension, RejectsMalformedTimetablePayload)
+{
+    const auto timetable = timetableState();
+
+    auto invalidEntryFlags = S5::SaveExtension::encode({ .timetableState = &timetable });
+    invalidEntryFlags[68] |= std::byte{ 0x80 };
+    EXPECT_THROW(S5::SaveExtension::decode(invalidEntryFlags), std::runtime_error);
+
+    auto duplicateEntry = S5::SaveExtension::encode({ .timetableState = &timetable });
+    writeU32(duplicateEntry, 108, 1);
+    EXPECT_THROW(S5::SaveExtension::decode(duplicateEntry), std::runtime_error);
+
+    auto nonCanonicalSlots = S5::SaveExtension::encode({ .timetableState = &timetable });
+    writeU32(nonCanonicalSlots, 104, 7);
+    EXPECT_THROW(S5::SaveExtension::decode(nonCanonicalSlots), std::runtime_error);
+
+    auto truncated = S5::SaveExtension::encode({ .timetableState = &timetable });
+    truncated.pop_back();
+    EXPECT_THROW(S5::SaveExtension::decode(truncated), std::runtime_error);
+
+    auto trailing = S5::SaveExtension::encode({ .timetableState = &timetable });
+    trailing.push_back(std::byte{});
+    writeU32(trailing, 12, readU32(trailing, 12) + 1);
+    writeU32(trailing, 24, readU32(trailing, 24) + 1);
+    EXPECT_THROW(S5::SaveExtension::decode(trailing), std::runtime_error);
+}
+
+TEST(SaveExtension, TimetableCoexistsWithOtherSections)
+{
+    const auto timetable = timetableState();
+    const auto shared = sharedOrderState({ { 3, 8 } });
+    const auto traffic = railTrafficState();
+    const auto encoded = S5::SaveExtension::encode({
+        .sharedOrderState = &shared,
+        .railTrafficState = &traffic,
+        .timetableState = &timetable,
+    });
+
+    const auto decoded = S5::SaveExtension::decode(encoded);
+
+    ASSERT_TRUE(decoded.sharedOrderState.has_value());
+    EXPECT_EQ(*decoded.sharedOrderState, shared);
+    ASSERT_TRUE(decoded.railTrafficState.has_value());
+    EXPECT_EQ(*decoded.railTrafficState, traffic);
+    ASSERT_TRUE(decoded.timetableState.has_value());
+    EXPECT_EQ(*decoded.timetableState, timetable);
+    EXPECT_EQ(S5::SaveExtension::encode(decoded), encoded);
 }
 
 TEST(SaveExtension, RoundTripsRequiredGameRules)

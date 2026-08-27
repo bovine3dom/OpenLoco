@@ -27,6 +27,7 @@
 #include "GameCommands/Vehicles/VehicleReverse.h"
 #include "GameCommands/Vehicles/VehicleSell.h"
 #include "GameCommands/Vehicles/VehicleSpeedControl.h"
+#include "GameCommands/Vehicles/VehicleTimetable.h"
 #include "GameState.h"
 #include "Graphics/Colour.h"
 #include "Graphics/ImageIds.h"
@@ -78,6 +79,7 @@
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/Orders.h"
 #include "Vehicles/SharedOrderManager.h"
+#include "Vehicles/TimetableManager.h"
 #include "Vehicles/Vehicle.h"
 #include "Vehicles/Vehicle1.h"
 #include "Vehicles/Vehicle2.h"
@@ -96,6 +98,7 @@
 #include <OpenLoco/Math/Trigonometry.hpp>
 #include <OpenLoco/Utility/LookupTable.hpp>
 #include <algorithm>
+#include <charconv>
 #include <limits>
 #include <map>
 #include <ranges>
@@ -365,7 +368,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
 
     namespace Route
     {
-        static constexpr Ui::Size kMinWindowSize = { 265, 202 };
+        static constexpr Ui::Size kMinWindowSize = { 265, 300 };
         static constexpr Ui::Size kMaxWindowSize = { 600, 440 };
 
         enum widx
@@ -385,7 +388,18 @@ namespace OpenLoco::Ui::Windows::Vehicle
             orderDelete,
             orderUp,
             orderDown,
-            orderReverse
+            orderReverse,
+            timetableToggle,
+            timetableTravel,
+            timetableDwell,
+            timetablePeriod,
+            timetablePhase,
+            timetableMaxDelay,
+            timetableSlots,
+            timetableAddSlot,
+            timetableClockRate,
+            timetableClearDispatch,
+            timetableResetDispatch,
         };
 
         namespace Widx
@@ -405,13 +419,24 @@ namespace OpenLoco::Ui::Windows::Vehicle
             constexpr WidgetId kOrderUp{ "orderUp" };
             constexpr WidgetId kOrderDown{ "orderDown" };
             constexpr WidgetId kOrderReverse{ "orderReverse" };
+            constexpr WidgetId kTimetableToggle{ "timetableToggle" };
+            constexpr WidgetId kTimetableTravel{ "timetableTravel" };
+            constexpr WidgetId kTimetableDwell{ "timetableDwell" };
+            constexpr WidgetId kTimetablePeriod{ "timetablePeriod" };
+            constexpr WidgetId kTimetablePhase{ "timetablePhase" };
+            constexpr WidgetId kTimetableMaxDelay{ "timetableMaxDelay" };
+            constexpr WidgetId kTimetableSlots{ "timetableSlots" };
+            constexpr WidgetId kTimetableAddSlot{ "timetableAddSlot" };
+            constexpr WidgetId kTimetableClockRate{ "timetableClockRate" };
+            constexpr WidgetId kTimetableClearDispatch{ "timetableClearDispatch" };
+            constexpr WidgetId kTimetableResetDispatch{ "timetableResetDispatch" };
         }
 
         constexpr uint64_t holdableWidgets = 0;
         constexpr auto lineHeight = 10;
 
         static constexpr auto widgets = makeWidgets(
-            Common::makeCommonWidgets(265, 189, StringIds::title_vehicle_route),
+            Common::makeCommonWidgets(265, 300, StringIds::title_vehicle_route),
             // TODO: This is not ideal, this is used for the tool, do this in a better way.
             makeWidget({ 0, 0 }, { 1, 1 }, WidgetType::empty, WindowColour::primary),
             Widgets::Button(Widx::kLocalMode, { 3, 44 }, { 118, 12 }, WindowColour::secondary, StringIds::local_mode_button),
@@ -428,7 +453,18 @@ namespace OpenLoco::Ui::Windows::Vehicle
             Widgets::ImageButton(Widx::kOrderDelete, { 240, 116 }, { 24, 24 }, WindowColour::secondary, ImageIds::route_delete, StringIds::tooltip_route_delete_order),
             Widgets::ImageButton(Widx::kOrderUp, { 240, 140 }, { 24, 12 }, WindowColour::secondary, ImageIds::red_arrow_up, StringIds::tooltip_route_move_order_up),
             Widgets::ImageButton(Widx::kOrderDown, { 240, 152 }, { 24, 12 }, WindowColour::secondary, ImageIds::red_arrow_down, StringIds::tooltip_route_move_order_down),
-            Widgets::ImageButton(Widx::kOrderReverse, { 240, 164 }, { 24, 24 }, WindowColour::secondary, ImageIds::construction_right_turnaround, StringIds::reverseOrderTableTooltip)
+            Widgets::ImageButton(Widx::kOrderReverse, { 240, 164 }, { 24, 24 }, WindowColour::secondary, ImageIds::construction_right_turnaround, StringIds::reverseOrderTableTooltip),
+            Widgets::Button(Widx::kTimetableToggle, { 3, 94 }, { 237, 12 }, WindowColour::secondary, StringIds::timetable_disabled, StringIds::tooltip_timetable_toggle),
+            Widgets::Button(Widx::kTimetableTravel, { 3, 218 }, { 118, 12 }, WindowColour::secondary, StringIds::timetable_value_unset, StringIds::tooltip_timetable_minutes),
+            Widgets::Button(Widx::kTimetableDwell, { 121, 218 }, { 119, 12 }, WindowColour::secondary, StringIds::timetable_value_unset, StringIds::tooltip_timetable_minutes),
+            Widgets::Button(Widx::kTimetablePeriod, { 3, 231 }, { 78, 12 }, WindowColour::secondary, StringIds::timetable_value_unset, StringIds::tooltip_timetable_minutes),
+            Widgets::Button(Widx::kTimetablePhase, { 81, 231 }, { 78, 12 }, WindowColour::secondary, StringIds::timetable_value_unset, StringIds::tooltip_timetable_minutes),
+            Widgets::Button(Widx::kTimetableMaxDelay, { 159, 231 }, { 81, 12 }, WindowColour::secondary, StringIds::timetable_value_unset, StringIds::tooltip_timetable_minutes),
+            Widgets::Button(Widx::kTimetableSlots, { 3, 244 }, { 156, 12 }, WindowColour::secondary, StringIds::timetable_slots_count, StringIds::tooltip_timetable_slots),
+            Widgets::Button(Widx::kTimetableAddSlot, { 159, 244 }, { 81, 12 }, WindowColour::secondary, StringIds::timetable_add_slot, StringIds::tooltip_timetable_add_slot),
+            Widgets::Button(Widx::kTimetableClockRate, { 3, 257 }, { 78, 12 }, WindowColour::secondary, StringIds::timetable_value_minutes, StringIds::tooltip_timetable_clock_rate),
+            Widgets::Button(Widx::kTimetableClearDispatch, { 81, 257 }, { 78, 12 }, WindowColour::secondary, StringIds::timetable_clear_dispatch, StringIds::tooltip_timetable_clear_dispatch),
+            Widgets::Button(Widx::kTimetableResetDispatch, { 159, 257 }, { 81, 12 }, WindowColour::secondary, StringIds::timetable_reset_dispatch, StringIds::tooltip_timetable_reset_dispatch)
 
         );
     }
@@ -633,12 +669,11 @@ namespace OpenLoco::Ui::Windows::Vehicle
                     ToolManager::toolCancel();
                 }
                 self = WindowManager::bringToFront(WindowType::vehicle, enumValue(head));
+                Common::switchTab(*self, Common::widx::tabMain);
+                return self;
             }
-            if (self == nullptr)
-            {
-                self = create(head);
-                self->savedView.clear();
-            }
+            self = create(head);
+            self->savedView.clear();
             self->currentTab = 0;
             self->invalidate();
             self->setWidgets(widgets);
@@ -3370,17 +3405,39 @@ namespace OpenLoco::Ui::Windows::Vehicle
         static size_t _sharedOrderDropdownPageStart;
         static EntityId _sharedOrderDropdownTarget = EntityId::null;
         static SharedOrderDropdownMode _sharedOrderDropdownMode = SharedOrderDropdownMode::none;
+        static constexpr size_t kTimetableSlotPageSize = 30;
+        static std::vector<uint32_t> _timetableDropdownSlots;
+        static size_t _timetableSlotPageStart;
+        struct TimetableTarget
+        {
+            EntityId vehicle = EntityId::null;
+            Vehicles::TimetableManager::ServiceId service = Vehicles::TimetableManager::kInvalidServiceId;
+            Vehicles::TimetableManager::EntryId entry = Vehicles::TimetableManager::kInvalidEntryId;
+        };
+        static TimetableTarget _timetableDropdownTarget;
+        static TimetableTarget _timetableInputTarget;
+        static std::map<EntityId, Vehicles::TimetableManager::EntryId> _timetableSelections;
 
         static void resetSharedOrderDropdown(const EntityId target)
         {
-            if (_sharedOrderDropdownTarget != target)
+            if (_sharedOrderDropdownTarget == target)
             {
-                return;
+                _sharedOrderDropdownVehicles.clear();
+                _sharedOrderDropdownPageStart = 0;
+                _sharedOrderDropdownTarget = EntityId::null;
+                _sharedOrderDropdownMode = SharedOrderDropdownMode::none;
             }
-            _sharedOrderDropdownVehicles.clear();
-            _sharedOrderDropdownPageStart = 0;
-            _sharedOrderDropdownTarget = EntityId::null;
-            _sharedOrderDropdownMode = SharedOrderDropdownMode::none;
+            if (_timetableDropdownTarget.vehicle == target)
+            {
+                _timetableDropdownSlots.clear();
+                _timetableSlotPageStart = 0;
+                _timetableDropdownTarget = {};
+            }
+            if (_timetableInputTarget.vehicle == target)
+            {
+                _timetableInputTarget = {};
+            }
+            _timetableSelections.erase(target);
         }
 
         static Vehicles::OrderRingView getOrderTable(const Vehicles::VehicleHead* const head)
@@ -3502,6 +3559,242 @@ namespace OpenLoco::Ui::Windows::Vehicle
             return false;
         }
 
+        static Vehicles::TimetableManager::TimetableEntry* getSelectedTimetableEntry(Window& self, const Vehicles::VehicleHead& head)
+        {
+            if (self.orderTableIndex < 0 || self.orderTableIndex > std::numeric_limits<uint8_t>::max())
+            {
+                return nullptr;
+            }
+            return Vehicles::TimetableManager::getEntry(head.id, static_cast<uint8_t>(self.orderTableIndex));
+        }
+
+        static Vehicles::TimetableManager::TimetableEntry* findTimetableEntry(
+            const Vehicles::TimetableManager::ServiceId serviceId,
+            const Vehicles::TimetableManager::EntryId entryId)
+        {
+            auto* service = Vehicles::TimetableManager::getService(serviceId);
+            if (service == nullptr)
+            {
+                return nullptr;
+            }
+            const auto entry = std::ranges::find(service->entries, entryId, &Vehicles::TimetableManager::TimetableEntry::id);
+            return entry != service->entries.end() ? &*entry : nullptr;
+        }
+
+        static bool confirmTimetableAction(const StringId message, const StringId button)
+        {
+            FormatArguments args{};
+            return Windows::PromptOkCancel::open(StringIds::cant_change_timetable, message, args, button);
+        }
+
+        static uint32_t timetableCommand(
+            const Vehicles::VehicleHead& head,
+            const GameCommands::VehicleTimetableArgs::Action action,
+            const uint16_t orderIndex,
+            const uint32_t value)
+        {
+            GameCommands::setErrorTitle(StringIds::cant_change_timetable);
+            GameCommands::VehicleTimetableArgs args{};
+            args.head = head.id;
+            args.action = action;
+            args.orderIndex = orderIndex;
+            args.value = value;
+            return GameCommands::doCommand(args, GameCommands::Flags::apply);
+        }
+
+        static void openTimetableInput(Window& self, const WidgetIndex_t widgetIndex, const WidgetId id)
+        {
+            auto* head = Common::getVehicle(self);
+            if (head == nullptr)
+            {
+                return;
+            }
+
+            std::optional<uint32_t> value;
+            const auto* entry = getSelectedTimetableEntry(self, *head);
+            if (id == Widx::kTimetableClockRate)
+            {
+                value = Vehicles::TimetableManager::getTicksPerMinute();
+            }
+            else if (entry == nullptr)
+            {
+                return;
+            }
+            else if (id == Widx::kTimetableTravel)
+            {
+                value = entry->travelMinutes;
+            }
+            else if (id == Widx::kTimetableDwell)
+            {
+                value = entry->dwellMinutes;
+            }
+            else if (id == Widx::kTimetablePeriod)
+            {
+                value = entry->dispatch.has_value() ? entry->dispatch->periodMinutes : Vehicles::TimetableManager::kDefaultPeriodMinutes;
+            }
+            else if (id == Widx::kTimetablePhase)
+            {
+                value = entry->dispatch.has_value() ? entry->dispatch->phaseMinutes : 0;
+            }
+            else if (id == Widx::kTimetableMaxDelay)
+            {
+                value = entry->dispatch.has_value() ? entry->dispatch->maxDelayMinutes : 0;
+            }
+            else if (id != Widx::kTimetableAddSlot)
+            {
+                return;
+            }
+
+            _timetableInputTarget = { head->id, Vehicles::TimetableManager::getServiceId(head->id), entry != nullptr ? entry->id : Vehicles::TimetableManager::kInvalidEntryId };
+
+            FormatArguments args{};
+            const auto valueString = value.has_value() ? StringIds::timetable_input_value : StringIds::empty;
+            if (value.has_value())
+            {
+                args.push<int32_t>(*value);
+            }
+            const auto prompt = id == Widx::kTimetableClockRate ? StringIds::timetable_clock_rate_prompt : StringIds::timetable_edit_prompt;
+            TextInput::openTextInput(&self, StringIds::timetable_edit_title, prompt, valueString, widgetIndex, args, 10);
+        }
+
+        static void showTimetableSlotDropdownPage(Window& self, const WidgetIndex_t widgetIndex)
+        {
+            const auto pageEnd = std::min(_timetableSlotPageStart + kTimetableSlotPageSize, _timetableDropdownSlots.size());
+            size_t dropdownIndex = 0;
+            for (auto i = _timetableSlotPageStart; i < pageEnd; ++i)
+            {
+                FormatArguments args{};
+                args.push<int32_t>(_timetableDropdownSlots[i]);
+                Dropdown::add(dropdownIndex++, StringIds::timetable_slot_value, args);
+            }
+            if (pageEnd < _timetableDropdownSlots.size() || _timetableSlotPageStart != 0)
+            {
+                Dropdown::add(dropdownIndex++, pageEnd < _timetableDropdownSlots.size() ? StringIds::timetable_more_slots : StringIds::timetable_first_slots);
+            }
+
+            const auto& widget = self.widgets[widgetIndex];
+            Dropdown::showText(
+                self.x + widget.left,
+                self.y + widget.top,
+                std::max<int16_t>(widget.width(), 100),
+                widget.height(),
+                self.getColour(WindowColour::secondary),
+                dropdownIndex,
+                0);
+        }
+
+        static void showTimetableSlotDropdown(Window& self, const WidgetIndex_t widgetIndex)
+        {
+            auto* head = Common::getVehicle(self);
+            auto* entry = head != nullptr ? getSelectedTimetableEntry(self, *head) : nullptr;
+            if (head == nullptr || entry == nullptr || !entry->dispatch.has_value() || entry->dispatch->slots.empty())
+            {
+                return;
+            }
+            _timetableDropdownSlots = entry->dispatch->slots;
+            _timetableSlotPageStart = 0;
+            _timetableDropdownTarget = { head->id, Vehicles::TimetableManager::getServiceId(head->id), entry->id };
+            showTimetableSlotDropdownPage(self, widgetIndex);
+        }
+
+        static void timetableTextInput(Window& self, const WidgetIndex_t callingWidget, const WidgetId id, const char* const input)
+        {
+            if (id == Common::Widx::kCaption)
+            {
+                Common::textInput(self, callingWidget, id, input);
+                return;
+            }
+
+            auto* head = Common::getVehicle(self);
+            if (head == nullptr || _timetableInputTarget.vehicle != head->id
+                || _timetableInputTarget.service != Vehicles::TimetableManager::getServiceId(head->id))
+            {
+                return;
+            }
+            const bool optionalValue = id == Widx::kTimetableTravel || id == Widx::kTimetableDwell;
+            uint32_t value{};
+            const std::string_view text(input);
+            if (text.empty())
+            {
+                if (!optionalValue)
+                {
+                    Windows::Error::open(StringIds::cant_change_timetable, StringIds::timetable_invalid_value);
+                    return;
+                }
+                value = GameCommands::VehicleTimetableArgs::kClearValue;
+            }
+            else
+            {
+                const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
+                if (error != std::errc{} || end != text.data() + text.size()
+                    || (optionalValue && value == GameCommands::VehicleTimetableArgs::kClearValue))
+                {
+                    Windows::Error::open(StringIds::cant_change_timetable, StringIds::timetable_invalid_value);
+                    return;
+                }
+            }
+
+            using Action = GameCommands::VehicleTimetableArgs::Action;
+            Action action;
+            if (id == Widx::kTimetableTravel)
+            {
+                action = Action::setTravelMinutes;
+            }
+            else if (id == Widx::kTimetableDwell)
+            {
+                action = Action::setDwellMinutes;
+            }
+            else if (id == Widx::kTimetablePeriod)
+            {
+                action = Action::setDispatchPeriod;
+            }
+            else if (id == Widx::kTimetablePhase)
+            {
+                action = Action::setDispatchPhase;
+            }
+            else if (id == Widx::kTimetableMaxDelay)
+            {
+                action = Action::setDispatchMaxDelay;
+            }
+            else if (id == Widx::kTimetableAddSlot)
+            {
+                action = Action::addDispatchSlot;
+            }
+            else if (id == Widx::kTimetableClockRate)
+            {
+                action = Action::setClockRate;
+            }
+            else
+            {
+                return;
+            }
+            uint16_t orderIndex = 0;
+            if (id == Widx::kTimetableClockRate)
+            {
+                if (value < Vehicles::TimetableManager::kMinTicksPerMinute || value > Vehicles::TimetableManager::kMaxTicksPerMinute)
+                {
+                    Windows::Error::open(StringIds::cant_change_timetable, StringIds::timetable_invalid_value);
+                    return;
+                }
+                if (value != Vehicles::TimetableManager::getTicksPerMinute()
+                    && !confirmTimetableAction(StringIds::timetable_clock_rate_confirm_prompt, StringIds::timetable_clock_rate_confirm_button))
+                {
+                    return;
+                }
+            }
+            else
+            {
+                const auto* entry = findTimetableEntry(_timetableInputTarget.service, _timetableInputTarget.entry);
+                if (entry == nullptr)
+                {
+                    Windows::Error::open(StringIds::cant_change_timetable, StringIds::timetable_invalid_value);
+                    return;
+                }
+                orderIndex = entry->orderIndex;
+            }
+            timetableCommand(*head, action, orderIndex, value);
+        }
+
         // 0x004B4B43
         static void onMouseUp(Window& self, const WidgetIndex_t widgetIndex, const WidgetId id)
         {
@@ -3523,6 +3816,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
                 case Common::Widx::kTabCargo:
                 case Common::Widx::kTabFinances:
                 case Common::Widx::kTabRoute:
+                    _timetableSelections.erase(head->id);
                     Common::switchTab(self, widgetIndex);
                     break;
                 case Widx::kOrderDelete:
@@ -3648,7 +3942,10 @@ namespace OpenLoco::Ui::Windows::Vehicle
                     GameCommands::VehicleOrderShareArgs args{};
                     args.target = head->id;
                     args.mode = GameCommands::VehicleOrderShareArgs::Mode::leave;
-                    GameCommands::doCommand(args, GameCommands::Flags::apply);
+                    if (GameCommands::doCommand(args, GameCommands::Flags::apply) != GameCommands::kFailure)
+                    {
+                        _timetableSelections.erase(head->id);
+                    }
                     break;
                 }
                 case Widx::kSharedOrderReplace:
@@ -3656,6 +3953,50 @@ namespace OpenLoco::Ui::Windows::Vehicle
                     {
                         Vehicles::VehicleReplacement::schedule(head->id);
                     }
+                    break;
+                case Widx::kTimetableToggle:
+                {
+                    const bool enabled = Vehicles::TimetableManager::getServiceId(head->id) != Vehicles::TimetableManager::kInvalidServiceId;
+                    if (enabled && !confirmTimetableAction(StringIds::timetable_delete_prompt, StringIds::timetable_delete_button))
+                    {
+                        return;
+                    }
+                    timetableCommand(
+                        *head,
+                        GameCommands::VehicleTimetableArgs::Action::setEnabled,
+                        0,
+                        !enabled);
+                    break;
+                }
+                case Widx::kTimetableTravel:
+                case Widx::kTimetableDwell:
+                case Widx::kTimetablePeriod:
+                case Widx::kTimetablePhase:
+                case Widx::kTimetableMaxDelay:
+                case Widx::kTimetableAddSlot:
+                case Widx::kTimetableClockRate:
+                    openTimetableInput(self, widgetIndex, id);
+                    break;
+                case Widx::kTimetableClearDispatch:
+                    if (self.orderTableIndex >= 0)
+                    {
+                        if (!confirmTimetableAction(StringIds::timetable_clear_dispatch_prompt, StringIds::timetable_clear_dispatch))
+                        {
+                            return;
+                        }
+                        timetableCommand(
+                            *head,
+                            GameCommands::VehicleTimetableArgs::Action::clearDispatch,
+                            self.orderTableIndex,
+                            0);
+                    }
+                    break;
+                case Widx::kTimetableResetDispatch:
+                    if (!confirmTimetableAction(StringIds::timetable_restart_dispatch_prompt, StringIds::timetable_restart_dispatch_button))
+                    {
+                        return;
+                    }
+                    timetableCommand(*head, GameCommands::VehicleTimetableArgs::Action::resetDispatch, 0, 0);
                     break;
             }
         }
@@ -3814,6 +4155,9 @@ namespace OpenLoco::Ui::Windows::Vehicle
                 case Widx::kSharedOrderPrimary:
                     showSharedOrderVehicleDropdown(self, i);
                     break;
+                case Widx::kTimetableSlots:
+                    showTimetableSlotDropdown(self, i);
+                    break;
             }
         }
 
@@ -3887,13 +4231,17 @@ namespace OpenLoco::Ui::Windows::Vehicle
             {
                 return;
             }
-            if (head->sizeOfOrderTable > sizeof(Vehicles::OrderEnd)
-                && !Vehicles::SharedOrderManager::areOrdersEqual(*head, source))
+            const auto targetService = Vehicles::TimetableManager::getServiceId(head->id);
+            const auto sourceService = Vehicles::TimetableManager::getServiceId(source.id);
+            const bool replacesOrders = head->sizeOfOrderTable > sizeof(Vehicles::OrderEnd)
+                && !Vehicles::SharedOrderManager::areOrdersEqual(*head, source);
+            const bool replacesTimetable = targetService != Vehicles::TimetableManager::kInvalidServiceId && targetService != sourceService;
+            if (replacesOrders || replacesTimetable)
             {
                 FormatArguments promptArgs{};
                 if (!Windows::PromptOkCancel::open(
                         StringIds::cant_change_shared_orders,
-                        StringIds::replace_with_shared_orders_prompt,
+                        replacesTimetable ? StringIds::replace_with_shared_orders_and_timetable_prompt : StringIds::replace_with_shared_orders_prompt,
                         promptArgs,
                         StringIds::share_orders))
                 {
@@ -3909,6 +4257,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
             if (GameCommands::doCommand(args, GameCommands::Flags::apply) != GameCommands::kFailure)
             {
                 self.orderTableIndex = -1;
+                _timetableSelections.erase(head->id);
                 self.rowHover = -1;
                 Vehicles::OrderManager::generateNumDisplayFrames(head);
             }
@@ -3924,6 +4273,49 @@ namespace OpenLoco::Ui::Windows::Vehicle
             }
             switch (id)
             {
+                case Widx::kTimetableSlots:
+                {
+                    if (_timetableDropdownTarget.vehicle != EntityId(self.number)
+                        || _timetableSlotPageStart >= _timetableDropdownSlots.size())
+                    {
+                        return;
+                    }
+                    const auto pageSize = std::min(kTimetableSlotPageSize, _timetableDropdownSlots.size() - _timetableSlotPageStart);
+                    if (item > static_cast<int16_t>(pageSize))
+                    {
+                        return;
+                    }
+                    const auto pageEnd = _timetableSlotPageStart + pageSize;
+                    const bool hasPageLink = pageEnd < _timetableDropdownSlots.size() || _timetableSlotPageStart != 0;
+                    if (item == static_cast<int16_t>(pageSize))
+                    {
+                        if (!hasPageLink)
+                        {
+                            return;
+                        }
+                        _timetableSlotPageStart = pageEnd < _timetableDropdownSlots.size() ? pageEnd : 0;
+                        showTimetableSlotDropdownPage(self, i);
+                        return;
+                    }
+
+                    auto* head = Common::getVehicle(self);
+                    auto* entry = head != nullptr && Vehicles::TimetableManager::getServiceId(head->id) == _timetableDropdownTarget.service
+                        ? findTimetableEntry(_timetableDropdownTarget.service, _timetableDropdownTarget.entry)
+                        : nullptr;
+                    const auto slot = _timetableDropdownSlots[_timetableSlotPageStart + item];
+                    if (head != nullptr && entry != nullptr && entry->dispatch.has_value()
+                        && std::ranges::find(entry->dispatch->slots, slot) != entry->dispatch->slots.end())
+                    {
+                        timetableCommand(
+                            *head,
+                            GameCommands::VehicleTimetableArgs::Action::removeDispatchSlot,
+                            entry->orderIndex,
+                            slot);
+                    }
+                    _timetableDropdownSlots.clear();
+                    _timetableDropdownTarget = {};
+                    break;
+                }
                 case Widx::kSharedOrderPrimary:
                 {
                     if (_sharedOrderDropdownTarget != EntityId(self.number)
@@ -4007,6 +4399,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
             self.callPrepareDraw();
 
             WindowManager::invalidateWidget(WindowType::vehicle, self.number, 8);
+            self.invalidate();
 
             if (!WindowManager::isInFront(&self))
             {
@@ -4501,6 +4894,15 @@ namespace OpenLoco::Ui::Windows::Vehicle
             if (item != self.orderTableIndex)
             {
                 self.orderTableIndex = item;
+                const auto* entry = item >= 0 ? Vehicles::TimetableManager::getEntry(head->id, static_cast<uint8_t>(item)) : nullptr;
+                if (entry != nullptr)
+                {
+                    _timetableSelections[head->id] = entry->id;
+                }
+                else
+                {
+                    _timetableSelections.erase(head->id);
+                }
                 self.invalidate();
                 return;
             }
@@ -4598,9 +5000,37 @@ namespace OpenLoco::Ui::Windows::Vehicle
             {
                 return;
             }
-            if (self.orderTableIndex >= 0 && getOrderTable(head).atIndex(self.orderTableIndex) == nullptr)
+            const auto timetableService = Vehicles::TimetableManager::getServiceId(head->id);
+            const bool timetableEnabled = timetableService != Vehicles::TimetableManager::kInvalidServiceId;
+            const auto rememberedSelection = _timetableSelections.find(head->id);
+            if (timetableEnabled && rememberedSelection != _timetableSelections.end())
+            {
+                const auto* entry = findTimetableEntry(timetableService, rememberedSelection->second);
+                if (entry != nullptr)
+                {
+                    self.orderTableIndex = entry->orderIndex;
+                }
+                else
+                {
+                    self.orderTableIndex = -1;
+                    _timetableSelections.erase(rememberedSelection);
+                }
+            }
+            else if (self.orderTableIndex >= 0 && getOrderTable(head).atIndex(self.orderTableIndex) == nullptr)
             {
                 self.orderTableIndex = -1;
+            }
+            if (!timetableEnabled)
+            {
+                _timetableSelections.erase(head->id);
+            }
+            else if (_timetableSelections.find(head->id) == _timetableSelections.end())
+            {
+                const auto* entry = getSelectedTimetableEntry(self, *head);
+                if (entry != nullptr)
+                {
+                    _timetableSelections[head->id] = entry->id;
+                }
             }
 
             // Set title.
@@ -4620,8 +5050,8 @@ namespace OpenLoco::Ui::Windows::Vehicle
             self.widgets[Common::widx::closeButton].left = self.width - 15;
             self.widgets[Common::widx::closeButton].right = self.width - 3;
 
+            self.widgets[widx::routeList].top = 108;
             self.widgets[widx::routeList].right = self.width - 26;
-            self.widgets[widx::routeList].bottom = self.height - 14;
 
             self.widgets[widx::orderForceUnload].right = self.width - 2;
             self.widgets[widx::orderWait].right = self.width - 2;
@@ -4657,7 +5087,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
                 const auto* stopOrder = selectedOrder != nullptr ? selectedOrder->as<Vehicles::OrderStopAt>() : nullptr;
                 if (stopOrder != nullptr)
                 {
-                    if (head->owner == CompanyManager::getControllingId())
+                    if (head->owner == CompanyManager::getControllingId() && !timetableEnabled)
                     {
                         self.disabledWidgets &= ~(1 << widx::orderUnbunch);
                     }
@@ -4705,6 +5135,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
             auto& sharedLeave = self.widgets[widx::sharedOrderLeave];
             auto& sharedReplace = self.widgets[widx::sharedOrderReplace];
             const auto contentRight = self.widgets[widx::routeList].right;
+            self.widgets[widx::timetableToggle].right = contentRight;
 
             self.disabledWidgets &= ~((1 << widx::sharedOrderPrimary) | (1 << widx::sharedOrderLeave));
             sharedPrimary.hidden = !hasSharedOrders && isOtherCompany;
@@ -4752,6 +5183,136 @@ namespace OpenLoco::Ui::Windows::Vehicle
             {
                 self.disabledWidgets &= ~((1 << widx::orderUp) | (1 << widx::orderDown));
             }
+
+            const auto contentLeft = self.widgets[widx::routeList].left;
+            const auto editorRight = self.widgets[widx::routeList].right;
+            const auto contentWidth = editorRight - contentLeft + 1;
+            const auto midpoint = contentLeft + contentWidth / 2;
+            const auto third = contentWidth / 3;
+            const bool compactEditor = contentWidth < 360;
+            const auto editorTop = self.height - (compactEditor ? 95 : 82);
+            self.widgets[widx::routeList].bottom = editorTop - 4;
+            const auto setPair = [&](const widx first, const widx second, const int16_t top) {
+                self.widgets[first].top = top;
+                self.widgets[first].bottom = top + 11;
+                self.widgets[first].left = contentLeft;
+                self.widgets[first].right = midpoint - 1;
+                self.widgets[second].top = top;
+                self.widgets[second].bottom = top + 11;
+                self.widgets[second].left = midpoint;
+                self.widgets[second].right = editorRight;
+            };
+            const auto setRow = [&](const widx first, const widx last, const int16_t top) {
+                self.widgets[first].top = top;
+                self.widgets[first].bottom = top + 11;
+                self.widgets[first].left = contentLeft;
+                self.widgets[first].right = contentLeft + third - 1;
+                self.widgets[first + 1].top = top;
+                self.widgets[first + 1].bottom = top + 11;
+                self.widgets[first + 1].left = contentLeft + third;
+                self.widgets[first + 1].right = contentLeft + third * 2 - 1;
+                self.widgets[last].top = top;
+                self.widgets[last].bottom = top + 11;
+                self.widgets[last].left = contentLeft + third * 2;
+                self.widgets[last].right = editorRight;
+            };
+
+            setPair(widx::timetableTravel, widx::timetableDwell, editorTop);
+            if (compactEditor)
+            {
+                setPair(widx::timetablePeriod, widx::timetablePhase, editorTop + 13);
+                setPair(widx::timetableMaxDelay, widx::timetableSlots, editorTop + 26);
+                setPair(widx::timetableAddSlot, widx::timetableClockRate, editorTop + 39);
+                setPair(widx::timetableClearDispatch, widx::timetableResetDispatch, editorTop + 52);
+            }
+            else
+            {
+                setRow(widx::timetablePeriod, widx::timetableMaxDelay, editorTop + 13);
+                self.widgets[widx::timetableSlots].top = editorTop + 26;
+                self.widgets[widx::timetableSlots].bottom = editorTop + 37;
+                self.widgets[widx::timetableSlots].left = contentLeft;
+                self.widgets[widx::timetableSlots].right = contentLeft + third * 2 - 1;
+                self.widgets[widx::timetableAddSlot].top = editorTop + 26;
+                self.widgets[widx::timetableAddSlot].bottom = editorTop + 37;
+                self.widgets[widx::timetableAddSlot].left = contentLeft + third * 2;
+                self.widgets[widx::timetableAddSlot].right = editorRight;
+                setRow(widx::timetableClockRate, widx::timetableResetDispatch, editorTop + 39);
+            }
+
+            auto setValueWidget = [&](const widx index, const StringId label, const std::optional<uint32_t> value) {
+                auto& widget = self.widgets[index];
+                widget.text = value.has_value() ? StringIds::timetable_value_minutes : StringIds::timetable_value_unset;
+                auto args = FormatArguments(widget.textArgs);
+                args.push(label);
+                if (value.has_value())
+                {
+                    args.push<int32_t>(*value);
+                }
+            };
+
+            const auto* timetableEntry = getSelectedTimetableEntry(self, *head);
+            const auto* dispatch = timetableEntry != nullptr && timetableEntry->dispatch.has_value() ? &*timetableEntry->dispatch : nullptr;
+            setValueWidget(widx::timetableTravel, StringIds::timetable_travel, timetableEntry != nullptr ? timetableEntry->travelMinutes : std::nullopt);
+            setValueWidget(widx::timetableDwell, StringIds::timetable_dwell, timetableEntry != nullptr ? timetableEntry->dwellMinutes : std::nullopt);
+            setValueWidget(widx::timetablePeriod, StringIds::timetable_period, dispatch != nullptr ? std::optional<uint32_t>{ dispatch->periodMinutes } : std::nullopt);
+            setValueWidget(widx::timetablePhase, StringIds::timetable_phase, dispatch != nullptr ? std::optional<uint32_t>{ dispatch->phaseMinutes } : std::nullopt);
+            setValueWidget(widx::timetableMaxDelay, StringIds::timetable_max_delay, dispatch != nullptr ? std::optional<uint32_t>{ dispatch->maxDelayMinutes } : std::nullopt);
+            auto& clockRate = self.widgets[widx::timetableClockRate];
+            clockRate.text = StringIds::timetable_value_ticks_per_minute;
+            auto clockRateArgs = FormatArguments(clockRate.textArgs);
+            clockRateArgs.push(StringIds::timetable_clock_rate);
+            clockRateArgs.push<int32_t>(Vehicles::TimetableManager::getTicksPerMinute());
+
+            self.widgets[widx::timetableToggle].text = timetableEnabled ? StringIds::timetable_enabled : StringIds::timetable_disabled;
+            self.widgets[widx::timetableToggle].tooltip = timetableEnabled ? StringIds::tooltip_timetable_disable : StringIds::tooltip_timetable_toggle;
+            self.widgets[widx::timetableSlots].text = StringIds::timetable_slots_count;
+            auto slotArgs = FormatArguments(self.widgets[widx::timetableSlots].textArgs);
+            slotArgs.push<int32_t>(dispatch != nullptr ? dispatch->slots.size() : 0);
+
+            constexpr auto kTimetableEditorWidgets = (1ULL << widx::timetableTravel)
+                | (1ULL << widx::timetableDwell)
+                | (1ULL << widx::timetablePeriod)
+                | (1ULL << widx::timetablePhase)
+                | (1ULL << widx::timetableMaxDelay)
+                | (1ULL << widx::timetableSlots)
+                | (1ULL << widx::timetableAddSlot)
+                | (1ULL << widx::timetableClockRate)
+                | (1ULL << widx::timetableClearDispatch)
+                | (1ULL << widx::timetableResetDispatch);
+            self.disabledWidgets |= kTimetableEditorWidgets | (1ULL << widx::timetableToggle);
+            self.activatedWidgets &= ~(1ULL << widx::timetableToggle);
+            if (timetableEnabled)
+            {
+                self.activatedWidgets |= 1ULL << widx::timetableToggle;
+            }
+            if (!isOtherCompany && (!head->hasUnbunchingOrder() || timetableEnabled))
+            {
+                self.disabledWidgets &= ~(1ULL << widx::timetableToggle);
+            }
+            if (!isOtherCompany && timetableEnabled)
+            {
+                self.disabledWidgets &= ~((1ULL << widx::timetableClockRate) | (1ULL << widx::timetableResetDispatch));
+                if (timetableEntry != nullptr)
+                {
+                    self.disabledWidgets &= ~(1ULL << widx::timetableTravel);
+                    if (timetableEntry->orderType == Vehicles::OrderType::StopAt)
+                    {
+                        self.disabledWidgets &= ~((1ULL << widx::timetableDwell)
+                            | (1ULL << widx::timetablePeriod)
+                            | (1ULL << widx::timetablePhase)
+                            | (1ULL << widx::timetableMaxDelay)
+                            | (1ULL << widx::timetableAddSlot));
+                        if (dispatch != nullptr)
+                        {
+                            self.disabledWidgets &= ~(1ULL << widx::timetableClearDispatch);
+                            if (!dispatch->slots.empty())
+                            {
+                                self.disabledWidgets &= ~(1ULL << widx::timetableSlots);
+                            }
+                        }
+                    }
+                }
+            }
             Widget::leftAlignTabs(self, Common::widx::tabMain, Common::widx::tabRoute);
         }
 
@@ -4762,6 +5323,42 @@ namespace OpenLoco::Ui::Windows::Vehicle
 
             self.draw(drawingCtx);
             Common::drawTabs(self, drawingCtx);
+
+            if (Vehicles::TimetableManager::getServiceId(EntityId(self.number)) != Vehicles::TimetableManager::kInvalidServiceId)
+            {
+                const auto clockMinute = static_cast<int32_t>(std::min<uint64_t>(Vehicles::TimetableManager::getClockMinute(), std::numeric_limits<int32_t>::max()));
+                auto statusString = StringIds::timetable_status_not_started;
+                FormatArguments statusArgs{};
+                statusArgs.push(clockMinute);
+                const auto* runtime = Vehicles::TimetableManager::getVehicleRuntime(EntityId(self.number));
+                if (runtime != nullptr && runtime->timetableStarted)
+                {
+                    const auto rate = Vehicles::TimetableManager::getTicksPerMinute();
+                    auto lateness = runtime->latenessTicks;
+                    if (runtime->atTimedStop)
+                    {
+                        const auto now = Vehicles::TimetableManager::getClockTicks();
+                        lateness = now >= runtime->scheduledDepartureTick
+                            ? static_cast<int64_t>(std::min<uint64_t>(now - runtime->scheduledDepartureTick, std::numeric_limits<int64_t>::max()))
+                            : -static_cast<int64_t>(std::min<uint64_t>(runtime->scheduledDepartureTick - now, std::numeric_limits<int64_t>::max()));
+                    }
+                    if (lateness == 0)
+                    {
+                        statusString = StringIds::timetable_status_on_time;
+                    }
+                    else
+                    {
+                        const auto absoluteLateness = lateness < 0
+                            ? static_cast<uint64_t>(-(lateness + 1)) + 1
+                            : static_cast<uint64_t>(lateness);
+                        const auto roundedMinutes = absoluteLateness / rate + (absoluteLateness % rate != 0);
+                        const auto minutes = static_cast<int32_t>(std::min<uint64_t>(roundedMinutes, std::numeric_limits<int32_t>::max()));
+                        statusString = lateness < 0 ? StringIds::timetable_status_early : StringIds::timetable_status_late;
+                        statusArgs.push(minutes);
+                    }
+                }
+                tr.drawStringLeftClipped({ 3, static_cast<int16_t>(self.height - 28) }, self.widgets[widx::routeList].width(), Colour::black, statusString, statusArgs);
+            }
 
             if (ToolManager::isToolActive(WindowType::vehicle, self.number))
             {
@@ -4990,7 +5587,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
             .getScrollSize = getScrollSize,
             .scrollMouseDown = scrollMouseDown,
             .scrollMouseOver = scrollMouseOver,
-            .textInput = Common::textInput,
+            .textInput = timetableTextInput,
             .viewportRotate = createViewport,
             .tooltip = tooltip,
             .cursor = cursor,

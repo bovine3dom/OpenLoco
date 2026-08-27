@@ -9,11 +9,13 @@
 #include "GameCommands/Vehicles/VehicleOrderShare.h"
 #include "GameCommands/Vehicles/VehicleOrderSkip.h"
 #include "GameCommands/Vehicles/VehicleOrderUp.h"
+#include "GameCommands/Vehicles/VehicleTimetable.h"
 #include "GameState.h"
 #include "S5/Limits.h"
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/Orders.h"
 #include "Vehicles/SharedOrderManager.h"
+#include "Vehicles/TimetableManager.h"
 #include "Vehicles/Vehicle.h"
 #include "Vehicles/VehicleHead.h"
 #include "World/StationManager.h"
@@ -215,6 +217,221 @@ TEST_F(SharedOrderTest, ManagerJoinsExtendsLeavesAndRecanonicalisesGroups)
     EXPECT_FALSE(SharedOrderManager::isShared(third->id));
     EXPECT_EQ(SharedOrderManager::getMembers(third->id), (std::vector{ third->id }));
     EXPECT_FALSE(SharedOrderManager::leave(first->id));
+}
+
+TEST_F(SharedOrderTest, SharedOrderLifecycleMergesAndSplitsTimetableServices)
+{
+    auto* source = createHead();
+    auto* target = createHead();
+    ASSERT_NE(source, nullptr);
+    ASSERT_NE(target, nullptr);
+    setOrders(*source, { OrderStopAt(StationId(1)).getRaw() });
+    setOrders(*target, { OrderStopAt(StationId(1)).getRaw() });
+
+    ASSERT_TRUE(TimetableManager::enableForVehicle(source->id));
+    ASSERT_TRUE(TimetableManager::setTravelMinutes(source->id, 0, 12));
+    ASSERT_TRUE(TimetableManager::setDwellMinutes(source->id, 0, 3));
+    ASSERT_TRUE(TimetableManager::enableForVehicle(target->id));
+    const auto sourceService = TimetableManager::getServiceId(source->id);
+    const auto discardedService = TimetableManager::getServiceId(target->id);
+    ASSERT_NE(sourceService, discardedService);
+
+    ASSERT_TRUE(SharedOrderManager::join(target->id, source->id));
+    EXPECT_EQ(TimetableManager::getServiceId(target->id), sourceService);
+    EXPECT_EQ(TimetableManager::getService(discardedService), nullptr);
+
+    ASSERT_TRUE(SharedOrderManager::leave(target->id));
+    const auto splitService = TimetableManager::getServiceId(target->id);
+    EXPECT_NE(splitService, sourceService);
+    ASSERT_NE(TimetableManager::getEntry(target->id, 0), nullptr);
+    EXPECT_EQ(TimetableManager::getEntry(target->id, 0)->travelMinutes, 12);
+    EXPECT_EQ(TimetableManager::getEntry(target->id, 0)->dwellMinutes, 3);
+}
+
+TEST_F(SharedOrderTest, TimetableStateValidationMatchesRoutesAndSharedGroups)
+{
+    auto* source = createHead();
+    auto* target = createHead();
+    ASSERT_NE(source, nullptr);
+    ASSERT_NE(target, nullptr);
+    setOrders(*source, { OrderStopAt(StationId(1)).getRaw(), unload(2) });
+    setOrders(*target, { OrderStopAt(StationId(1)).getRaw(), unload(2) });
+    ASSERT_TRUE(TimetableManager::enableForVehicle(source->id));
+    ASSERT_TRUE(SharedOrderManager::join(target->id, source->id));
+
+    const auto shared = SharedOrderManager::captureState();
+    const auto canonical = TimetableManager::captureState();
+    EXPECT_TRUE(TimetableManager::validateState(canonical, getGameState(), shared));
+
+    auto wrongStation = canonical;
+    wrongStation.services.front().entries.front().station = StationId(2);
+    EXPECT_FALSE(TimetableManager::validateState(wrongStation, getGameState(), shared));
+
+    auto missingMember = canonical;
+    std::erase_if(missingMember.assignments, [target](const auto& assignment) { return assignment.vehicle == target->id; });
+    std::erase_if(missingMember.vehicles, [target](const auto& runtime) { return runtime.vehicle == target->id; });
+    EXPECT_TRUE(TimetableManager::validateState(missingMember));
+    EXPECT_FALSE(TimetableManager::validateState(missingMember, getGameState(), shared));
+
+    auto* independent = createHead();
+    ASSERT_NE(independent, nullptr);
+    setOrders(*independent, { OrderStopAt(StationId(3)).getRaw() });
+    ASSERT_TRUE(TimetableManager::enableForVehicle(independent->id));
+    const auto withIndependent = TimetableManager::captureState();
+    independent->currentOrder = 1;
+    EXPECT_FALSE(TimetableManager::validateState(withIndependent, getGameState(), shared));
+}
+
+TEST_F(SharedOrderTest, TimetableCommandQueriesAreAtomic)
+{
+    auto* head = createHead();
+    ASSERT_NE(head, nullptr);
+    setOrders(*head, { OrderStopAt(StationId(1)).getRaw() });
+
+    VehicleTimetableArgs args{};
+    args.head = head->id;
+    args.action = VehicleTimetableArgs::Action::setEnabled;
+    args.value = 1;
+    const auto initial = TimetableManager::captureState();
+    EXPECT_EQ(runCommand(args, vehicleTimetable, 0), 0U);
+    EXPECT_EQ(TimetableManager::captureState(), initial);
+
+    ASSERT_EQ(runCommand(args, vehicleTimetable), 0U);
+    const auto enabled = TimetableManager::captureState();
+    args.action = VehicleTimetableArgs::Action::setTravelMinutes;
+    args.orderIndex = 0;
+    args.value = 18;
+    EXPECT_EQ(runCommand(args, vehicleTimetable, 0), 0U);
+    EXPECT_EQ(TimetableManager::captureState(), enabled);
+    ASSERT_EQ(runCommand(args, vehicleTimetable), 0U);
+    ASSERT_NE(TimetableManager::getEntry(head->id, 0), nullptr);
+    EXPECT_EQ(TimetableManager::getEntry(head->id, 0)->travelMinutes, 18);
+}
+
+TEST_F(SharedOrderTest, UndoRestoresTimetableWithoutRewindingItsClock)
+{
+    auto* head = createHead();
+    ASSERT_NE(head, nullptr);
+    setOrders(*head, { OrderStopAt(StationId(1)).getRaw() });
+
+    VehicleTimetableArgs args{};
+    args.head = head->id;
+    args.action = VehicleTimetableArgs::Action::setEnabled;
+    args.value = 1;
+    auto regs = static_cast<registers>(args);
+    Undo::prepare(GameCommand::vehicleTimetable, kOwner, regs, Flags::apply);
+    vehicleTimetable(regs, Flags::apply);
+    ASSERT_EQ(static_cast<uint32_t>(regs.ebx), 0U);
+    Undo::commit(0, ExpenditureType::VehiclePurchases, {});
+    ASSERT_NE(TimetableManager::getServiceId(head->id), TimetableManager::kInvalidServiceId);
+
+    TimetableManager::tick();
+    ASSERT_EQ(Undo::apply(), Undo::Result::success);
+    EXPECT_EQ(TimetableManager::getServiceId(head->id), TimetableManager::kInvalidServiceId);
+    EXPECT_EQ(TimetableManager::getClockTicks(), 1U);
+}
+
+TEST_F(SharedOrderTest, UndoPreservesUnrelatedDispatchProgress)
+{
+    auto* edited = createHead();
+    auto* waiting = createHead();
+    ASSERT_NE(edited, nullptr);
+    ASSERT_NE(waiting, nullptr);
+    setOrders(*edited, { OrderStopAt(StationId(1)).getRaw() });
+    setOrders(*waiting, { OrderStopAt(StationId(2)).getRaw() });
+    ASSERT_TRUE(TimetableManager::enableForVehicle(edited->id));
+    ASSERT_TRUE(TimetableManager::enableForVehicle(waiting->id));
+    ASSERT_TRUE(TimetableManager::addDispatchSlot(waiting->id, 0, 15));
+    ASSERT_TRUE(TimetableManager::arriveAtOrder(waiting->id, 0));
+    ASSERT_TRUE(TimetableManager::isWaitingForDeparture(waiting->id));
+
+    VehicleTimetableArgs args{};
+    args.head = edited->id;
+    args.action = VehicleTimetableArgs::Action::setTravelMinutes;
+    args.orderIndex = 0;
+    args.value = 12;
+    auto regs = static_cast<registers>(args);
+    Undo::prepare(GameCommand::vehicleTimetable, kOwner, regs, Flags::apply);
+    vehicleTimetable(regs, Flags::apply);
+    ASSERT_EQ(static_cast<uint32_t>(regs.ebx), 0U);
+    Undo::commit(0, ExpenditureType::VehiclePurchases, {});
+
+    TimetableManager::tick();
+    const auto runtime = *TimetableManager::getVehicleRuntime(waiting->id);
+    const auto claimedMinute = TimetableManager::getEntry(waiting->id, 0)->dispatch->lastClaimedMinute;
+    ASSERT_EQ(Undo::apply(), Undo::Result::success);
+    EXPECT_FALSE(TimetableManager::getEntry(edited->id, 0)->travelMinutes.has_value());
+    EXPECT_EQ(*TimetableManager::getVehicleRuntime(waiting->id), runtime);
+    EXPECT_EQ(TimetableManager::getEntry(waiting->id, 0)->dispatch->lastClaimedMinute, claimedMinute);
+}
+
+TEST_F(SharedOrderTest, TimetableEntriesFollowOrderEdits)
+{
+    auto* head = createHead();
+    ASSERT_NE(head, nullptr);
+    setOrders(*head, { OrderStopAt(StationId(1)).getRaw(), unload(2), OrderStopAt(StationId(2)).getRaw() });
+    ASSERT_TRUE(TimetableManager::enableForVehicle(head->id));
+    ASSERT_TRUE(TimetableManager::setTravelMinutes(head->id, 0, 10));
+    ASSERT_TRUE(TimetableManager::setTravelMinutes(head->id, 2, 20));
+    const auto firstEntry = TimetableManager::getEntry(head->id, 0)->id;
+    const auto secondEntry = TimetableManager::getEntry(head->id, 2)->id;
+
+    VehicleOrderInsertArgs insertArgs{};
+    insertArgs.head = head->id;
+    insertArgs.orderOffset = sizeof(OrderStopAt) + sizeof(OrderUnloadAll);
+    insertArgs.rawOrder = waypoint();
+    ASSERT_EQ(runCommand(insertArgs, vehicleOrderInsert), 0U);
+    ASSERT_NE(TimetableManager::getEntry(head->id, 2), nullptr);
+    EXPECT_EQ(TimetableManager::getEntry(head->id, 0)->id, firstEntry);
+    EXPECT_EQ(TimetableManager::getEntry(head->id, 3)->id, secondEntry);
+
+    VehicleOrderUpArgs upArgs{};
+    upArgs.head = head->id;
+    upArgs.orderOffset = insertArgs.orderOffset;
+    ASSERT_EQ(runCommand(upArgs, vehicleOrderUp), 0U);
+    const auto waypointEntry = TimetableManager::getEntry(head->id, 1)->id;
+
+    VehicleOrderReverseArgs reverseArgs{};
+    reverseArgs.head = head->id;
+    ASSERT_EQ(runCommand(reverseArgs, vehicleOrderReverse), 0U);
+    EXPECT_EQ(TimetableManager::getEntry(head->id, 0)->id, secondEntry);
+    EXPECT_EQ(TimetableManager::getEntry(head->id, 2)->id, waypointEntry);
+    EXPECT_EQ(TimetableManager::getEntry(head->id, 3)->id, firstEntry);
+
+    VehicleOrderDeleteArgs deleteArgs{};
+    deleteArgs.head = head->id;
+    deleteArgs.orderOffset = sizeof(OrderStopAt) + sizeof(OrderUnloadAll);
+    ASSERT_EQ(runCommand(deleteArgs, vehicleOrderDelete), 0U);
+    EXPECT_EQ(TimetableManager::getEntry(head->id, 0)->id, secondEntry);
+    EXPECT_EQ(TimetableManager::getEntry(head->id, 2)->id, firstEntry);
+    EXPECT_EQ(TimetableManager::getEntry(head->id, 2)->travelMinutes, 10);
+}
+
+TEST_F(SharedOrderTest, RemovingStationDeletesEveryAdjacentTimetableEntry)
+{
+    auto heads = createSharedHeads({
+        OrderStopAt(StationId(1)).getRaw(),
+        OrderRouteThrough(StationId(1)).getRaw(),
+        OrderStopAt(StationId(1)).getRaw(),
+        OrderStopAt(StationId(2)).getRaw(),
+    });
+    ASSERT_NE(heads[0], nullptr);
+    ASSERT_TRUE(TimetableManager::enableForVehicle(heads[0]->id));
+    const auto remainingEntry = TimetableManager::getEntry(heads[0]->id, 3)->id;
+
+    OrderManager::removeOrdersForStation(StationId(1));
+
+    const auto expected = makeOrderTable({ OrderStopAt(StationId(2)).getRaw() });
+    for (const auto* head : heads)
+    {
+        expectOrders(*head, expected);
+    }
+    const auto* service = TimetableManager::getServiceForVehicle(heads[0]->id);
+    ASSERT_NE(service, nullptr);
+    ASSERT_EQ(service->entries.size(), 1U);
+    EXPECT_EQ(service->entries.front().id, remainingEntry);
+    EXPECT_EQ(service->entries.front().orderIndex, 0);
+    EXPECT_TRUE(TimetableManager::validateState(TimetableManager::captureState(), getGameState(), SharedOrderManager::captureState()));
 }
 
 TEST_F(SharedOrderTest, FreeingOrdersAndEntitiesCleansUpGroupsAndPackedTables)

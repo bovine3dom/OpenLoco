@@ -50,6 +50,7 @@
 #include "Vehicles/RailTraffic.h"
 #include "Vehicles/RoutingManager.h"
 #include "Vehicles/SharedOrderManager.h"
+#include "Vehicles/TimetableManager.h"
 #include "Vehicles/Vehicle.h"
 #include "Vehicles/VehicleAutoRenewal.h"
 #include "Vehicles/VehicleBody.h"
@@ -766,6 +767,14 @@ namespace OpenLoco::S5
         return false;
     }
 
+    static bool isDefaultTimetableState(const Vehicles::TimetableManager::State& state)
+    {
+        return state.ticksPerMinute == Vehicles::TimetableManager::kDefaultTicksPerMinute
+            && state.clockTicks == getGameState().scenarioTicks
+            && state.nextServiceId == 1 && state.nextEntryId == 1
+            && state.services.empty() && state.assignments.empty() && state.vehicles.empty();
+    }
+
     static bool exportGameState(Stream& stream, const S5File& file, const std::vector<ObjectHeader>& packedObjects)
     {
         try
@@ -813,6 +822,12 @@ namespace OpenLoco::S5
                     throw Exception::RuntimeError("Invalid rail traffic state");
                 }
                 const auto hasRailTraffic = !Vehicles::RailTraffic::isDefault(railTrafficState);
+                const auto timetableState = Vehicles::TimetableManager::captureState();
+                if (!Vehicles::TimetableManager::validateState(timetableState, getGameState(), sharedOrderState))
+                {
+                    throw Exception::RuntimeError("Invalid timetable state");
+                }
+                const auto hasTimetable = !isDefaultTimetableState(timetableState);
                 std::vector<SaveExtension::StationTileOverflow> stationTileOverflow;
                 for (size_t i = 0; i < Limits::kMaxStations; ++i)
                 {
@@ -828,7 +843,7 @@ namespace OpenLoco::S5
                 }
                 const auto hasStationTileOverflow = !stationTileOverflow.empty();
                 const auto hasModernState = !sharedOrderState.groups.empty() || hasPathReservations || hasVehicleAutoRenewal
-                    || hasVehicleReplacement || hasRailTraffic || hasStationTileOverflow || gameRules != nullptr || vehicleObjects != nullptr;
+                    || hasVehicleReplacement || hasRailTraffic || hasTimetable || hasStationTileOverflow || gameRules != nullptr || vehicleObjects != nullptr;
                 extensionData = !hasModernState
                     ? CargoDist::encodeState(CargoDist::getStateConst())
                     : SaveExtension::encode({
@@ -841,6 +856,7 @@ namespace OpenLoco::S5
                           .stationTileOverflowState = hasStationTileOverflow ? &stationTileOverflow : nullptr,
                           .gameRulesState = gameRules,
                           .vehicleObjectState = vehicleObjects,
+                          .timetableState = hasTimetable ? &timetableState : nullptr,
                       });
             }
             else if (supportsRuleExtension && (gameRules != nullptr || vehicleObjects != nullptr))
@@ -1032,6 +1048,7 @@ namespace OpenLoco::S5
                 file->stationTileOverflowState = std::move(extensionState.stationTileOverflowState);
                 file->gameRulesState = std::move(extensionState.gameRulesState);
                 file->vehicleObjectState = std::move(extensionState.vehicleObjectState);
+                file->timetableState = std::move(extensionState.timetableState);
                 if (file->vehicleObjectState.has_value()
                     && (!file->gameRulesState.has_value() || !file->gameRulesState->extendedVehicleObjects))
                 {
@@ -1274,6 +1291,13 @@ namespace OpenLoco::S5
             {
                 throw LoadException("Invalid rail traffic state", StringIds::error_file_contains_invalid_data);
             }
+            const Vehicles::SharedOrderManager::State emptySharedOrders;
+            const auto& sharedOrders = file->sharedOrderState.value_or(emptySharedOrders);
+            if (file->timetableState.has_value() && !hasLoadFlags(flags, LoadFlags::titleSequence)
+                && !Vehicles::TimetableManager::validateState(*file->timetableState, *importedGameState, sharedOrders))
+            {
+                throw LoadException("Invalid timetable state", StringIds::error_file_contains_invalid_data);
+            }
 
             // Load required objects
             auto requiredObjects = importRequiredObjectHeaders(file->requiredObjects, file->vehicleObjectState ? &*file->vehicleObjectState : nullptr);
@@ -1324,6 +1348,7 @@ namespace OpenLoco::S5
             Vehicles::VehicleAutoRenewal::reset();
             Vehicles::VehicleReplacement::reset();
             Vehicles::RailTraffic::reset();
+            Vehicles::TimetableManager::reset(dst.scenarioTicks);
 
             // Copy scenario options
             if (hasLoadFlags(flags, LoadFlags::scenario | LoadFlags::landscape))
@@ -1475,6 +1500,11 @@ namespace OpenLoco::S5
                     && !Vehicles::RailTraffic::restoreState(*file->railTrafficState))
                 {
                     throw Exception::RuntimeError("Invalid rail traffic state");
+                }
+                if (file->timetableState.has_value()
+                    && !Vehicles::TimetableManager::restoreState(*file->timetableState))
+                {
+                    throw Exception::RuntimeError("Invalid timetable state");
                 }
             }
 

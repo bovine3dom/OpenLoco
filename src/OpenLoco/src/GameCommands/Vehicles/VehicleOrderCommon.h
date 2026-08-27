@@ -83,6 +83,23 @@ namespace OpenLoco::GameCommands::VehicleOrderCommon
         });
     }
 
+    inline uint8_t getOrderIndex(const Vehicles::VehicleHead& head, const uint32_t orderOffset)
+    {
+        uint32_t offset = 0;
+        uint8_t index = 0;
+        while (offset < orderOffset)
+        {
+            offset += Vehicles::OrderManager::getOrderSize((Vehicles::OrderManager::orders() + head.orderTableOffset + offset)->getType());
+            ++index;
+        }
+        return index;
+    }
+
+    inline uint8_t getOrderCount(const Vehicles::VehicleHead& head)
+    {
+        return getOrderIndex(head, head.sizeOfOrderTable - sizeof(Vehicles::OrderEnd));
+    }
+
     inline void invalidateOrderWindows(const std::vector<EntityId>& members)
     {
         Vehicles::OrderManager::clearNumDisplayFrames();

@@ -88,6 +88,22 @@ namespace OpenLoco::GameSaveCompare
         return matches;
     }
 
+    static bool compareTimetables(const S5::S5File& lhs, const S5::S5File& rhs)
+    {
+        Vehicles::TimetableManager::State lhsDefault;
+        lhsDefault.clockTicks = lhs.gameState.general.scenarioTicks;
+        Vehicles::TimetableManager::State rhsDefault;
+        rhsDefault.clockTicks = rhs.gameState.general.scenarioTicks;
+        const auto& lhsState = lhs.timetableState.has_value() ? *lhs.timetableState : lhsDefault;
+        const auto& rhsState = rhs.timetableState.has_value() ? *rhs.timetableState : rhsDefault;
+        const auto matches = lhsState == rhsState;
+        if (!matches)
+        {
+            Logging::info("Timetable state differs");
+        }
+        return matches;
+    }
+
     static bool compareGameRules(const S5::S5File& lhs, const S5::S5File& rhs)
     {
         const auto& lhsState = lhs.gameRulesState.has_value() ? *lhs.gameRulesState : GameRules::kDefaultState;
@@ -785,6 +801,7 @@ namespace OpenLoco::GameSaveCompare
         matches &= comparePathReservations(*currentGameState, *referenceGameState);
         matches &= compareVehicleAutoRenewal(*currentGameState, *referenceGameState);
         matches &= compareRailTraffic(*currentGameState, *referenceGameState);
+        matches &= compareTimetables(*currentGameState, *referenceGameState);
         matches &= compareGameRules(*currentGameState, *referenceGameState);
         matches &= compareVehicleObjects(*currentGameState, *referenceGameState);
         return matches;
@@ -807,6 +824,7 @@ namespace OpenLoco::GameSaveCompare
         match &= comparePathReservations(*state1, *state2);
         match &= compareVehicleAutoRenewal(*state1, *state2);
         match &= compareRailTraffic(*state1, *state2);
+        match &= compareTimetables(*state1, *state2);
         match &= compareGameRules(*state1, *state2);
         match &= compareVehicleObjects(*state1, *state2);
         return match;

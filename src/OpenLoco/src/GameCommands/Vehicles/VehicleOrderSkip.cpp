@@ -6,6 +6,7 @@
 #include "Vehicles/Orders.h"
 #include "Vehicles/Vehicle.h"
 #include "Vehicles/VehicleHead.h"
+#include "Vehicles/TimetableManager.h"
 
 namespace OpenLoco::GameCommands
 {
@@ -13,7 +14,7 @@ namespace OpenLoco::GameCommands
     static uint32_t vehicleOrderSkip(EntityId headId, uint8_t flags)
     {
         auto* head = EntityManager::get<Vehicles::VehicleHead>(headId);
-        if (head == nullptr)
+        if (head == nullptr || !checkCompanyCompatibility(head->owner))
         {
             return kFailure;
         }
@@ -30,6 +31,7 @@ namespace OpenLoco::GameCommands
         auto nextOrder = ++orders.begin();
         head->currentOrder = nextOrder->getOffset() - head->orderTableOffset;
         head->resetUnbunching();
+        Vehicles::TimetableManager::clearVehicleRuntime(head->id);
         return 0;
     }
 

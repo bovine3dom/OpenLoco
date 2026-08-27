@@ -4,6 +4,7 @@
 #include "Localisation/StringIds.h"
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/SharedOrderManager.h"
+#include "Vehicles/TimetableManager.h"
 #include "Vehicles/VehicleHead.h"
 
 namespace OpenLoco::GameCommands
@@ -45,6 +46,11 @@ namespace OpenLoco::GameCommands
         if (nextOffset == table.size() - sizeof(Vehicles::OrderEnd))
         {
             return 0;
+        }
+        const auto orderIndex = VehicleOrderCommon::getOrderIndex(*head, args.orderOffset);
+        if (!Vehicles::TimetableManager::onOrdersSwapped(args.head, orderIndex, orderIndex + 1))
+        {
+            return kFailure;
         }
 
         for (const auto id : members)

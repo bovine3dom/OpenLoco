@@ -6,6 +6,7 @@
 #include "Vehicles/Orders.h"
 #include <OpenLoco/Engine/World.hpp>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -137,6 +138,7 @@ namespace OpenLoco::Vehicles::OrderManager
     bool spaceLeftInVehicleOrderTable(VehicleHead* head);
     uint8_t getOrderSize(OrderType type);
     bool isOrderOffsetValid(const VehicleHead& head, uint32_t orderOffset, bool allowEnd = false);
+    std::optional<uint8_t> getOrderIndex(const VehicleHead& head, uint32_t orderOffset, bool allowEnd = false);
     std::vector<uint8_t> copyOrderTable(const VehicleHead& head);
     void replaceOrderTable(VehicleHead& head, std::span<const uint8_t> newOrders);
     void insertOrder(VehicleHead* head, uint16_t orderOffset, const Order* order);

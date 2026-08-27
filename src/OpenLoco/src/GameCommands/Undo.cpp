@@ -4,6 +4,7 @@
 #include "Entities/EntityManager.h"
 #include "Entities/EntityTweener.h"
 #include "GameCommands/Airports/CreateAirport.h"
+#include "GameCommands/Vehicles/VehicleTimetable.h"
 #include "GameState.h"
 #include "Graphics/Gfx.h"
 #include "Map/TileManager.h"
@@ -16,6 +17,7 @@
 #include "Ui/WindowManager.h"
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/SharedOrderManager.h"
+#include "Vehicles/TimetableManager.h"
 #include "World/CompanyManager.h"
 #include "World/StationManager.h"
 #include "World/TownManager.h"
@@ -66,6 +68,12 @@ namespace OpenLoco::GameCommands::Undo
         Vehicles::SharedOrderManager::State after;
     };
 
+    struct TimetablePatch
+    {
+        Vehicles::TimetableManager::State before;
+        Vehicles::TimetableManager::State after;
+    };
+
     struct PendingTransaction
     {
         CompanyId company;
@@ -73,6 +81,7 @@ namespace OpenLoco::GameCommands::Undo
         std::vector<uint8_t> state;
         std::vector<TilePatch> tiles;
         Vehicles::SharedOrderManager::State sharedOrders;
+        Vehicles::TimetableManager::State timetable;
     };
 
     struct HistoryEntry
@@ -91,6 +100,7 @@ namespace OpenLoco::GameCommands::Undo
         std::vector<StationId> createdStations;
         std::vector<TilePatch> tiles;
         std::optional<SharedOrderPatch> sharedOrders;
+        std::optional<TimetablePatch> timetable;
     };
 
     struct ByteChange
@@ -122,7 +132,8 @@ namespace OpenLoco::GameCommands::Undo
     {
         return command != GameCommand::vehicleCreate
             && command != GameCommand::vehicleClone
-            && command != GameCommand::vehicleOrderShare;
+            && command != GameCommand::vehicleOrderShare
+            && command != GameCommand::vehicleTimetable;
     }
 
     static bool isUndoableCommand(const GameCommand command)
@@ -132,6 +143,7 @@ namespace OpenLoco::GameCommands::Undo
             case GameCommand::vehicleCreate:
             case GameCommand::vehicleClone:
             case GameCommand::vehicleOrderShare:
+            case GameCommand::vehicleTimetable:
             case GameCommand::createTrack:
             case GameCommand::createSignal:
             case GameCommand::createTrainStation:
@@ -568,6 +580,33 @@ namespace OpenLoco::GameCommands::Undo
         {
             return false;
         }
+        if (_history->timetable.has_value())
+        {
+            auto current = Vehicles::TimetableManager::captureState();
+            auto expected = _history->timetable->after;
+            const auto clearRuntime = [](auto& state) {
+                state.clockTicks = 0;
+                state.vehicles.clear();
+                for (auto& service : state.services)
+                {
+                    for (auto& entry : service.entries)
+                    {
+                        if (entry.dispatch.has_value())
+                        {
+                            entry.dispatch->lastClaimedMinute.reset();
+                        }
+                    }
+                }
+            };
+            clearRuntime(current);
+            clearRuntime(expected);
+            if (!Vehicles::TimetableManager::validateState(_history->timetable->before)
+                || !Vehicles::TimetableManager::validateState(_history->timetable->after)
+                || current != expected)
+            {
+                return false;
+            }
+        }
         for (const auto& patch : _history->tiles)
         {
             for (auto* entity : EntityManager::EntityTileList(toWorldSpace(patch.pos)))
@@ -703,6 +742,17 @@ namespace OpenLoco::GameCommands::Undo
                 group.history.sharedOrders = std::move(history.sharedOrders);
             }
         }
+        if (history.timetable.has_value())
+        {
+            if (group.history.timetable.has_value())
+            {
+                group.history.timetable->after = std::move(history.timetable->after);
+            }
+            else
+            {
+                group.history.timetable = std::move(history.timetable);
+            }
+        }
     }
 
     static void finishGroup()
@@ -749,6 +799,11 @@ namespace OpenLoco::GameCommands::Undo
         {
             group.history.sharedOrders.reset();
         }
+        if (group.history.timetable.has_value()
+            && group.history.timetable->before == group.history.timetable->after)
+        {
+            group.history.timetable.reset();
+        }
 
         _history = std::move(group.history);
         Ui::WindowManager::invalidate(Ui::WindowType::topToolbar);
@@ -765,6 +820,11 @@ namespace OpenLoco::GameCommands::Undo
         {
             history.sharedOrders = SharedOrderPatch{ std::move(_pending->sharedOrders), std::move(sharedOrdersAfter) };
         }
+        auto timetableAfter = Vehicles::TimetableManager::captureState();
+        if (_pending->timetable != timetableAfter)
+        {
+            history.timetable = TimetablePatch{ std::move(_pending->timetable), std::move(timetableAfter) };
+        }
         _pending.reset();
         return history;
     }
@@ -772,7 +832,10 @@ namespace OpenLoco::GameCommands::Undo
     void prepare(const GameCommand command, const CompanyId company, const registers& regs, const uint8_t flags)
     {
         _pending.reset();
+        const bool runtimeOnlyTimetableCommand = command == GameCommand::vehicleTimetable
+            && GameCommands::VehicleTimetableArgs(regs).action == GameCommands::VehicleTimetableArgs::Action::resetDispatch;
         if (!isUndoableCommand(command)
+            || runtimeOnlyTimetableCommand
             || (flags & (Flags::ghost | Flags::aiAllocated | Flags::noPayment)) != 0
             || Network::isConnected()
             || (!SceneManager::isEditorMode() && company != CompanyManager::getControllingId()))
@@ -786,6 +849,7 @@ namespace OpenLoco::GameCommands::Undo
         transaction.state.resize(getStateSize());
         std::memcpy(transaction.state.data(), &getGameState(), transaction.state.size());
         transaction.sharedOrders = Vehicles::SharedOrderManager::captureState();
+        transaction.timetable = Vehicles::TimetableManager::captureState();
         if (isMapCommand(command))
         {
             transaction.tiles = captureAffectedTiles(command, company, regs);
@@ -819,7 +883,7 @@ namespace OpenLoco::GameCommands::Undo
         if (_groupDepth != 0 && _pending.has_value())
         {
             auto history = capturePending();
-            if (!history.state.empty() || !history.stateGuards.empty() || !history.tiles.empty() || history.sharedOrders.has_value())
+            if (!history.state.empty() || !history.stateGuards.empty() || !history.tiles.empty() || history.sharedOrders.has_value() || history.timetable.has_value())
             {
                 addToGroup(std::move(history));
             }
@@ -896,6 +960,87 @@ namespace OpenLoco::GameCommands::Undo
         {
             sharedOrdersRestored = Vehicles::SharedOrderManager::restoreState(history.sharedOrders->before);
         }
+        bool timetableRestored = true;
+        if (history.timetable.has_value())
+        {
+            const auto& after = history.timetable->after;
+            auto timetable = std::move(history.timetable->before);
+            const auto current = Vehicles::TimetableManager::captureState();
+            const auto minute = current.clockTicks / current.ticksPerMinute;
+            const auto remainder = current.clockTicks % current.ticksPerMinute;
+            if (minute > std::numeric_limits<uint64_t>::max() / timetable.ticksPerMinute)
+            {
+                timetable.clockTicks = std::numeric_limits<uint64_t>::max();
+            }
+            else
+            {
+                const auto wholeMinutes = minute * timetable.ticksPerMinute;
+                const auto partialMinute = remainder * timetable.ticksPerMinute / current.ticksPerMinute;
+                timetable.clockTicks = partialMinute > std::numeric_limits<uint64_t>::max() - wholeMinutes
+                    ? std::numeric_limits<uint64_t>::max()
+                    : wholeMinutes + partialMinute;
+            }
+            const auto clearClaims = [](auto& service) {
+                for (auto& entry : service.entries)
+                {
+                    if (entry.dispatch.has_value())
+                    {
+                        entry.dispatch->lastClaimedMinute.reset();
+                    }
+                }
+            };
+            const auto sameDefinition = [&](auto lhs, auto rhs) {
+                clearClaims(lhs);
+                clearClaims(rhs);
+                return lhs == rhs;
+            };
+
+            std::vector<Vehicles::TimetableManager::ServiceId> unchangedServices;
+            if (timetable.ticksPerMinute == after.ticksPerMinute)
+            {
+                for (auto& service : timetable.services)
+                {
+                    const auto afterService = std::ranges::find(after.services, service.id, &Vehicles::TimetableManager::Service::id);
+                    const auto currentService = std::ranges::find(current.services, service.id, &Vehicles::TimetableManager::Service::id);
+                    if (afterService == after.services.end() || currentService == current.services.end()
+                        || !sameDefinition(service, *afterService) || !sameDefinition(*afterService, *currentService))
+                    {
+                        clearClaims(service);
+                        continue;
+                    }
+                    for (auto& entry : service.entries)
+                    {
+                        const auto currentEntry = std::ranges::find(currentService->entries, entry.id, &Vehicles::TimetableManager::TimetableEntry::id);
+                        if (entry.dispatch.has_value() && currentEntry != currentService->entries.end())
+                        {
+                            entry.dispatch->lastClaimedMinute = currentEntry->dispatch->lastClaimedMinute;
+                        }
+                    }
+                    unchangedServices.push_back(service.id);
+                }
+            }
+            else
+            {
+                for (auto& service : timetable.services)
+                {
+                    clearClaims(service);
+                }
+            }
+
+            timetable.vehicles.clear();
+            for (const auto& runtime : current.vehicles)
+            {
+                const auto beforeAssignment = std::ranges::find(timetable.assignments, runtime.vehicle, &Vehicles::TimetableManager::VehicleAssignment::vehicle);
+                const auto afterAssignment = std::ranges::find(after.assignments, runtime.vehicle, &Vehicles::TimetableManager::VehicleAssignment::vehicle);
+                if (beforeAssignment != timetable.assignments.end() && afterAssignment != after.assignments.end()
+                    && beforeAssignment->service == afterAssignment->service
+                    && std::ranges::find(unchangedServices, runtime.service) != unchangedServices.end())
+                {
+                    timetable.vehicles.push_back(runtime);
+                }
+            }
+            timetableRestored = Vehicles::TimetableManager::restoreState(timetable);
+        }
         EntityManager::resetSpatialIndex();
         EntityTweener::get().reset();
         for (const auto station : history.createdStations)
@@ -928,7 +1073,7 @@ namespace OpenLoco::GameCommands::Undo
         }
         Gfx::invalidateScreen();
         Ui::WindowManager::invalidateAllWindowsAfterInput();
-        if (!sharedOrdersRestored)
+        if (!sharedOrdersRestored || !timetableRestored)
         {
             clear();
             return Result::stateChanged;

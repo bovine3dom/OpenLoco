@@ -19,6 +19,7 @@
 #include "Ui/WindowManager.h"
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/SharedOrderManager.h"
+#include "Vehicles/TimetableManager.h"
 #include "Vehicles/Vehicle.h"
 #include "Vehicles/Vehicle1.h"
 #include "Vehicles/VehicleHead.h"
@@ -227,6 +228,22 @@ namespace OpenLoco::Vehicles::OrderManager
         return false;
     }
 
+    std::optional<uint8_t> getOrderIndex(const VehicleHead& head, const uint32_t orderOffset, const bool allowEnd)
+    {
+        if (!isOrderOffsetValid(head, orderOffset, allowEnd))
+        {
+            return std::nullopt;
+        }
+        uint32_t offset = 0;
+        uint8_t index = 0;
+        while (offset < orderOffset)
+        {
+            offset += getOrderSize(orders()[head.orderTableOffset + offset].getType());
+            ++index;
+        }
+        return index;
+    }
+
     std::vector<uint8_t> copyOrderTable(const VehicleHead& head)
     {
         const auto* first = reinterpret_cast<const uint8_t*>(orders() + head.orderTableOffset);
@@ -348,6 +365,7 @@ namespace OpenLoco::Vehicles::OrderManager
         orderTableLength() = 0;
         clearNumDisplayFrames();
         SharedOrderManager::reset();
+        TimetableManager::reset();
         VehicleReplacement::reset();
     }
 
@@ -740,6 +758,7 @@ namespace OpenLoco::Vehicles::OrderManager
             if (curOrder->hasFlags(OrderFlags::IsRoutable) && !isRebuiltWaypoint)
             {
                 head.currentOrder = curOrder->getOffset() - head.orderTableOffset;
+                TimetableManager::clearVehicleRuntime(head.id);
                 Ui::WindowManager::invalidateOrderPageByVehicleNumber(enumValue(head.id));
                 return true;
             }
@@ -758,15 +777,32 @@ namespace OpenLoco::Vehicles::OrderManager
             {
                 if (stationOrder->getStation() == stationId)
                 {
+                    bool deleted = false;
                     // Find the vehicle that has the order
                     for (auto* head : VehicleManager::VehicleList())
                     {
                         if (head->orderTableOffset <= i
                             && i < head->orderTableOffset + head->sizeOfOrderTable)
                         {
-                            deleteOrder(head, i - head->orderTableOffset);
+                            const auto relativeOffset = i - head->orderTableOffset;
+                            const auto orderIndex = getOrderIndex(*head, relativeOffset);
+                            const auto service = TimetableManager::getServiceId(head->id);
+                            if (service != TimetableManager::kInvalidServiceId && orderIndex.has_value())
+                            {
+                                const auto assigned = TimetableManager::getAssignedVehicles(service);
+                                if (!assigned.empty() && assigned.front() == head->id)
+                                {
+                                    TimetableManager::onOrderDeleted(head->id, *orderIndex);
+                                }
+                            }
+                            deleteOrder(head, relativeOffset);
+                            deleted = true;
                             break;
                         }
+                    }
+                    if (deleted)
+                    {
+                        continue;
                     }
                 }
             }

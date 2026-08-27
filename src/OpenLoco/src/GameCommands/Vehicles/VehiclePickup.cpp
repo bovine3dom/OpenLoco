@@ -11,6 +11,7 @@
 #include "Vehicles/VehicleBody.h"
 #include "Vehicles/VehicleBogie.h"
 #include "Vehicles/VehicleHead.h"
+#include "Vehicles/TimetableManager.h"
 #include "Vehicles/VehicleTail.h"
 #include <OpenLoco/Core/Prng.h>
 
@@ -68,6 +69,7 @@ namespace OpenLoco::GameCommands
 
         head->vehicleFlags |= Vehicles::VehicleFlags::commandStop;
         head->resetUnbunching();
+        Vehicles::TimetableManager::clearVehicleRuntime(head->id);
 
         return 0;
     }

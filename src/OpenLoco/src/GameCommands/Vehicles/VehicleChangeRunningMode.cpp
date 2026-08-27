@@ -12,6 +12,7 @@
 #include "Vehicles/Vehicle2.h"
 #include "Vehicles/VehicleBogie.h"
 #include "Vehicles/VehicleHead.h"
+#include "Vehicles/TimetableManager.h"
 #include "World/CompanyManager.h"
 #include "World/StationManager.h"
 #include <OpenLoco/CargoDist/CargoDist.h>
@@ -136,6 +137,7 @@ namespace OpenLoco::GameCommands
 
         train.head->vehicleFlags ^= Vehicles::VehicleFlags::commandStop;
         train.head->resetUnbunching();
+        Vehicles::TimetableManager::clearVehicleRuntime(train.head->id);
         CargoDist::markServicesDirty();
         if (train.head->hasVehicleFlags(Vehicles::VehicleFlags::commandStop))
         {
@@ -173,6 +175,7 @@ namespace OpenLoco::GameCommands
         train.head->vehicleFlags ^= Vehicles::VehicleFlags::manualControl;
         train.head->manualPower = -40;
         train.head->resetUnbunching();
+        Vehicles::TimetableManager::clearVehicleRuntime(train.head->id);
         CargoDist::markServicesDirty();
 
         if ((train.head->vehicleFlags & Vehicles::VehicleFlags::manualControl) != Vehicles::VehicleFlags::none)

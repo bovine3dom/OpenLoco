@@ -10,6 +10,7 @@
 #include "Vehicles/VehicleBody.h"
 #include "Vehicles/VehicleBogie.h"
 #include "Vehicles/VehicleHead.h"
+#include "Vehicles/TimetableManager.h"
 #include "Vehicles/VehicleTail.h"
 #include <OpenLoco/CargoDist/CargoDist.h>
 
@@ -87,6 +88,7 @@ namespace OpenLoco::GameCommands
 
         train.head->vehicleFlags |= VehicleFlags::commandStop;
         train.head->resetUnbunching();
+        Vehicles::TimetableManager::clearVehicleRuntime(train.head->id);
         CargoDist::markServicesDirty();
         if (!Config::get().keepCargoModifyPickup)
         {

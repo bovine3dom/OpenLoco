@@ -5,6 +5,7 @@
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/Orders.h"
 #include "Vehicles/SharedOrderManager.h"
+#include "Vehicles/TimetableManager.h"
 #include "Vehicles/VehicleHead.h"
 #include "Vehicles/VehicleManager.h"
 #include <OpenLoco/CargoDist/CargoDist.h>
@@ -69,6 +70,13 @@ namespace OpenLoco::GameCommands
         const bool enable = !selectedOrder->isUnbunching();
         if (enable)
         {
+            if (std::ranges::any_of(affected, [](const EntityId id) {
+                    return Vehicles::TimetableManager::getServiceId(id) != Vehicles::TimetableManager::kInvalidServiceId;
+                }))
+            {
+                setErrorText(StringIds::timetable_unbunching_incompatible);
+                return kFailure;
+            }
             for (const auto& order : head->getCurrentOrders())
             {
                 if (order.is<Vehicles::OrderWaitFor>())

@@ -4,6 +4,7 @@
 #include "S5/Limits.h"
 #include "Ui/WindowManager.h"
 #include "Vehicles/OrderManager.h"
+#include "Vehicles/TimetableManager.h"
 #include "Vehicles/Vehicle.h"
 #include "Vehicles/VehicleHead.h"
 #include "Vehicles/VehicleManager.h"
@@ -235,6 +236,10 @@ namespace OpenLoco::Vehicles::SharedOrderManager
         }
 
         auto members = getMembers(source);
+        if (!TimetableManager::adoptService(target, source))
+        {
+            return false;
+        }
         members.push_back(target);
         std::ranges::sort(members, {}, getIdValue);
         members.erase(std::ranges::unique(members).begin(), members.end());
@@ -250,6 +255,10 @@ namespace OpenLoco::Vehicles::SharedOrderManager
         }
 
         auto members = getMembers(vehicle);
+        if (!TimetableManager::splitService(vehicle))
+        {
+            return false;
+        }
         _groups[enumValue(vehicle)] = EntityId::null;
         std::erase(members, vehicle);
         setGroup(members);
@@ -258,9 +267,13 @@ namespace OpenLoco::Vehicles::SharedOrderManager
 
     void remove(const EntityId vehicle)
     {
-        const auto members = getMembers(vehicle);
-        if (leave(vehicle))
+        auto members = getMembers(vehicle);
+        if (isShared(vehicle))
         {
+            _groups[enumValue(vehicle)] = EntityId::null;
+            auto remaining = members;
+            std::erase(remaining, vehicle);
+            setGroup(remaining);
             for (const auto member : members)
             {
                 Ui::WindowManager::invalidateOrderPageByVehicleNumber(enumValue(member));
@@ -271,6 +284,7 @@ namespace OpenLoco::Vehicles::SharedOrderManager
         {
             _groups[enumValue(vehicle)] = EntityId::null;
         }
+        TimetableManager::removeVehicle(vehicle);
     }
 
     bool detachIfIncompatible(const EntityId vehicle)
@@ -280,7 +294,7 @@ namespace OpenLoco::Vehicles::SharedOrderManager
             return false;
         }
 
-        const auto members = getMembers(vehicle);
+        auto members = getMembers(vehicle);
         auto* head = getHead(vehicle);
         const auto sourceId = std::ranges::find_if(members, [vehicle](const EntityId member) { return member != vehicle; });
         auto* source = sourceId != members.end() ? getHead(*sourceId) : nullptr;
@@ -289,7 +303,13 @@ namespace OpenLoco::Vehicles::SharedOrderManager
             return false;
         }
 
-        leave(vehicle);
+        if (!leave(vehicle))
+        {
+            _groups[enumValue(vehicle)] = EntityId::null;
+            std::erase(members, vehicle);
+            setGroup(members);
+            TimetableManager::removeVehicle(vehicle);
+        }
         for (const auto member : members)
         {
             Ui::WindowManager::invalidateOrderPageByVehicleNumber(enumValue(member));
@@ -337,6 +357,15 @@ namespace OpenLoco::Vehicles::SharedOrderManager
             }))
         {
             return true;
+        }
+        const auto timetableState = TimetableManager::captureState();
+        for (const auto member : matching)
+        {
+            if (member != source && !TimetableManager::adoptService(member, source))
+            {
+                TimetableManager::restoreState(timetableState);
+                return false;
+            }
         }
         setGroup(matching);
         return true;

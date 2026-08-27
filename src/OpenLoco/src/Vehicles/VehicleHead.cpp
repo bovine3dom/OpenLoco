@@ -50,6 +50,7 @@
 #include "Vehicles/VehicleManager.h"
 #include "Vehicles/VehicleReplacement.h"
 #include "Vehicles/VehicleTail.h"
+#include "Vehicles/TimetableManager.h"
 #include "Vehicles/WaterPathfinding.h"
 #include "ViewportManager.h"
 #include "World/CompanyManager.h"
@@ -924,7 +925,18 @@ namespace OpenLoco::Vehicles
                 {
                     return getStatusTravelling();
                 }
-                vehStatus.status1 = isWaitingToUnbunch() ? StringIds::vehicle_status_waiting_to_unbunch : StringIds::vehicle_status_loading;
+                if (isWaitingToUnbunch())
+                {
+                    vehStatus.status1 = StringIds::vehicle_status_waiting_to_unbunch;
+                }
+                else if (TimetableManager::isWaitingAtTimedStop(id))
+                {
+                    vehStatus.status1 = StringIds::vehicle_status_waiting_for_timetable;
+                }
+                else
+                {
+                    vehStatus.status1 = StringIds::vehicle_status_loading;
+                }
                 auto station = StationManager::get(stationId);
                 vehStatus.status1Args = station->name | (enumValue(station->town) << 16);
                 return vehStatus;
@@ -1605,9 +1617,14 @@ namespace OpenLoco::Vehicles
         {
             return true;
         }
+        if (TimetableManager::isWaitingForDeparture(id))
+        {
+            return true;
+        }
 
         leaveUnbunchingStop();
         beginNewJourney();
+        TimetableManager::departFromOrder(id);
         status = Status::stopped;
         advanceToNextRoutableOrder();
 
@@ -2207,6 +2224,10 @@ namespace OpenLoco::Vehicles
         {
             return true;
         }
+        if (TimetableManager::isWaitingForDeparture(id))
+        {
+            return true;
+        }
 
         advanceToNextRoutableOrder();
         status = Status::travelling;
@@ -2229,6 +2250,7 @@ namespace OpenLoco::Vehicles
             AirplaneApproachTargetParams approachParams{};
             approachParams.targetZ = position.z;
             leaveUnbunchingStop();
+            TimetableManager::departFromOrder(id);
             return sub_4A9348(newMovementEdge, approachParams);
         }
 
@@ -2472,6 +2494,10 @@ namespace OpenLoco::Vehicles
             {
                 return true;
             }
+            if (TimetableManager::isWaitingForDeparture(id))
+            {
+                return true;
+            }
 
             const auto previousJourneyStartPos = journeyStartPos;
             const auto previousJourneyStartTicks = journeyStartTicks;
@@ -2489,6 +2515,7 @@ namespace OpenLoco::Vehicles
                 return true;
             }
             leaveUnbunchingStop();
+            TimetableManager::departFromOrder(id);
             produceLeavingDockSound();
             return true;
         }
@@ -2815,6 +2842,10 @@ namespace OpenLoco::Vehicles
                 arriveAtUnbunchingStop();
             }
         }
+        if (const auto orderIndex = OrderManager::getOrderIndex(*this, currentOrder); orderIndex.has_value())
+        {
+            TimetableManager::arriveAtOrder(id, *orderIndex);
+        }
 
         curOrder++;
         currentOrder = curOrder->getOffset() - orderTableOffset;
@@ -3043,6 +3074,10 @@ namespace OpenLoco::Vehicles
                 auto point = waypoint->getWaypoint();
                 if (point.x == (position.x & 0xFFE0) && point.y == (position.y & 0xFFE0))
                 {
+                    if (const auto orderIndex = OrderManager::getOrderIndex(*this, currentOrder); orderIndex.has_value())
+                    {
+                        TimetableManager::arriveAtOrder(id, *orderIndex);
+                    }
                     currentOrder = (++curOrder)->getOffset() - orderTableOffset;
                     Ui::WindowManager::invalidateOrderPageByVehicleNumber(enumValue(id));
                     advanceToNextRoutableOrder();
@@ -4481,6 +4516,10 @@ namespace OpenLoco::Vehicles
                         stationProcessed = true;
                         if (tileStationId != tc.stationId)
                         {
+                            if (const auto orderIndex = OrderManager::getOrderIndex(head, head.currentOrder); orderIndex.has_value())
+                            {
+                                TimetableManager::arriveAtOrder(head.id, *orderIndex);
+                            }
                             curOrder++;
                             head.currentOrder = curOrder->getOffset() - head.orderTableOffset;
                             Ui::WindowManager::invalidateOrderPageByVehicleNumber(enumValue(head.id));
@@ -4541,6 +4580,10 @@ namespace OpenLoco::Vehicles
             {
                 return Sub4ACEE7Result{ 0, 0, StationId::null };
             }
+        }
+        if (const auto orderIndex = OrderManager::getOrderIndex(head, head.currentOrder); orderIndex.has_value())
+        {
+            TimetableManager::arriveAtOrder(head.id, *orderIndex);
         }
         curOrder++;
         head.currentOrder = curOrder->getOffset() - head.orderTableOffset;
@@ -4631,6 +4674,10 @@ namespace OpenLoco::Vehicles
             {
                 return;
             }
+        }
+        if (const auto orderIndex = OrderManager::getOrderIndex(head, head.currentOrder); orderIndex.has_value())
+        {
+            TimetableManager::arriveAtOrder(head.id, *orderIndex);
         }
         curOrder++;
         head.currentOrder = curOrder->getOffset() - head.orderTableOffset;
@@ -4744,6 +4791,10 @@ namespace OpenLoco::Vehicles
                 {
                     if (tileStationId == stationOrder->getStation())
                     {
+                        if (const auto orderIndex = OrderManager::getOrderIndex(head, head.currentOrder); orderIndex.has_value())
+                        {
+                            TimetableManager::arriveAtOrder(head.id, *orderIndex);
+                        }
                         curOrder++;
                         head.currentOrder = curOrder->getOffset() - head.orderTableOffset;
                         Ui::WindowManager::invalidateOrderPageByVehicleNumber(enumValue(head.id));
@@ -7182,6 +7233,7 @@ namespace OpenLoco::Vehicles
         {
             settleCargoIncome();
         }
+        TimetableManager::clearVehicleRuntime(id);
         RoutingManager::clearPathReservations(routingHandle);
         if (tileX == -1)
         {

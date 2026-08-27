@@ -8,6 +8,7 @@
 #include <OpenLoco/World/Station.h>
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstring>
 #include <limits>
 #include <ranges>
@@ -115,6 +116,12 @@ namespace OpenLoco::S5::SaveExtension
             std::byte{ 'B' },
             std::byte{ 'J' },
         };
+        constexpr std::array<std::byte, 4> kTimetableTag = {
+            std::byte{ 'T' },
+            std::byte{ 'T' },
+            std::byte{ 'B' },
+            std::byte{ 'L' },
+        };
         constexpr uint16_t kVersion = 1;
         constexpr uint16_t kHeaderSize = 16;
         constexpr uint16_t kSectionVersion = 1;
@@ -161,6 +168,11 @@ namespace OpenLoco::S5::SaveExtension
                 _data.insert(_data.end(), bytes.begin(), bytes.end());
             }
 
+            void writeSigned(const int64_t value)
+            {
+                write(std::bit_cast<uint64_t>(value));
+            }
+
             size_t size() const { return _data.size(); }
             const std::vector<std::byte>& data() const { return _data; }
             std::vector<std::byte> take() { return std::move(_data); }
@@ -196,6 +208,11 @@ namespace OpenLoco::S5::SaveExtension
                 const auto bytes = _data.subspan(_position, size);
                 _position += size;
                 return bytes;
+            }
+
+            int64_t readSigned()
+            {
+                return std::bit_cast<int64_t>(read<uint64_t>());
             }
 
             size_t remaining() const { return _data.size() - _position; }
@@ -561,6 +578,255 @@ namespace OpenLoco::S5::SaveExtension
             return state;
         }
 
+        constexpr uint8_t kTimetableEntryHasTravel = 1U << 0;
+        constexpr uint8_t kTimetableEntryHasDwell = 1U << 1;
+        constexpr uint8_t kTimetableEntryHasDispatch = 1U << 2;
+        constexpr uint8_t kKnownTimetableEntryFlags = kTimetableEntryHasTravel | kTimetableEntryHasDwell | kTimetableEntryHasDispatch;
+        constexpr uint8_t kDispatchHasLastClaimedMinute = 1U << 0;
+        constexpr uint8_t kKnownDispatchFlags = kDispatchHasLastClaimedMinute;
+        constexpr uint8_t kRuntimeHasAssignedSlot = 1U << 0;
+        constexpr uint8_t kRuntimeTimetableStarted = 1U << 1;
+        constexpr uint8_t kRuntimeAtTimedStop = 1U << 2;
+        constexpr uint8_t kRuntimeReleased = 1U << 3;
+        constexpr uint8_t kRuntimeWaiting = 1U << 4;
+        constexpr uint8_t kKnownRuntimeFlags = kRuntimeHasAssignedSlot | kRuntimeTimetableStarted | kRuntimeAtTimedStop | kRuntimeReleased | kRuntimeWaiting;
+
+        void canonicaliseTimetable(Vehicles::TimetableManager::State& state)
+        {
+            std::ranges::sort(state.services, {}, &Vehicles::TimetableManager::Service::id);
+            for (auto& service : state.services)
+            {
+                std::ranges::sort(service.entries, {}, &Vehicles::TimetableManager::TimetableEntry::orderIndex);
+                for (auto& entry : service.entries)
+                {
+                    if (entry.dispatch.has_value())
+                    {
+                        std::ranges::sort(entry.dispatch->slots);
+                    }
+                }
+            }
+            const auto vehicleId = [](const auto& value) { return enumValue(value.vehicle); };
+            std::ranges::sort(state.assignments, {}, vehicleId);
+            std::ranges::sort(state.vehicles, {}, vehicleId);
+        }
+
+        std::vector<std::byte> encodeTimetable(Vehicles::TimetableManager::State state)
+        {
+            canonicaliseTimetable(state);
+            require(Vehicles::TimetableManager::validateState(state), "Invalid timetable state");
+
+            Writer payload;
+            payload.write(state.ticksPerMinute);
+            payload.write(state.clockTicks);
+            payload.write(state.nextServiceId);
+            payload.write(state.nextEntryId);
+            payload.write(static_cast<uint32_t>(state.services.size()));
+            for (const auto& service : state.services)
+            {
+                payload.write(service.id);
+                payload.write(service.revision);
+                payload.write(static_cast<uint16_t>(service.entries.size()));
+                for (const auto& entry : service.entries)
+                {
+                    payload.write(entry.id);
+                    payload.write(entry.orderIndex);
+                    payload.write(enumValue(entry.orderType));
+                    payload.write(enumValue(entry.station));
+                    const auto entryFlags = static_cast<uint8_t>((entry.travelMinutes.has_value() ? kTimetableEntryHasTravel : 0) | (entry.dwellMinutes.has_value() ? kTimetableEntryHasDwell : 0) | (entry.dispatch.has_value() ? kTimetableEntryHasDispatch : 0));
+                    payload.write(entryFlags);
+                    if (entry.travelMinutes.has_value())
+                    {
+                        payload.write(*entry.travelMinutes);
+                    }
+                    if (entry.dwellMinutes.has_value())
+                    {
+                        payload.write(*entry.dwellMinutes);
+                    }
+                    if (entry.dispatch.has_value())
+                    {
+                        const auto& dispatch = *entry.dispatch;
+                        payload.write(static_cast<uint8_t>(dispatch.lastClaimedMinute.has_value() ? kDispatchHasLastClaimedMinute : 0));
+                        payload.write(dispatch.periodMinutes);
+                        payload.write(dispatch.phaseMinutes);
+                        payload.write(dispatch.maxDelayMinutes);
+                        payload.write(static_cast<uint16_t>(dispatch.slots.size()));
+                        if (dispatch.lastClaimedMinute.has_value())
+                        {
+                            payload.writeSigned(*dispatch.lastClaimedMinute);
+                        }
+                        for (const auto slot : dispatch.slots)
+                        {
+                            payload.write(slot);
+                        }
+                    }
+                }
+            }
+
+            payload.write(static_cast<uint32_t>(state.assignments.size()));
+            for (const auto& assignment : state.assignments)
+            {
+                payload.write(enumValue(assignment.vehicle));
+                payload.write(assignment.service);
+            }
+
+            payload.write(static_cast<uint32_t>(state.vehicles.size()));
+            for (const auto& runtime : state.vehicles)
+            {
+                payload.write(enumValue(runtime.vehicle));
+                payload.write(runtime.service);
+                payload.write(runtime.serviceRevision);
+                payload.write(runtime.currentEntry);
+                payload.write(runtime.scheduledArrivalTick);
+                payload.write(runtime.scheduledDepartureTick);
+                const auto runtimeFlags = static_cast<uint8_t>((runtime.assignedSlotMinute.has_value() ? kRuntimeHasAssignedSlot : 0) | (runtime.timetableStarted ? kRuntimeTimetableStarted : 0) | (runtime.atTimedStop ? kRuntimeAtTimedStop : 0) | (runtime.released ? kRuntimeReleased : 0) | (runtime.waiting ? kRuntimeWaiting : 0));
+                payload.write(runtimeFlags);
+                if (runtime.assignedSlotMinute.has_value())
+                {
+                    payload.writeSigned(*runtime.assignedSlotMinute);
+                }
+                payload.writeSigned(runtime.latenessTicks);
+            }
+            require(payload.size() <= kMaxTimetableDataSize, "Timetable state is too large");
+            return payload.take();
+        }
+
+        Vehicles::TimetableManager::State decodeTimetable(const std::span<const std::byte> data)
+        {
+            constexpr size_t kMaxEntries = Limits::kMaxVehicles * Limits::kMaxOrdersPerVehicle;
+            constexpr size_t kMinServiceSize = sizeof(uint32_t) * 2 + sizeof(uint16_t);
+            constexpr size_t kMinEntrySize = sizeof(uint32_t) + sizeof(uint8_t) * 3 + sizeof(uint16_t);
+            constexpr size_t kAssignmentSize = sizeof(uint16_t) + sizeof(uint32_t);
+            constexpr size_t kMinRuntimeSize = sizeof(uint16_t) + sizeof(uint32_t) * 3 + sizeof(uint64_t) * 3 + sizeof(uint8_t);
+
+            require(data.size() <= kMaxTimetableDataSize, "Timetable state is too large");
+            Reader input(data);
+            Vehicles::TimetableManager::State state;
+            state.ticksPerMinute = input.read<uint16_t>();
+            state.clockTicks = input.read<uint64_t>();
+            state.nextServiceId = input.read<uint32_t>();
+            state.nextEntryId = input.read<uint32_t>();
+            require(state.nextEntryId != Vehicles::TimetableManager::kInvalidEntryId && state.nextEntryId <= kMaxEntries + 1, "Invalid next timetable entry ID");
+
+            const auto serviceCount = input.read<uint32_t>();
+            require(serviceCount <= Limits::kMaxVehicles && serviceCount <= input.remaining() / kMinServiceSize, "Invalid timetable service count");
+            state.services.reserve(serviceCount);
+            std::vector<bool> seenEntryIds(state.nextEntryId);
+            size_t totalEntries = 0;
+            uint32_t previousServiceId{};
+            for (uint32_t i = 0; i < serviceCount; ++i)
+            {
+                Vehicles::TimetableManager::Service service;
+                service.id = input.read<uint32_t>();
+                service.revision = input.read<uint32_t>();
+                require(i == 0 || previousServiceId < service.id, "Non-canonical timetable service order");
+                previousServiceId = service.id;
+
+                const auto entryCount = input.read<uint16_t>();
+                require(entryCount <= Limits::kMaxOrdersPerVehicle && entryCount <= kMaxEntries - totalEntries && entryCount <= input.remaining() / kMinEntrySize, "Invalid timetable entry count");
+                totalEntries += entryCount;
+                service.entries.reserve(entryCount);
+                uint8_t previousOrderIndex{};
+                for (uint16_t j = 0; j < entryCount; ++j)
+                {
+                    Vehicles::TimetableManager::TimetableEntry entry;
+                    entry.id = input.read<uint32_t>();
+                    entry.orderIndex = input.read<uint8_t>();
+                    entry.orderType = static_cast<Vehicles::OrderType>(input.read<uint8_t>());
+                    entry.station = static_cast<StationId>(input.read<uint16_t>());
+                    const auto entryFlags = input.read<uint8_t>();
+                    require((entryFlags & ~kKnownTimetableEntryFlags) == 0, "Invalid timetable entry flags");
+                    require(j == 0 || previousOrderIndex < entry.orderIndex, "Non-canonical timetable entry order");
+                    require(entry.id != Vehicles::TimetableManager::kInvalidEntryId && entry.id < seenEntryIds.size() && !seenEntryIds[entry.id], "Duplicate or invalid timetable entry ID");
+                    previousOrderIndex = entry.orderIndex;
+                    seenEntryIds[entry.id] = true;
+                    if ((entryFlags & kTimetableEntryHasTravel) != 0)
+                    {
+                        entry.travelMinutes = input.read<uint32_t>();
+                    }
+                    if ((entryFlags & kTimetableEntryHasDwell) != 0)
+                    {
+                        entry.dwellMinutes = input.read<uint32_t>();
+                    }
+                    if ((entryFlags & kTimetableEntryHasDispatch) != 0)
+                    {
+                        Vehicles::TimetableManager::DispatchPattern dispatch;
+                        const auto dispatchFlags = input.read<uint8_t>();
+                        require((dispatchFlags & ~kKnownDispatchFlags) == 0, "Invalid timetable dispatch flags");
+                        dispatch.periodMinutes = input.read<uint32_t>();
+                        dispatch.phaseMinutes = input.read<uint32_t>();
+                        dispatch.maxDelayMinutes = input.read<uint32_t>();
+                        const auto slotCount = input.read<uint16_t>();
+                        if ((dispatchFlags & kDispatchHasLastClaimedMinute) != 0)
+                        {
+                            dispatch.lastClaimedMinute = input.readSigned();
+                        }
+                        require(slotCount <= Vehicles::TimetableManager::kMaxSlots && slotCount <= input.remaining() / sizeof(uint32_t), "Invalid timetable dispatch slot count");
+                        dispatch.slots.reserve(slotCount);
+                        uint32_t previousSlot{};
+                        for (uint16_t k = 0; k < slotCount; ++k)
+                        {
+                            const auto slot = input.read<uint32_t>();
+                            require(k == 0 || previousSlot < slot, "Non-canonical timetable dispatch slots");
+                            previousSlot = slot;
+                            dispatch.slots.push_back(slot);
+                        }
+                        entry.dispatch = std::move(dispatch);
+                    }
+                    service.entries.push_back(std::move(entry));
+                }
+                state.services.push_back(std::move(service));
+            }
+
+            const auto assignmentCount = input.read<uint32_t>();
+            require(assignmentCount <= Limits::kMaxEntities && assignmentCount <= input.remaining() / kAssignmentSize, "Invalid timetable assignment count");
+            state.assignments.reserve(assignmentCount);
+            uint16_t previousAssignment{};
+            for (uint32_t i = 0; i < assignmentCount; ++i)
+            {
+                Vehicles::TimetableManager::VehicleAssignment assignment;
+                const auto vehicle = input.read<uint16_t>();
+                assignment.vehicle = static_cast<EntityId>(vehicle);
+                assignment.service = input.read<uint32_t>();
+                require(i == 0 || previousAssignment < vehicle, "Non-canonical timetable assignment order");
+                previousAssignment = vehicle;
+                state.assignments.push_back(assignment);
+            }
+
+            const auto runtimeCount = input.read<uint32_t>();
+            require(runtimeCount <= Limits::kMaxEntities && runtimeCount <= input.remaining() / kMinRuntimeSize, "Invalid timetable runtime count");
+            state.vehicles.reserve(runtimeCount);
+            uint16_t previousRuntime{};
+            for (uint32_t i = 0; i < runtimeCount; ++i)
+            {
+                Vehicles::TimetableManager::VehicleRuntime runtime;
+                const auto vehicle = input.read<uint16_t>();
+                runtime.vehicle = static_cast<EntityId>(vehicle);
+                runtime.service = input.read<uint32_t>();
+                runtime.serviceRevision = input.read<uint32_t>();
+                runtime.currentEntry = input.read<uint32_t>();
+                runtime.scheduledArrivalTick = input.read<uint64_t>();
+                runtime.scheduledDepartureTick = input.read<uint64_t>();
+                const auto runtimeFlags = input.read<uint8_t>();
+                require((runtimeFlags & ~kKnownRuntimeFlags) == 0, "Invalid timetable runtime flags");
+                require(i == 0 || previousRuntime < vehicle, "Non-canonical timetable runtime order");
+                previousRuntime = vehicle;
+                if ((runtimeFlags & kRuntimeHasAssignedSlot) != 0)
+                {
+                    runtime.assignedSlotMinute = input.readSigned();
+                }
+                runtime.latenessTicks = input.readSigned();
+                runtime.timetableStarted = (runtimeFlags & kRuntimeTimetableStarted) != 0;
+                runtime.atTimedStop = (runtimeFlags & kRuntimeAtTimedStop) != 0;
+                runtime.released = (runtimeFlags & kRuntimeReleased) != 0;
+                runtime.waiting = (runtimeFlags & kRuntimeWaiting) != 0;
+                state.vehicles.push_back(runtime);
+            }
+
+            require(input.empty(), "Trailing timetable data");
+            require(Vehicles::TimetableManager::validateState(state), "Invalid timetable state");
+            return state;
+        }
+
         std::vector<std::byte> encodeStationTileOverflow(const std::vector<StationTileOverflow>& stations)
         {
             require(!stations.empty(), "Station tile overflow must not be empty");
@@ -800,6 +1066,7 @@ namespace OpenLoco::S5::SaveExtension
             .stationTileOverflowState = state.stationTileOverflowState ? &*state.stationTileOverflowState : nullptr,
             .gameRulesState = state.gameRulesState ? &*state.gameRulesState : nullptr,
             .vehicleObjectState = state.vehicleObjectState ? &*state.vehicleObjectState : nullptr,
+            .timetableState = state.timetableState ? &*state.timetableState : nullptr,
         });
     }
 
@@ -854,6 +1121,10 @@ namespace OpenLoco::S5::SaveExtension
         {
             appendSection(payload, kVehicleObjectsTag, encodeVehicleObjects(*state.vehicleObjectState), kSectionRequired);
         }
+        if (state.timetableState != nullptr)
+        {
+            appendSection(payload, kTimetableTag, encodeTimetable(*state.timetableState), kSectionRequired);
+        }
 
         require(payload.size() <= std::numeric_limits<uint32_t>::max(), "Save extension is too large");
         Writer output;
@@ -894,6 +1165,7 @@ namespace OpenLoco::S5::SaveExtension
         bool hasStationTileOverflow = false;
         bool hasGameRules = false;
         bool hasVehicleObjects = false;
+        bool hasTimetable = false;
         while (!sections.empty())
         {
             const auto tag = sections.readBytes(4);
@@ -972,6 +1244,14 @@ namespace OpenLoco::S5::SaveExtension
                 hasVehicleObjects = true;
                 require(version == kSectionVersion, "Unsupported extended vehicle object section version");
                 state.vehicleObjectState = decodeVehicleObjects(sectionData);
+            }
+            else if (std::ranges::equal(tag, kTimetableTag))
+            {
+                require(flags == kSectionRequired, "Invalid timetable section flags");
+                require(!hasTimetable, "Duplicate timetable save extension section");
+                hasTimetable = true;
+                require(version == kSectionVersion, "Unsupported timetable section version");
+                state.timetableState = decodeTimetable(sectionData);
             }
             else
             {

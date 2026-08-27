@@ -4,6 +4,7 @@
 #include "Localisation/StringIds.h"
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/SharedOrderManager.h"
+#include "Vehicles/TimetableManager.h"
 #include "Vehicles/VehicleHead.h"
 
 namespace OpenLoco::GameCommands
@@ -51,6 +52,11 @@ namespace OpenLoco::GameCommands
         {
             previousOffset = offset;
             offset += Vehicles::OrderManager::getOrderSize(static_cast<Vehicles::OrderType>(table[offset] & 0x7));
+        }
+        const auto orderIndex = VehicleOrderCommon::getOrderIndex(*head, args.orderOffset);
+        if (!Vehicles::TimetableManager::onOrdersSwapped(args.head, orderIndex - 1, orderIndex))
+        {
+            return kFailure;
         }
 
         for (const auto id : members)

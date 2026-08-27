@@ -4,6 +4,7 @@
 #include "Localisation/StringIds.h"
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/SharedOrderManager.h"
+#include "Vehicles/TimetableManager.h"
 #include "Vehicles/VehicleHead.h"
 
 namespace OpenLoco::GameCommands
@@ -38,6 +39,10 @@ namespace OpenLoco::GameCommands
             return 0;
         }
 
+        if (!Vehicles::TimetableManager::onOrderDeleted(args.head, VehicleOrderCommon::getOrderIndex(*head, args.orderOffset)))
+        {
+            return kFailure;
+        }
         VehicleOrderCommon::invalidateOrderWindows(members);
         VehicleOrderCommon::sortByDescendingOrderTableOffset(members);
         for (const auto id : members)

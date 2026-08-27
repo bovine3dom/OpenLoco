@@ -4,6 +4,7 @@
 #include "Localisation/StringIds.h"
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/SharedOrderManager.h"
+#include "Vehicles/TimetableManager.h"
 #include "Vehicles/VehicleHead.h"
 
 namespace OpenLoco::GameCommands
@@ -37,6 +38,10 @@ namespace OpenLoco::GameCommands
             return 0;
         }
 
+        if (!Vehicles::TimetableManager::onOrdersReversed(args.head, VehicleOrderCommon::getOrderCount(*head)))
+        {
+            return kFailure;
+        }
         VehicleOrderCommon::invalidateOrderWindows(members);
         for (const auto id : members)
         {

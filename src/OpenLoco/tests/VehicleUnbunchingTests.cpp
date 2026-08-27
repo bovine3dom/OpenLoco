@@ -6,6 +6,7 @@
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/Orders.h"
 #include "Vehicles/SharedOrderManager.h"
+#include "Vehicles/TimetableManager.h"
 #include "Vehicles/Vehicle1.h"
 #include "Vehicles/VehicleHead.h"
 #include <gtest/gtest.h>
@@ -212,6 +213,20 @@ TEST_F(VehicleUnbunchingTest, CommandRejectsFullLoadAndMultipleUnbunchingStops)
 
     EXPECT_EQ(toggleUnbunching(multipleRoute, firstOffset, Flags::apply), kFailure);
     EXPECT_FALSE(OrderRingView(multipleRoute.orderTableOffset, firstOffset).begin()->as<OrderStopAt>()->isUnbunching());
+}
+
+TEST_F(VehicleUnbunchingTest, CommandRejectsAnyMatchingRouteWithATimetable)
+{
+    auto& selected = createVehicle();
+    auto& timetabled = createVehicle();
+    const auto selectedOffset = appendStop(selected, 1);
+    appendStop(selected, 2);
+    addRoute(timetabled);
+    ASSERT_TRUE(TimetableManager::enableForVehicle(timetabled.id));
+
+    EXPECT_EQ(toggleUnbunching(selected, selectedOffset, Flags::apply), kFailure);
+    EXPECT_FALSE(selected.hasUnbunchingOrder());
+    EXPECT_FALSE(timetabled.hasUnbunchingOrder());
 }
 
 TEST_F(VehicleUnbunchingTest, FullLoadOrderCannotBeInsertedOnUnbunchingRoute)

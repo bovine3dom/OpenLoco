@@ -5,6 +5,7 @@
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/Orders.h"
 #include "Vehicles/SharedOrderManager.h"
+#include "Vehicles/TimetableManager.h"
 #include "Vehicles/VehicleHead.h"
 #include "World/StationManager.h"
 #include <OpenLoco/CargoDist/CargoDist.h>
@@ -64,6 +65,11 @@ namespace OpenLoco::GameCommands
 
         if (const auto* stopOrder = order.as<OrderStopAt>(); stopOrder != nullptr && stopOrder->isUnbunching())
         {
+            if (TimetableManager::getServiceId(head.id) != TimetableManager::kInvalidServiceId)
+            {
+                setErrorText(StringIds::timetable_unbunching_incompatible);
+                return false;
+            }
             if (head.hasUnbunchingOrder())
             {
                 setErrorText(StringIds::only_one_unbunching_stop_allowed);
@@ -165,6 +171,17 @@ namespace OpenLoco::GameCommands
         if (!(flags & Flags::apply))
         {
             return 0;
+        }
+
+        const auto orderIndex = VehicleOrderCommon::getOrderIndex(*head, args.orderOffset);
+        const auto* stationOrder = order->as<OrderStation>();
+        const auto station = stationOrder != nullptr ? stationOrder->getStation() : StationId::null;
+        const auto timetableUpdated = convertDuplicateStop
+            ? TimetableManager::onOrderReplaced(args.head, VehicleOrderCommon::getOrderIndex(*head, previousOffset), OrderType::RouteThrough, station)
+            : TimetableManager::onOrderInserted(args.head, orderIndex, order->getType(), station);
+        if (!timetableUpdated)
+        {
+            return kFailure;
         }
 
         VehicleOrderCommon::invalidateOrderWindows(members);

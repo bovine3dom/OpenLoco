@@ -25,6 +25,7 @@
 #include "SceneManager.h"
 #include "Ui/WindowManager.h"
 #include "Vehicles/VehicleManager.h"
+#include "Vehicles/TimetableManager.h"
 #include "World/CompanyManager.h"
 #include "World/IndustryManager.h"
 #include "World/StationManager.h"
@@ -220,6 +221,7 @@ namespace OpenLoco::Scenes::GameScene
 
         ScenarioManager::setScenarioTicks(ScenarioManager::getScenarioTicks() + 1);
         ScenarioManager::setScenarioTicks2(ScenarioManager::getScenarioTicks2() + 1);
+        Vehicles::TimetableManager::tick();
         Network::processGameCommands(ScenarioManager::getScenarioTicks());
         CargoDist::update();
 

@@ -4,6 +4,7 @@
 #include "Localisation/StringIds.h"
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/SharedOrderManager.h"
+#include "Vehicles/TimetableManager.h"
 #include "Vehicles/VehicleManager.h"
 #include <algorithm>
 #include <ranges>
@@ -107,6 +108,10 @@ namespace OpenLoco::GameCommands
         }
 
         auto affected = Vehicles::SharedOrderManager::getMembers(args.target);
+        if (!Vehicles::TimetableManager::canSplitService(args.target))
+        {
+            return failShareCommand();
+        }
         if (!(flags & Flags::apply))
         {
             return 0;

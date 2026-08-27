@@ -10,6 +10,7 @@
 #include <OpenLoco/Vehicles/RailTraffic.h>
 #include <OpenLoco/Vehicles/RoutingManager.h>
 #include <OpenLoco/Vehicles/SharedOrderManager.h>
+#include <OpenLoco/Vehicles/TimetableManager.h>
 #include <OpenLoco/Vehicles/VehicleAutoRenewal.h>
 #include <OpenLoco/Vehicles/VehicleReplacement.h>
 #include <optional>
@@ -35,5 +36,6 @@ namespace OpenLoco::S5
         std::optional<std::vector<SaveExtension::StationTileOverflow>> stationTileOverflowState;
         std::optional<GameRules::State> gameRulesState;
         std::optional<SaveExtension::VehicleObjectState> vehicleObjectState;
+        std::optional<Vehicles::TimetableManager::State> timetableState;
     };
 }
