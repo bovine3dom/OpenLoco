@@ -1755,6 +1755,8 @@ protected:
         _resort = getGameState().stations[12];
         _town = getGameState().towns[enumValue(kHomeTown)];
         _currentDay = getGameState().currentDay;
+        EntityManager::reset();
+        Vehicles::OrderManager::reset();
         reset();
 
         auto& town = getGameState().towns[enumValue(kHomeTown)];
@@ -1776,6 +1778,8 @@ protected:
     void TearDown() override
     {
         reset();
+        Vehicles::OrderManager::reset();
+        EntityManager::reset();
         getGameState().stations[10] = _home;
         getGameState().stations[11] = _fallbackHome;
         getGameState().stations[12] = _resort;
