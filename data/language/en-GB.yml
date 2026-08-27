@@ -2638,7 +2638,7 @@ strings:
   2583: days/tile
   2584: N/A
   2585: "Timetable: Off"
-  2586: "Timetable: On"
+  2586: "Timetable: On | Now: {INT32} min"
   2587: "Travel"
   2588: "Dwell"
   2589: "Period"

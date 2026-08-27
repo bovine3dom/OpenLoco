@@ -5263,8 +5263,14 @@ namespace OpenLoco::Ui::Windows::Vehicle
             clockRateArgs.push(StringIds::timetable_clock_rate);
             clockRateArgs.push<int32_t>(Vehicles::TimetableManager::getTicksPerMinute());
 
-            self.widgets[widx::timetableToggle].text = timetableEnabled ? StringIds::timetable_enabled : StringIds::timetable_disabled;
-            self.widgets[widx::timetableToggle].tooltip = timetableEnabled ? StringIds::tooltip_timetable_disable : StringIds::tooltip_timetable_toggle;
+            auto& timetableToggle = self.widgets[widx::timetableToggle];
+            timetableToggle.text = timetableEnabled ? StringIds::timetable_enabled : StringIds::timetable_disabled;
+            timetableToggle.tooltip = timetableEnabled ? StringIds::tooltip_timetable_disable : StringIds::tooltip_timetable_toggle;
+            if (timetableEnabled)
+            {
+                auto timetableToggleArgs = FormatArguments(timetableToggle.textArgs);
+                timetableToggleArgs.push<int32_t>(std::min<uint64_t>(Vehicles::TimetableManager::getClockMinute(), std::numeric_limits<int32_t>::max()));
+            }
             self.widgets[widx::timetableSlots].text = StringIds::timetable_slots_count;
             auto slotArgs = FormatArguments(self.widgets[widx::timetableSlots].textArgs);
             slotArgs.push<int32_t>(dispatch != nullptr ? dispatch->slots.size() : 0);
