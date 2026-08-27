@@ -2632,3 +2632,8 @@ strings:
   2577: "{COLOUR WINDOW_2}Current month (sets next month's rate)"
   2578: "{COLOUR WINDOW_2}No cargo delivery limits this town; its monthly rate can reach 4/4."
   2579: "{COLOUR WINDOW_2}Limiting cargo: {STRINGID}, {INT32} delivered (each 100 raises the rate)"
+  2580: Tiles per day
+  2581: tiles/day
+  2582: Days per tile
+  2583: days/tile
+  2584: N/A

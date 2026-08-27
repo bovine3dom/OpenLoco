@@ -9,6 +9,7 @@
 #include "Logging.h"
 #include "Objects/CurrencyObject.h"
 #include "Objects/ObjectManager.h"
+#include "Objects/VehicleObject.h"
 #include "World/TownManager.h"
 
 #include <OpenLoco/Core/Exception.hpp>
@@ -476,6 +477,34 @@ namespace OpenLoco::StringManager
                         if (measurementFormat == Config::MeasurementFormat::imperial)
                         {
                             unit = getString(StringIds::unit_mph);
+                        }
+                        else if (measurementFormat == Config::MeasurementFormat::tilesPerDay || measurementFormat == Config::MeasurementFormat::daysPerTile)
+                        {
+                            const auto modeModifier = getTransportModeSpeedModifier(static_cast<TransportMode>(args.getTransportMode()));
+                            const auto isTilesPerDay = measurementFormat == Config::MeasurementFormat::tilesPerDay;
+                            if (isTilesPerDay)
+                            {
+                                value = speedToTilesPerDay(value, modeModifier);
+                            }
+                            else
+                            {
+                                const auto daysPerTile = speedToDaysPerTile(value, modeModifier);
+                                if (!daysPerTile.has_value())
+                                {
+                                    buffer.append(getString(StringIds::not_available));
+                                    break;
+                                }
+                                if (*daysPerTile == 0)
+                                {
+                                    buffer.append("<0.01");
+                                    buffer.append(getString(StringIds::unit_days_per_tile));
+                                    break;
+                                }
+                                value = *daysPerTile;
+                            }
+                            formatIntWithTwoDecimals(value, buffer);
+                            buffer.append(getString(isTilesPerDay ? StringIds::unit_tiles_per_day : StringIds::unit_days_per_tile));
+                            break;
                         }
                         else
                         {

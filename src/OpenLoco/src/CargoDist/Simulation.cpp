@@ -385,17 +385,7 @@ namespace OpenLoco::CargoDist
             {
                 return 0;
             }
-            const uint32_t modeModifier = [mode]() {
-                switch (mode)
-                {
-                    case TransportMode::air:
-                        return 36U;
-                    case TransportMode::water:
-                        return 31U;
-                    default:
-                        return 21U;
-                }
-            }();
+            const auto modeModifier = getTransportModeSpeedModifier(mode);
             const auto maximumNumerator = std::numeric_limits<uint64_t>::max() - speed;
             const auto numerator = distance > maximumNumerator / modeModifier ? maximumNumerator : distance * modeModifier;
             return static_cast<uint32_t>(std::min<uint64_t>(std::max<uint64_t>(1, (numerator + speed - 1) / speed), std::numeric_limits<uint32_t>::max()));

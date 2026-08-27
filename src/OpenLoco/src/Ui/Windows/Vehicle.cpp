@@ -1169,6 +1169,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
             {
                 auto status = veh->getStatus();
                 FormatArguments args = {};
+                args.setTransportMode(enumValue(veh->mode));
                 args.push(status.status1);
                 args.push(status.status1Args);
                 args.push(status.status2);
@@ -1626,6 +1627,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
 
             {
                 FormatArguments args{};
+                args.setTransportMode(enumValue(vehicleObj->mode));
                 args.push(vehicleObj->speed);
                 buffer = StringManager::formatString(buffer, StringIds::vehicle_details_tooltip_max_speed, args);
             }
@@ -1633,6 +1635,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
             if (vehicleObj->hasFlags(VehicleObjectFlags::rackRail))
             {
                 FormatArguments args{};
+                args.setTransportMode(enumValue(vehicleObj->mode));
                 args.push(vehicleObj->rackSpeed);
                 auto rackRailObj = ObjectManager::get<TrackExtraObject>(vehicleObj->rackRailType);
                 args.push(rackRailObj->name);
@@ -1986,6 +1989,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
             {
                 pos.y += kVehicleDetailsLineHeight;
                 FormatArguments args{};
+                args.setTransportMode(enumValue(train.veh2->mode));
                 args.push<uint16_t>(train.veh2->maxSpeed == kSpeed16Null ? 0 : train.veh2->maxSpeed.getRaw());
                 args.push<uint16_t>(train.veh2->rackRailMaxSpeed == kSpeed16Null ? 0 : train.veh2->rackRailMaxSpeed.getRaw());
                 args.push<uint16_t>(train.veh2->reliability == 0 ? 64 : train.veh2->reliability);
@@ -3261,6 +3265,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
             {
                 // Last journey average speed: {VELOCITY}
                 FormatArguments args{};
+                args.setTransportMode(enumValue(head->mode));
                 args.push(head->lastAverageSpeed);
                 tr.drawStringLeft(pos, Colour::black, StringIds::last_journey_average_speed, args);
                 pos.y += 10 + 5;

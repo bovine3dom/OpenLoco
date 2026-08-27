@@ -2,6 +2,7 @@
 
 #include <compare>
 #include <cstdint>
+#include <optional>
 #include <type_traits>
 
 namespace OpenLoco
@@ -95,6 +96,34 @@ namespace OpenLoco
     constexpr Speed16 toSpeed16(Speed32 speed)
     {
         return Speed16(static_cast<Speed16::ValueType>(speed.getRaw() / 65536));
+    }
+
+    constexpr int32_t speedToTilesPerDay(int32_t speed, uint32_t modeModifier)
+    {
+        if (speed <= 0)
+        {
+            return 0;
+        }
+        constexpr uint32_t kTicksPerDayNumerator = 65536;
+        constexpr uint32_t kTicksPerDayDenominator = 682;
+        constexpr uint32_t kWorldUnitsPerTile = 32;
+        const auto numerator = static_cast<uint64_t>(speed) * kTicksPerDayNumerator * 100;
+        const auto denominator = modeModifier * kWorldUnitsPerTile * kTicksPerDayDenominator;
+        return static_cast<int32_t>((numerator + denominator / 2) / denominator);
+    }
+
+    constexpr std::optional<int32_t> speedToDaysPerTile(int32_t speed, uint32_t modeModifier)
+    {
+        if (speed <= 0)
+        {
+            return std::nullopt;
+        }
+        constexpr uint32_t kTicksPerDayNumerator = 65536;
+        constexpr uint32_t kTicksPerDayDenominator = 682;
+        constexpr uint32_t kWorldUnitsPerTile = 32;
+        const auto numerator = static_cast<uint64_t>(modeModifier) * kWorldUnitsPerTile * kTicksPerDayDenominator * 100;
+        const auto denominator = static_cast<uint64_t>(speed) * kTicksPerDayNumerator;
+        return static_cast<int32_t>((numerator + denominator / 2) / denominator);
     }
 
     namespace Literals

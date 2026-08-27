@@ -2289,6 +2289,11 @@ namespace OpenLoco::StringIds
     constexpr StringId town_growth_next_rate = 2577;
     constexpr StringId town_growth_no_cargo_limit = 2578;
     constexpr StringId town_growth_limiting_cargo = 2579;
+    constexpr StringId tiles_per_day = 2580;
+    constexpr StringId unit_tiles_per_day = 2581;
+    constexpr StringId days_per_tile = 2582;
+    constexpr StringId unit_days_per_tile = 2583;
+    constexpr StringId not_available = 2584;
 
     constexpr StringId temporary_object_load_str_0 = 8192;
     constexpr StringId temporary_object_load_str_1 = 8193;

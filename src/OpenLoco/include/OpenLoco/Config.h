@@ -15,6 +15,8 @@ namespace OpenLoco::Config
     {
         imperial = 0,
         metric = 1,
+        tilesPerDay = 2,
+        daysPerTile = 3,
     };
 
     enum class NewsType : uint8_t

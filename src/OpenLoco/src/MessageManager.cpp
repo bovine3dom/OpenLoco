@@ -412,6 +412,7 @@ namespace OpenLoco::MessageManager
                 {
                     break;
                 }
+                args.setTransportMode(enumValue(head->mode));
                 args.push(recordTypeStrings[message.itemSubjects[2]]);
                 args.push(vehicleTypeStrings[enumValue(head->vehicleType)]);
                 args.push(CompanyManager::getRecords().speed[message.itemSubjects[2]]);

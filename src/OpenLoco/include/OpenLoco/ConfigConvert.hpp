@@ -185,6 +185,8 @@ namespace YAML
     const convert_pair_vector<MeasurementFormat> kMeasurementFormatEntries = {
         enum_def(MeasurementFormat, imperial),
         enum_def(MeasurementFormat, metric),
+        enum_def(MeasurementFormat, tilesPerDay),
+        enum_def(MeasurementFormat, daysPerTile),
     };
     template<>
     struct convert<MeasurementFormat> : convert_enum_base<MeasurementFormat>

@@ -2,6 +2,7 @@
 
 #include "FormatArgumentsBuffer.hpp"
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <iterator>
 
@@ -10,9 +11,13 @@ namespace OpenLoco
     class FormatArguments
     {
     private:
+        static inline std::byte _mapTooltipBuffer[40]{};
+        static inline uint8_t _mapTooltipTransportMode = 0xFF;
+
         std::byte* _buffer;
         std::byte* _bufferStart;
         size_t _capacity;
+        uint8_t _transportMode = 0xFF;
 
     public:
         FormatArguments(std::byte* buffer, size_t length)
@@ -57,8 +62,8 @@ namespace OpenLoco
         static FormatArguments mapToolTip()
         {
             // TODO: refactor users to use non-static buffers
-            static std::byte mapTooltipBuffer[40];
-            FormatArguments formatter{ mapTooltipBuffer, std::size(mapTooltipBuffer) };
+            FormatArguments formatter{ _mapTooltipBuffer, std::size(_mapTooltipBuffer) };
+            formatter._transportMode = _mapTooltipTransportMode;
             return formatter;
         }
 
@@ -67,6 +72,7 @@ namespace OpenLoco
         {
             // TODO: refactor users to use non-static buffers
             auto formatter = FormatArguments::mapToolTip();
+            formatter.setTransportMode(0xFF);
             (formatter.push(args), ...);
             return formatter;
         }
@@ -93,6 +99,16 @@ namespace OpenLoco
         {
             _buffer = _bufferStart;
         }
+
+        void setTransportMode(uint8_t mode)
+        {
+            _transportMode = mode;
+            if (_bufferStart == _mapTooltipBuffer)
+            {
+                _mapTooltipTransportMode = mode;
+            }
+        }
+        uint8_t getTransportMode() const { return _transportMode; }
 
         const void* operator&() const
         {
@@ -123,13 +139,15 @@ namespace OpenLoco
     private:
         const std::byte* args{};
         const std::byte* end{};
+        uint8_t transportMode = 0xFF;
 
     public:
         constexpr FormatArgumentsView() = default;
 
         FormatArgumentsView(const FormatArguments& newargs)
             : args(newargs.getBufferStart())
-            , end(newargs.getBufferStart() + newargs.getCapacity()) {};
+            , end(newargs.getBufferStart() + newargs.getCapacity())
+            , transportMode(newargs.getTransportMode()) {};
 
         FormatArgumentsView(const FormatArgumentsBuffer& newargs)
             : args(newargs.data())
@@ -165,5 +183,7 @@ namespace OpenLoco
         {
             args -= sizeof(T);
         }
+
+        uint8_t getTransportMode() const { return transportMode; }
     };
 }

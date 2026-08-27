@@ -26,6 +26,16 @@ namespace OpenLoco
         water = 3
     };
 
+    constexpr uint32_t getTransportModeSpeedModifier(TransportMode mode)
+    {
+        switch (mode)
+        {
+            case TransportMode::air: return 36;
+            case TransportMode::water: return 31;
+            default: return 21;
+        }
+    }
+
     enum class EmitterAnimationType : uint8_t
     {
         none = 0,

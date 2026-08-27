@@ -44,6 +44,7 @@
 #include "Ui/Widgets/TabWidget.h"
 #include "Ui/WindowManager.h"
 
+#include <array>
 #include <cassert>
 
 namespace OpenLoco::Ui::Windows::Options
@@ -1442,6 +1443,12 @@ namespace OpenLoco::Ui::Windows::Options
     namespace Regional
     {
         static constexpr Ui::Size kWindowSize = { 366, 167 };
+        static constexpr std::array kMeasurementFormatStringIds = {
+            StringIds::imperial,
+            StringIds::metric,
+            StringIds::tiles_per_day,
+            StringIds::days_per_tile,
+        };
 
         enum widx
         {
@@ -1533,14 +1540,8 @@ namespace OpenLoco::Ui::Windows::Options
 
             {
                 auto args = FormatArguments(self.widgets[widx::distance_speed].textArgs);
-
-                StringId current_measurement_format = StringIds::imperial;
-                if (OpenLoco::Config::get().measurementFormat == Config::MeasurementFormat::metric)
-                {
-                    current_measurement_format = StringIds::metric;
-                }
-
-                args.push(current_measurement_format);
+                const auto measurementFormat = enumValue(OpenLoco::Config::get().measurementFormat);
+                args.push(measurementFormat < kMeasurementFormatStringIds.size() ? kMeasurementFormatStringIds[measurementFormat] : kMeasurementFormatStringIds[0]);
             }
 
             {
@@ -1828,10 +1829,12 @@ namespace OpenLoco::Ui::Windows::Options
         static void distanceSpeedMouseDown(const Window& self)
         {
             auto& dropdown = self.widgets[widx::distance_speed];
-            Dropdown::show(self.x + dropdown.left, self.y + dropdown.top, dropdown.width() - 4, dropdown.height(), self.getColour(WindowColour::secondary), 2, 0x80);
+            Dropdown::show(self.x + dropdown.left, self.y + dropdown.top, dropdown.width() - 4, dropdown.height(), self.getColour(WindowColour::secondary), kMeasurementFormatStringIds.size(), 0x80);
 
-            Dropdown::add(0, StringIds::dropdown_stringid, StringIds::imperial);
-            Dropdown::add(1, StringIds::dropdown_stringid, StringIds::metric);
+            for (auto i = 0U; i < kMeasurementFormatStringIds.size(); ++i)
+            {
+                Dropdown::add(i, StringIds::dropdown_stringid, kMeasurementFormatStringIds[i]);
+            }
             Dropdown::setItemSelected(static_cast<uint8_t>(Config::get().measurementFormat));
         }
 

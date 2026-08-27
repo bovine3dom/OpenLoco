@@ -109,6 +109,7 @@ namespace OpenLoco
         }
         {
             FormatArguments args{};
+            args.setTransportMode(enumValue(mode));
             args.push(speed);
             tr.drawStringLeft(rowPosition, Colour::black, StringIds::object_selection_max_speed, args);
         }

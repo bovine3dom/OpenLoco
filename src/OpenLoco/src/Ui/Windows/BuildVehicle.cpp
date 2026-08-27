@@ -1587,6 +1587,7 @@ namespace OpenLoco::Ui::Windows::BuildVehicle
         }
         {
             FormatArguments args{};
+            args.setTransportMode(enumValue(vehicleObj->mode));
             args.push(vehicleObj->speed.getRaw());
             buffer = StringManager::formatString(buffer, StringIds::stats_max_speed, args);
         }
@@ -1594,6 +1595,7 @@ namespace OpenLoco::Ui::Windows::BuildVehicle
         {
             auto trackExtraObj = ObjectManager::get<TrackExtraObject>(vehicleObj->rackRailType);
             FormatArguments args{};
+            args.setTransportMode(enumValue(vehicleObj->mode));
             args.push(vehicleObj->rackSpeed);
             args.push(trackExtraObj->name);
             buffer = StringManager::formatString(buffer, StringIds::stats_velocity_on_string, args);

@@ -308,6 +308,7 @@ namespace OpenLoco::Ui::ViewportInteraction
         Windows::MapToolTip::setOwner(head->owner);
         auto status = head->getStatus();
         auto args = FormatArguments::mapToolTip();
+        args.setTransportMode(enumValue(head->mode));
         if (status.status2 == StringIds::null)
         {
             args.push(StringIds::wcolour3_stringid);

@@ -12,6 +12,7 @@
 #include "Objects/CompetitorObject.h"
 #include "Objects/InterfaceSkinObject.h"
 #include "Objects/ObjectManager.h"
+#include "Objects/VehicleObject.h"
 #include "OpenLoco.h"
 #include "Ui/Chart.h"
 #include "Ui/ToolManager.h"
@@ -1249,6 +1250,11 @@ namespace OpenLoco::Ui::Windows::CompanyList
             Common::drawTabs(self, drawingCtx);
 
             auto y = 47;
+            static constexpr TransportMode kRecordModes[] = {
+                TransportMode::rail,
+                TransportMode::air,
+                TransportMode::water,
+            };
 
             for (auto i = 0; i < 3; i++)
             {
@@ -1259,6 +1265,7 @@ namespace OpenLoco::Ui::Windows::CompanyList
                 }
                 {
                     FormatArguments args{};
+                    args.setTransportMode(enumValue(kRecordModes[i]));
                     args.push(recordSpeed);
 
                     const StringId string[] = {

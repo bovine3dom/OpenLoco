@@ -1415,6 +1415,7 @@ namespace OpenLoco::Ui::Windows::Station
                     // Prepare status for drawing
                     auto status = head->getStatus();
                     auto args = FormatArguments::common();
+                    args.setTransportMode(enumValue(head->mode));
                     args.push(head->name);
                     args.push(head->ordinalNumber);
                     args.push(status.status1);
