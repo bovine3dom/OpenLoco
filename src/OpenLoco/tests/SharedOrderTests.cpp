@@ -284,6 +284,12 @@ TEST_F(SharedOrderTest, TimetableStateValidationMatchesRoutesAndSharedGroups)
 
 TEST_F(SharedOrderTest, TimetableCommandQueriesAreAtomic)
 {
+    EXPECT_EQ(enumValue(VehicleTimetableArgs::Action::removeDispatchSlot), 7);
+    EXPECT_EQ(enumValue(VehicleTimetableArgs::Action::clearDispatch), 8);
+    EXPECT_EQ(enumValue(VehicleTimetableArgs::Action::setClockRate), 9);
+    EXPECT_EQ(enumValue(VehicleTimetableArgs::Action::resetDispatch), 10);
+    EXPECT_EQ(enumValue(VehicleTimetableArgs::Action::setEvenlySpacedSlots), 11);
+
     auto* head = createHead();
     ASSERT_NE(head, nullptr);
     setOrders(*head, { OrderStopAt(StationId(1)).getRaw() });
@@ -306,6 +312,44 @@ TEST_F(SharedOrderTest, TimetableCommandQueriesAreAtomic)
     ASSERT_EQ(runCommand(args, vehicleTimetable), 0U);
     ASSERT_NE(TimetableManager::getEntry(head->id, 0), nullptr);
     EXPECT_EQ(TimetableManager::getEntry(head->id, 0)->travelMinutes, 18);
+
+    args.action = VehicleTimetableArgs::Action::setEvenlySpacedSlots;
+    args.value = 4;
+    const auto beforeSlots = TimetableManager::captureState();
+    EXPECT_EQ(runCommand(args, vehicleTimetable, 0), 0U);
+    EXPECT_EQ(TimetableManager::captureState(), beforeSlots);
+    ASSERT_EQ(runCommand(args, vehicleTimetable), 0U);
+    EXPECT_EQ(TimetableManager::getEntry(head->id, 0)->dispatch->slots, (std::vector<uint32_t>{ 0, 15, 30, 45 }));
+}
+
+TEST_F(SharedOrderTest, TimetableCommandQueryPreservesFleetMeasurement)
+{
+    TimetableManager::reset();
+    auto* head = createHead();
+    ASSERT_NE(head, nullptr);
+    setOrders(*head, { OrderStopAt(StationId(1)).getRaw() });
+    ASSERT_TRUE(TimetableManager::enableForVehicle(head->id));
+    ASSERT_TRUE(TimetableManager::setTicksPerMinute(1));
+    ASSERT_TRUE(TimetableManager::setEvenlySpacedSlots(head->id, 0, 4));
+    ASSERT_TRUE(TimetableManager::arriveAtOrder(head->id, 0));
+    EXPECT_FALSE(TimetableManager::isWaitingForDeparture(head->id));
+    TimetableManager::departFromOrder(head->id);
+    for (uint32_t i = 0; i < 20; ++i)
+    {
+        TimetableManager::tick();
+    }
+    ASSERT_TRUE(TimetableManager::arriveAtOrder(head->id, 0));
+    TimetableManager::isWaitingForDeparture(head->id);
+    ASSERT_EQ(TimetableManager::getFleetEstimate(head->id, 0)->sampleCount, 1U);
+
+    VehicleTimetableArgs args{};
+    args.head = head->id;
+    args.action = VehicleTimetableArgs::Action::setDispatchPhase;
+    args.orderIndex = 0;
+    args.value = 5;
+    EXPECT_EQ(runCommand(args, vehicleTimetable, 0), 0U);
+    EXPECT_EQ(TimetableManager::getFleetEstimate(head->id, 0)->sampleCount, 1U);
+    EXPECT_EQ(TimetableManager::getEntry(head->id, 0)->dispatch->phaseMinutes, 0U);
 }
 
 TEST_F(SharedOrderTest, UndoRestoresTimetableWithoutRewindingItsClock)
@@ -363,6 +407,42 @@ TEST_F(SharedOrderTest, UndoPreservesUnrelatedDispatchProgress)
     EXPECT_FALSE(TimetableManager::getEntry(edited->id, 0)->travelMinutes.has_value());
     EXPECT_EQ(*TimetableManager::getVehicleRuntime(waiting->id), runtime);
     EXPECT_EQ(TimetableManager::getEntry(waiting->id, 0)->dispatch->lastClaimedMinute, claimedMinute);
+}
+
+TEST_F(SharedOrderTest, FleetEstimateCountsActiveSharedVehicles)
+{
+    TimetableManager::reset();
+    auto heads = createSharedHeads({ OrderStopAt(StationId(1)).getRaw() });
+    ASSERT_NE(heads[0], nullptr);
+    for (auto* head : heads)
+    {
+        head->tileX = 0;
+        head->status = Status::travelling;
+    }
+    ASSERT_TRUE(TimetableManager::enableForVehicle(heads[0]->id));
+    ASSERT_TRUE(TimetableManager::setTicksPerMinute(1));
+    ASSERT_TRUE(TimetableManager::setEvenlySpacedSlots(heads[0]->id, 0, 6));
+
+    ASSERT_TRUE(TimetableManager::arriveAtOrder(heads[0]->id, 0));
+    EXPECT_FALSE(TimetableManager::isWaitingForDeparture(heads[0]->id));
+    TimetableManager::departFromOrder(heads[0]->id);
+    for (uint32_t i = 0; i < 20; ++i)
+    {
+        TimetableManager::tick();
+    }
+    ASSERT_TRUE(TimetableManager::arriveAtOrder(heads[0]->id, 0));
+    TimetableManager::isWaitingForDeparture(heads[0]->id);
+
+    auto estimate = TimetableManager::getFleetEstimate(heads[0]->id, 0);
+    ASSERT_TRUE(estimate.has_value());
+    EXPECT_EQ(estimate->activeVehicles, 3U);
+    EXPECT_EQ(estimate->requiredVehicles, 2U);
+
+    heads[1]->vehicleFlags |= VehicleFlags::commandStop;
+    heads[2]->status = Status::crashed;
+    estimate = TimetableManager::getFleetEstimate(heads[0]->id, 0);
+    ASSERT_TRUE(estimate.has_value());
+    EXPECT_EQ(estimate->activeVehicles, 1U);
 }
 
 TEST_F(SharedOrderTest, TimetableEntriesFollowOrderEdits)

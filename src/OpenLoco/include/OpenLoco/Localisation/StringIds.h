@@ -2340,6 +2340,12 @@ namespace OpenLoco::StringIds
     constexpr StringId timetable_clock_rate_confirm_button = 2628;
     constexpr StringId tooltip_timetable_disable = 2629;
     constexpr StringId replace_with_shared_orders_and_timetable_prompt = 2630;
+    constexpr StringId timetable_fleet_measuring = 2631;
+    constexpr StringId timetable_fleet_estimate = 2632;
+    constexpr StringId timetable_add_single_slot = 2633;
+    constexpr StringId timetable_set_even_slots = 2634;
+    constexpr StringId timetable_even_slots_prompt = 2635;
+    constexpr StringId timetable_status_departure = 2636;
 
     constexpr StringId temporary_object_load_str_0 = 8192;
     constexpr StringId temporary_object_load_str_1 = 8193;

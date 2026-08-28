@@ -20,6 +20,7 @@ namespace OpenLoco::GameCommands
             clearDispatch,
             setClockRate,
             resetDispatch,
+            setEvenlySpacedSlots = 11,
         };
 
         static constexpr auto command = GameCommand::vehicleTimetable;

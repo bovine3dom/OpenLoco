@@ -43,6 +43,9 @@ namespace OpenLoco::GameCommands
             case Action::addDispatchSlot:
                 return addDispatchSlot(args.head, orderIndex, args.value);
 
+            case Action::setEvenlySpacedSlots:
+                return setEvenlySpacedSlots(args.head, orderIndex, args.value);
+
             case Action::removeDispatchSlot:
                 return removeDispatchSlot(args.head, orderIndex, args.value);
 
@@ -82,23 +85,27 @@ namespace OpenLoco::GameCommands
         }
 
         const bool enabling = args.action == VehicleTimetableArgs::Action::setEnabled && args.value != 0;
-        const bool editingDispatch = args.action >= VehicleTimetableArgs::Action::setDispatchPeriod
-            && args.action <= VehicleTimetableArgs::Action::clearDispatch;
+        const bool editingDispatch = (args.action >= VehicleTimetableArgs::Action::setDispatchPeriod
+                                         && args.action <= VehicleTimetableArgs::Action::clearDispatch)
+            || args.action == VehicleTimetableArgs::Action::setEvenlySpacedSlots;
         if ((enabling || editingDispatch) && head->hasUnbunchingOrder())
         {
             setErrorText(StringIds::timetable_unbunching_incompatible);
             return kFailure;
         }
         const auto before = Vehicles::TimetableManager::captureState();
+        const auto beforeMeasurements = Vehicles::TimetableManager::captureMeasurementState();
         if (!applyAction(args))
         {
             Vehicles::TimetableManager::restoreState(before);
+            Vehicles::TimetableManager::restoreMeasurementState(beforeMeasurements);
             setErrorText(StringIds::timetable_invalid_value);
             return kFailure;
         }
         if (!(flags & Flags::apply))
         {
             Vehicles::TimetableManager::restoreState(before);
+            Vehicles::TimetableManager::restoreMeasurementState(beforeMeasurements);
             return 0;
         }
 

@@ -110,6 +110,41 @@ namespace OpenLoco::Vehicles::TimetableManager
         bool operator==(const SlotClaim&) const = default;
     };
 
+    struct FleetEstimate
+    {
+        uint32_t measuredCycleMinutes{};
+        uint32_t requiredVehicles{};
+        uint32_t activeVehicles{};
+        uint32_t sampleCount{};
+    };
+
+    struct MeasurementState
+    {
+        struct Anchor
+        {
+            EntityId vehicle = EntityId::null;
+            ServiceId service = kInvalidServiceId;
+            uint32_t serviceRevision{};
+            EntryId entry = kInvalidEntryId;
+            uint16_t ticksPerMinute{};
+            uint64_t departureTick{};
+            std::optional<uint64_t> readyTick;
+        };
+
+        struct Sample
+        {
+            EntityId vehicle = EntityId::null;
+            ServiceId service = kInvalidServiceId;
+            uint32_t serviceRevision{};
+            EntryId entry = kInvalidEntryId;
+            uint16_t ticksPerMinute{};
+            uint64_t durationTicks{};
+        };
+
+        std::vector<Anchor> anchors;
+        std::vector<Sample> samples;
+    };
+
     void reset(uint64_t clockTicks = 0);
     void tick();
     uint64_t getClockTicks();
@@ -143,6 +178,7 @@ namespace OpenLoco::Vehicles::TimetableManager
     bool setDispatchPhase(EntityId vehicle, uint8_t orderIndex, uint32_t minutes);
     bool setDispatchMaxDelay(EntityId vehicle, uint8_t orderIndex, uint32_t minutes);
     bool addDispatchSlot(EntityId vehicle, uint8_t orderIndex, uint32_t minute);
+    bool setEvenlySpacedSlots(EntityId vehicle, uint8_t orderIndex, uint32_t count);
     bool removeDispatchSlot(EntityId vehicle, uint8_t orderIndex, uint32_t minute);
     bool clearDispatch(EntityId vehicle, uint8_t orderIndex);
     bool onOrderInserted(EntityId vehicle, uint8_t orderIndex, OrderType type, StationId station = StationId::null);
@@ -155,6 +191,9 @@ namespace OpenLoco::Vehicles::TimetableManager
     bool isWaitingForDeparture(EntityId vehicle);
     bool isWaitingAtTimedStop(EntityId vehicle);
     void departFromOrder(EntityId vehicle);
+    std::optional<FleetEstimate> getFleetEstimate(EntityId vehicle, uint8_t orderIndex);
+    MeasurementState captureMeasurementState();
+    void restoreMeasurementState(const MeasurementState& state);
 
     VehicleRuntime* getVehicleRuntime(EntityId vehicle);
     VehicleRuntime* resetVehicleRuntime(EntityId vehicle);

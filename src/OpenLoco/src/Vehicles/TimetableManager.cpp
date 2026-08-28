@@ -28,6 +28,9 @@ namespace OpenLoco::Vehicles::TimetableManager
         std::array<ServiceId, S5::Limits::kMaxEntities> _assignments{};
         std::array<std::optional<VehicleRuntime>, S5::Limits::kMaxEntities> _vehicleRuntime{};
 
+        std::vector<MeasurementState::Anchor> _cycleAnchors;
+        std::vector<MeasurementState::Sample> _cycleSamples;
+
         bool isValidVehicleId(const EntityId id)
         {
             return id != EntityId::null && enumValue(id) < S5::Limits::kMaxEntities;
@@ -199,6 +202,8 @@ namespace OpenLoco::Vehicles::TimetableManager
                 return false;
             }
             ++service->revision;
+            std::erase_if(_cycleAnchors, [id = service->id](const auto& item) { return item.service == id; });
+            std::erase_if(_cycleSamples, [id = service->id](const auto& item) { return item.service == id; });
             resetServiceRuntime(service->id);
             return true;
         }
@@ -226,6 +231,103 @@ namespace OpenLoco::Vehicles::TimetableManager
             return value > std::numeric_limits<uint64_t>::max() / _ticksPerMinute
                 ? std::numeric_limits<uint64_t>::max()
                 : value * _ticksPerMinute;
+        }
+
+        bool hasDispatchSlots(const TimetableEntry& entry)
+        {
+            return entry.dispatch.has_value() && !entry.dispatch->slots.empty();
+        }
+
+        void recordDispatchReady(const EntityId vehicle, const Service& service, const TimetableEntry& entry, const uint64_t scheduledReadyTick)
+        {
+            const auto anchor = std::ranges::find_if(_cycleAnchors, [&](const MeasurementState::Anchor& item) {
+                return item.vehicle == vehicle && item.service == service.id && item.entry == entry.id;
+            });
+            if (anchor == _cycleAnchors.end())
+            {
+                return;
+            }
+
+            if (!anchor->readyTick.has_value())
+            {
+                anchor->readyTick = std::max(_clockTicks, scheduledReadyTick);
+            }
+            if (_clockTicks < *anchor->readyTick)
+            {
+                return;
+            }
+
+            const auto completed = *anchor;
+            _cycleAnchors.erase(anchor);
+            if (completed.serviceRevision != service.revision || completed.ticksPerMinute != _ticksPerMinute
+                || *completed.readyTick <= completed.departureTick)
+            {
+                return;
+            }
+
+            std::erase_if(_cycleSamples, [&](const MeasurementState::Sample& item) {
+                return item.service == service.id && item.serviceRevision != service.revision;
+            });
+            const auto sample = std::ranges::find_if(_cycleSamples, [&](const MeasurementState::Sample& item) {
+                return item.vehicle == vehicle && item.service == service.id && item.serviceRevision == service.revision && item.entry == entry.id;
+            });
+            if (sample != _cycleSamples.end())
+            {
+                sample->durationTicks = *completed.readyTick - completed.departureTick;
+            }
+            else
+            {
+                _cycleSamples.push_back({ vehicle, service.id, service.revision, entry.id, _ticksPerMinute, *completed.readyTick - completed.departureTick });
+            }
+        }
+
+        void recordDispatchDeparture(const EntityId vehicle, const Service& service, const TimetableEntry& entry)
+        {
+            std::erase_if(_cycleAnchors, [&](const MeasurementState::Anchor& item) {
+                return item.vehicle == vehicle
+                    && (item.service != service.id || item.serviceRevision != service.revision || item.entry == entry.id);
+            });
+            _cycleAnchors.push_back({ vehicle, service.id, service.revision, entry.id, _ticksPerMinute, _clockTicks, std::nullopt });
+        }
+
+        uint32_t calculateRequiredVehicles(const DispatchPattern& dispatch, const uint64_t cycleMinutes)
+        {
+            if (dispatch.slots.empty())
+            {
+                return 0;
+            }
+
+            const auto fullPeriods = cycleMinutes / dispatch.periodMinutes;
+            const auto remainder = cycleMinutes % dispatch.periodMinutes;
+            uint64_t required = fullPeriods > std::numeric_limits<uint64_t>::max() / dispatch.slots.size()
+                ? std::numeric_limits<uint64_t>::max()
+                : fullPeriods * dispatch.slots.size();
+            if (remainder != 0)
+            {
+                std::vector<uint64_t> occurrences;
+                occurrences.reserve(dispatch.slots.size() * 2);
+                for (const auto slot : dispatch.slots)
+                {
+                    occurrences.push_back((dispatch.phaseMinutes + slot) % dispatch.periodMinutes);
+                }
+                std::ranges::sort(occurrences);
+                const auto slotCount = occurrences.size();
+                for (size_t i = 0; i < slotCount; ++i)
+                {
+                    occurrences.push_back(occurrences[i] + dispatch.periodMinutes);
+                }
+
+                uint64_t additional{};
+                for (auto i = slotCount; i < occurrences.size(); ++i)
+                {
+                    const auto first = std::upper_bound(occurrences.begin(), occurrences.begin() + i + 1, occurrences[i] - remainder);
+                    additional = std::max<uint64_t>(additional, std::distance(first, occurrences.begin() + i + 1));
+                }
+                required = additional > std::numeric_limits<uint64_t>::max() - required
+                    ? std::numeric_limits<uint64_t>::max()
+                    : required + additional;
+            }
+            return static_cast<uint32_t>(std::min<uint64_t>(required, std::numeric_limits<uint32_t>::max()));
         }
 
         void scheduleNextEntry(Service& service, VehicleRuntime& runtime)
@@ -338,6 +440,8 @@ namespace OpenLoco::Vehicles::TimetableManager
         _services.clear();
         _assignments.fill(kInvalidServiceId);
         _vehicleRuntime = {};
+        _cycleAnchors.clear();
+        _cycleSamples.clear();
     }
 
     void tick()
@@ -373,6 +477,8 @@ namespace OpenLoco::Vehicles::TimetableManager
         {
             return true;
         }
+        _cycleAnchors.clear();
+        _cycleSamples.clear();
 
         const auto minute = _clockTicks / _ticksPerMinute;
         const auto remainder = _clockTicks % _ticksPerMinute;
@@ -500,6 +606,8 @@ namespace OpenLoco::Vehicles::TimetableManager
         {
             return false;
         }
+        std::erase_if(_cycleAnchors, [id](const auto& item) { return item.service == id; });
+        std::erase_if(_cycleSamples, [id](const auto& item) { return item.service == id; });
         _services.erase(it);
         for (size_t i = 0; i < _assignments.size(); ++i)
         {
@@ -534,6 +642,11 @@ namespace OpenLoco::Vehicles::TimetableManager
         {
             return false;
         }
+        if (_assignments[enumValue(vehicle)] != service)
+        {
+            std::erase_if(_cycleAnchors, [vehicle](const auto& item) { return item.vehicle == vehicle; });
+            std::erase_if(_cycleSamples, [vehicle](const auto& item) { return item.vehicle == vehicle; });
+        }
         _assignments[enumValue(vehicle)] = service;
         return resetVehicleRuntime(vehicle) != nullptr;
     }
@@ -544,6 +657,8 @@ namespace OpenLoco::Vehicles::TimetableManager
         {
             return;
         }
+        std::erase_if(_cycleAnchors, [vehicle](const auto& item) { return item.vehicle == vehicle; });
+        std::erase_if(_cycleSamples, [vehicle](const auto& item) { return item.vehicle == vehicle; });
         _assignments[enumValue(vehicle)] = kInvalidServiceId;
         _vehicleRuntime[enumValue(vehicle)].reset();
     }
@@ -832,6 +947,43 @@ namespace OpenLoco::Vehicles::TimetableManager
         });
     }
 
+    bool setEvenlySpacedSlots(const EntityId vehicle, const uint8_t orderIndex, const uint32_t count)
+    {
+        const auto* entry = getEntry(vehicle, orderIndex);
+        if (entry == nullptr || entry->orderType != OrderType::StopAt)
+        {
+            return false;
+        }
+        const auto period = entry->dispatch.has_value() ? entry->dispatch->periodMinutes : kDefaultPeriodMinutes;
+        if (count == 0 || count > kMaxSlots || count > period)
+        {
+            return false;
+        }
+
+        std::vector<uint32_t> slots;
+        slots.reserve(count);
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            slots.push_back(static_cast<uint32_t>(static_cast<uint64_t>(i) * period / count));
+        }
+        if (entry->dispatch.has_value() && entry->dispatch->slots == slots)
+        {
+            return true;
+        }
+        return updateService(vehicle, [orderIndex, slots = std::move(slots)](Service& service) mutable {
+            const auto it = std::ranges::find(service.entries, orderIndex, &TimetableEntry::orderIndex);
+            if (it == service.entries.end() || it->orderType != OrderType::StopAt)
+            {
+                return false;
+            }
+            auto dispatch = it->dispatch.value_or(DispatchPattern{});
+            dispatch.slots = std::move(slots);
+            dispatch.lastClaimedMinute.reset();
+            it->dispatch = std::move(dispatch);
+            return true;
+        });
+    }
+
     bool removeDispatchSlot(const EntityId vehicle, const uint8_t orderIndex, const uint32_t minute)
     {
         return updateService(vehicle, [orderIndex, minute](Service& service) {
@@ -1061,6 +1213,10 @@ namespace OpenLoco::Vehicles::TimetableManager
             clearVehicleRuntime(vehicle);
             return false;
         }
+        if (hasDispatchSlots(*entry))
+        {
+            recordDispatchReady(vehicle, *service, *entry, std::max(_clockTicks, runtime->scheduledDepartureTick));
+        }
         if (entry->dispatch.has_value() && !entry->dispatch->slots.empty() && !runtime->assignedSlotMinute.has_value())
         {
             const auto dwellPending = _clockTicks < runtime->scheduledDepartureTick;
@@ -1113,9 +1269,67 @@ namespace OpenLoco::Vehicles::TimetableManager
         {
             return;
         }
+        const auto entry = std::ranges::find(service->entries, runtime->currentEntry, &TimetableEntry::id);
+        if (entry != service->entries.end() && hasDispatchSlots(*entry))
+        {
+            recordDispatchDeparture(vehicle, *service, *entry);
+        }
         runtime->latenessTicks = tickDifference(_clockTicks, runtime->scheduledDepartureTick);
         runtime->waiting = false;
         scheduleNextEntry(*service, *runtime);
+    }
+
+    std::optional<FleetEstimate> getFleetEstimate(const EntityId vehicle, const uint8_t orderIndex)
+    {
+        const auto* service = getServiceForVehicle(vehicle);
+        const auto* entry = getEntry(vehicle, orderIndex);
+        if (service == nullptr || entry == nullptr || !hasDispatchSlots(*entry))
+        {
+            return std::nullopt;
+        }
+
+        FleetEstimate result;
+        for (const auto assigned : getAssignedVehicles(service->id))
+        {
+            const auto* head = getHead(assigned);
+            if (head != nullptr && head->isPlaced()
+                && !head->hasVehicleFlags(VehicleFlags::commandStop | VehicleFlags::manualControl)
+                && head->status != Status::crashed && head->status != Status::stuck)
+            {
+                ++result.activeVehicles;
+            }
+        }
+
+        for (const auto& sample : _cycleSamples)
+        {
+            if (sample.service != service->id || sample.serviceRevision != service->revision || sample.entry != entry->id || sample.ticksPerMinute != _ticksPerMinute
+                || getServiceId(sample.vehicle) != service->id)
+            {
+                continue;
+            }
+            ++result.sampleCount;
+        }
+        if (result.sampleCount == 0)
+        {
+            return result;
+        }
+
+        uint64_t quotientSum{};
+        uint64_t remainderSum{};
+        for (const auto& sample : _cycleSamples)
+        {
+            if (sample.service == service->id && sample.serviceRevision == service->revision && sample.entry == entry->id && sample.ticksPerMinute == _ticksPerMinute
+                && getServiceId(sample.vehicle) == service->id)
+            {
+                quotientSum += sample.durationTicks / result.sampleCount;
+                remainderSum += sample.durationTicks % result.sampleCount;
+            }
+        }
+        const auto averageTicks = quotientSum + remainderSum / result.sampleCount + (remainderSum % result.sampleCount != 0);
+        const auto cycleMinutes = averageTicks / _ticksPerMinute + (averageTicks % _ticksPerMinute != 0);
+        result.measuredCycleMinutes = static_cast<uint32_t>(std::min<uint64_t>(cycleMinutes, std::numeric_limits<uint32_t>::max()));
+        result.requiredVehicles = calculateRequiredVehicles(*entry->dispatch, cycleMinutes);
+        return result;
     }
 
     VehicleRuntime* getVehicleRuntime(const EntityId vehicle)
@@ -1144,6 +1358,7 @@ namespace OpenLoco::Vehicles::TimetableManager
         if (isValidVehicleId(vehicle))
         {
             _vehicleRuntime[enumValue(vehicle)].reset();
+            std::erase_if(_cycleAnchors, [vehicle](const auto& item) { return item.vehicle == vehicle; });
         }
     }
 
@@ -1401,6 +1616,7 @@ namespace OpenLoco::Vehicles::TimetableManager
         {
             return false;
         }
+        const MeasurementState measurements{ _cycleAnchors, _cycleSamples };
         reset(state.clockTicks);
         _ticksPerMinute = state.ticksPerMinute;
         _nextServiceId = state.nextServiceId;
@@ -1414,6 +1630,37 @@ namespace OpenLoco::Vehicles::TimetableManager
         {
             _vehicleRuntime[enumValue(runtime.vehicle)] = runtime;
         }
+        restoreMeasurementState(measurements);
         return true;
+    }
+
+    MeasurementState captureMeasurementState()
+    {
+        return { _cycleAnchors, _cycleSamples };
+    }
+
+    void restoreMeasurementState(const MeasurementState& state)
+    {
+        _cycleAnchors.clear();
+        _cycleSamples.clear();
+        for (const auto& anchor : state.anchors)
+        {
+            const auto* service = getService(anchor.service);
+            if (anchor.ticksPerMinute == _ticksPerMinute && anchor.departureTick <= _clockTicks
+                && getServiceId(anchor.vehicle) == anchor.service && service != nullptr && service->revision == anchor.serviceRevision
+                && std::ranges::any_of(service->entries, [id = anchor.entry](const TimetableEntry& entry) { return entry.id == id; }))
+            {
+                _cycleAnchors.push_back(anchor);
+            }
+        }
+        for (const auto& sample : state.samples)
+        {
+            const auto* service = getService(sample.service);
+            if (sample.ticksPerMinute == _ticksPerMinute && getServiceId(sample.vehicle) == sample.service && service != nullptr && service->revision == sample.serviceRevision
+                && std::ranges::any_of(service->entries, [id = sample.entry](const TimetableEntry& entry) { return entry.id == id; }))
+            {
+                _cycleSamples.push_back(sample);
+            }
+        }
     }
 }

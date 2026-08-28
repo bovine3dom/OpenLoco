@@ -250,6 +250,33 @@ TEST(TimetableManager, DispatchScheduleEditsClearIncompatibleClaims)
     EXPECT_TRUE(TimetableManager::validateState(TimetableManager::captureState()));
 }
 
+TEST(TimetableManager, GeneratesEvenlySpacedSlotsFromZero)
+{
+    TimetableManager::reset();
+    const auto serviceId = TimetableManager::createService();
+    auto* service = TimetableManager::getService(serviceId);
+    ASSERT_NE(service, nullptr);
+
+    TimetableManager::TimetableEntry entry;
+    entry.id = TimetableManager::allocateEntryId();
+    entry.orderIndex = 0;
+    entry.orderType = OrderType::StopAt;
+    entry.dispatch.emplace();
+    entry.dispatch->periodMinutes = 10;
+    entry.dispatch->slots = { 1, 9 };
+    entry.dispatch->lastClaimedMinute = 9;
+    service->entries.push_back(entry);
+    ASSERT_TRUE(TimetableManager::assignVehicle(EntityId(9), serviceId));
+
+    ASSERT_TRUE(TimetableManager::setEvenlySpacedSlots(EntityId(9), 0, 3));
+    EXPECT_EQ(service->entries.front().dispatch->slots, (std::vector<uint32_t>{ 0, 3, 6 }));
+    EXPECT_FALSE(service->entries.front().dispatch->lastClaimedMinute.has_value());
+    const auto state = TimetableManager::captureState();
+    EXPECT_FALSE(TimetableManager::setEvenlySpacedSlots(EntityId(9), 0, 0));
+    EXPECT_FALSE(TimetableManager::setEvenlySpacedSlots(EntityId(9), 0, 11));
+    EXPECT_EQ(TimetableManager::captureState(), state);
+}
+
 TEST(TimetableManager, RejectsDuplicateRuntimeSlotClaims)
 {
     TimetableManager::reset();
@@ -278,4 +305,131 @@ TEST(TimetableManager, RejectsDuplicateRuntimeSlotClaims)
         runtime->waiting = true;
     }
     EXPECT_FALSE(TimetableManager::validateState(TimetableManager::captureState()));
+}
+
+TEST(TimetableManager, EstimatesFleetFromMeasuredCyclesAndClusteredSlots)
+{
+    TimetableManager::reset();
+    ASSERT_TRUE(TimetableManager::setTicksPerMinute(1));
+    const auto serviceId = TimetableManager::createService();
+    auto* service = TimetableManager::getService(serviceId);
+    ASSERT_NE(service, nullptr);
+
+    TimetableManager::TimetableEntry entry;
+    entry.id = TimetableManager::allocateEntryId();
+    entry.orderIndex = 0;
+    entry.orderType = OrderType::StopAt;
+    entry.dispatch.emplace();
+    entry.dispatch->slots = { 0, 1, 2 };
+    service->entries.push_back(entry);
+    ASSERT_TRUE(TimetableManager::assignVehicle(EntityId(9), serviceId));
+
+    auto estimate = TimetableManager::getFleetEstimate(EntityId(9), 0);
+    ASSERT_TRUE(estimate.has_value());
+    EXPECT_EQ(estimate->sampleCount, 0U);
+
+    ASSERT_TRUE(TimetableManager::arriveAtOrder(EntityId(9), 0));
+    EXPECT_FALSE(TimetableManager::isWaitingForDeparture(EntityId(9)));
+    TimetableManager::departFromOrder(EntityId(9));
+    for (uint32_t i = 0; i < 20; ++i)
+    {
+        TimetableManager::tick();
+    }
+    ASSERT_TRUE(TimetableManager::arriveAtOrder(EntityId(9), 0));
+    EXPECT_TRUE(TimetableManager::isWaitingForDeparture(EntityId(9)));
+
+    estimate = TimetableManager::getFleetEstimate(EntityId(9), 0);
+    ASSERT_TRUE(estimate.has_value());
+    EXPECT_EQ(estimate->measuredCycleMinutes, 20U);
+    EXPECT_EQ(estimate->requiredVehicles, 3U);
+    EXPECT_EQ(estimate->sampleCount, 1U);
+    EXPECT_TRUE(TimetableManager::isWaitingForDeparture(EntityId(9)));
+    EXPECT_EQ(TimetableManager::getFleetEstimate(EntityId(9), 0)->sampleCount, 1U);
+    const auto measurements = TimetableManager::captureMeasurementState();
+    ASSERT_TRUE(TimetableManager::setTicksPerMinute(2));
+    EXPECT_EQ(TimetableManager::getFleetEstimate(EntityId(9), 0)->sampleCount, 0U);
+    ASSERT_TRUE(TimetableManager::setTicksPerMinute(1));
+    TimetableManager::restoreMeasurementState(measurements);
+    EXPECT_EQ(TimetableManager::getFleetEstimate(EntityId(9), 0)->sampleCount, 1U);
+    TimetableManager::unassignVehicle(EntityId(9));
+    ASSERT_TRUE(TimetableManager::assignVehicle(EntityId(9), serviceId));
+    EXPECT_EQ(TimetableManager::getFleetEstimate(EntityId(9), 0)->sampleCount, 0U);
+}
+
+TEST(TimetableManager, TimetableEditsAndStateRestoreInvalidateFleetMeasurements)
+{
+    TimetableManager::reset();
+    ASSERT_TRUE(TimetableManager::setTicksPerMinute(1));
+    const auto serviceId = TimetableManager::createService();
+    auto* service = TimetableManager::getService(serviceId);
+    ASSERT_NE(service, nullptr);
+
+    TimetableManager::TimetableEntry entry;
+    entry.id = TimetableManager::allocateEntryId();
+    entry.orderIndex = 0;
+    entry.orderType = OrderType::StopAt;
+    entry.dispatch.emplace();
+    entry.dispatch->slots = { 0, 30 };
+    service->entries.push_back(entry);
+    ASSERT_TRUE(TimetableManager::assignVehicle(EntityId(9), serviceId));
+    ASSERT_TRUE(TimetableManager::arriveAtOrder(EntityId(9), 0));
+    EXPECT_FALSE(TimetableManager::isWaitingForDeparture(EntityId(9)));
+    TimetableManager::departFromOrder(EntityId(9));
+    for (uint32_t i = 0; i < 30; ++i)
+    {
+        TimetableManager::tick();
+    }
+    ASSERT_TRUE(TimetableManager::arriveAtOrder(EntityId(9), 0));
+    TimetableManager::isWaitingForDeparture(EntityId(9));
+    ASSERT_EQ(TimetableManager::getFleetEstimate(EntityId(9), 0)->requiredVehicles, 1U);
+
+    const auto before = TimetableManager::captureState();
+    ASSERT_TRUE(TimetableManager::setDispatchPhase(EntityId(9), 0, 5));
+    EXPECT_EQ(TimetableManager::getFleetEstimate(EntityId(9), 0)->sampleCount, 0U);
+    ASSERT_TRUE(TimetableManager::restoreState(before));
+    EXPECT_EQ(TimetableManager::getFleetEstimate(EntityId(9), 0)->sampleCount, 0U);
+}
+
+TEST(TimetableManager, FleetCycleCompletesAfterDwellButBeforeDispatchWait)
+{
+    TimetableManager::reset();
+    ASSERT_TRUE(TimetableManager::setTicksPerMinute(1));
+    const auto serviceId = TimetableManager::createService();
+    auto* service = TimetableManager::getService(serviceId);
+    ASSERT_NE(service, nullptr);
+
+    TimetableManager::TimetableEntry entry;
+    entry.id = TimetableManager::allocateEntryId();
+    entry.orderIndex = 0;
+    entry.orderType = OrderType::StopAt;
+    entry.dwellMinutes = 10;
+    entry.dispatch.emplace();
+    entry.dispatch->slots = { 0, 30 };
+    service->entries.push_back(entry);
+    ASSERT_TRUE(TimetableManager::assignVehicle(EntityId(9), serviceId));
+    ASSERT_TRUE(TimetableManager::arriveAtOrder(EntityId(9), 0));
+    EXPECT_TRUE(TimetableManager::isWaitingForDeparture(EntityId(9)));
+    for (uint32_t i = 0; i < 30; ++i)
+    {
+        TimetableManager::tick();
+    }
+    EXPECT_FALSE(TimetableManager::isWaitingForDeparture(EntityId(9)));
+    TimetableManager::departFromOrder(EntityId(9));
+
+    for (uint32_t i = 0; i < 5; ++i)
+    {
+        TimetableManager::tick();
+    }
+    ASSERT_TRUE(TimetableManager::arriveAtOrder(EntityId(9), 0));
+    EXPECT_TRUE(TimetableManager::isWaitingForDeparture(EntityId(9)));
+    EXPECT_EQ(TimetableManager::getFleetEstimate(EntityId(9), 0)->sampleCount, 0U);
+    for (uint32_t i = 0; i < 10; ++i)
+    {
+        TimetableManager::tick();
+    }
+    EXPECT_TRUE(TimetableManager::isWaitingForDeparture(EntityId(9)));
+    const auto estimate = TimetableManager::getFleetEstimate(EntityId(9), 0);
+    ASSERT_TRUE(estimate.has_value());
+    EXPECT_EQ(estimate->sampleCount, 1U);
+    EXPECT_EQ(estimate->measuredCycleMinutes, 15U);
 }
