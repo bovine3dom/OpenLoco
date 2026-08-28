@@ -46,7 +46,9 @@ TEST(TimetableManager, PhaseOffsetsSlotsAgainstTheGlobalClock)
 
 TEST(TimetableManager, ClockRateChangesPreserveClockPhaseAndResetRuntime)
 {
-    TimetableManager::reset(95);
+    TimetableManager::reset(2 * TimetableManager::kDefaultTicksPerMinute + TimetableManager::kDefaultTicksPerMinute / 2);
+    EXPECT_EQ(TimetableManager::getTicksPerMinute(), 128);
+    EXPECT_EQ(TimetableManager::getClockMinute(), 2);
     ASSERT_TRUE(TimetableManager::setTicksPerMinute(32));
     EXPECT_EQ(TimetableManager::getClockMinute(), 2);
 
@@ -117,6 +119,7 @@ TEST(TimetableManager, RejectsMalformedSchedules)
 TEST(TimetableManager, DwellAndTravelTimesKeepAnAbsoluteSchedule)
 {
     TimetableManager::reset(100);
+    constexpr auto rate = TimetableManager::kDefaultTicksPerMinute;
     const auto serviceId = TimetableManager::createService();
     auto* service = TimetableManager::getService(serviceId);
     ASSERT_NE(service, nullptr);
@@ -139,11 +142,11 @@ TEST(TimetableManager, DwellAndTravelTimesKeepAnAbsoluteSchedule)
     auto* runtime = TimetableManager::getVehicleRuntime(EntityId(9));
     ASSERT_NE(runtime, nullptr);
     EXPECT_EQ(runtime->scheduledArrivalTick, 100U);
-    EXPECT_EQ(runtime->scheduledDepartureTick, 420U);
+    EXPECT_EQ(runtime->scheduledDepartureTick, 100U + 10U * rate);
     EXPECT_TRUE(TimetableManager::isWaitingForDeparture(EntityId(9)));
     EXPECT_TRUE(TimetableManager::isWaitingAtTimedStop(EntityId(9)));
 
-    for (size_t i = 0; i < 320; ++i)
+    for (size_t i = 0; i < 10U * rate; ++i)
     {
         TimetableManager::tick();
     }
@@ -151,15 +154,15 @@ TEST(TimetableManager, DwellAndTravelTimesKeepAnAbsoluteSchedule)
     EXPECT_FALSE(TimetableManager::isWaitingAtTimedStop(EntityId(9)));
     TimetableManager::departFromOrder(EntityId(9));
     EXPECT_EQ(runtime->currentEntry, second.id);
-    EXPECT_EQ(runtime->scheduledArrivalTick, 1060U);
+    EXPECT_EQ(runtime->scheduledArrivalTick, 100U + 30U * rate);
 
-    for (size_t i = 0; i < 645; ++i)
+    for (size_t i = 0; i < 20U * rate + 5; ++i)
     {
         TimetableManager::tick();
     }
     ASSERT_TRUE(TimetableManager::arriveAtOrder(EntityId(9), 1));
     EXPECT_EQ(runtime->latenessTicks, 5);
-    EXPECT_EQ(runtime->scheduledDepartureTick, 1220U);
+    EXPECT_EQ(runtime->scheduledDepartureTick, 100U + 35U * rate);
 }
 
 TEST(TimetableManager, DispatchClaimsLateSlotsOnceAcrossSharedVehicles)

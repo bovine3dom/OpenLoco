@@ -3423,9 +3423,14 @@ namespace OpenLoco::Ui::Windows::Vehicle
         static std::map<EntityId, Vehicles::TimetableManager::EntryId> _timetableSelections;
         static std::map<EntityId, std::array<std::string, 6>> _timetableDisplayTimes;
 
-        static std::string formatTimetableTime(const uint64_t minutes)
+        static std::string formatTimetableDuration(const uint64_t minutes)
         {
             return fmt::format("{:02}:{:02}", minutes / 60, minutes % 60);
+        }
+
+        static std::string formatTimetableClockTime(const uint64_t minutes)
+        {
+            return formatTimetableDuration(minutes % (24 * 60));
         }
 
         static void resetSharedOrderDropdown(const EntityId target)
@@ -3678,7 +3683,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
                 }
                 else
                 {
-                    formattedValue = formatTimetableTime(*value);
+                    formattedValue = formatTimetableDuration(*value);
                     args.push(formattedValue.c_str());
                 }
             }
@@ -3735,7 +3740,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
             _timetableDropdownSlotLabels.reserve(_timetableDropdownSlots.size());
             for (const auto slot : _timetableDropdownSlots)
             {
-                _timetableDropdownSlotLabels.push_back(formatTimetableTime(slot));
+                _timetableDropdownSlotLabels.push_back(formatTimetableDuration(slot));
             }
             _timetableSlotPageStart = 0;
             const auto serviceId = Vehicles::TimetableManager::getServiceId(head->id);
@@ -5340,7 +5345,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
                 args.push(label);
                 if (value.has_value())
                 {
-                    displayTimes[displayIndex] = formatTimetableTime(*value);
+                    displayTimes[displayIndex] = formatTimetableDuration(*value);
                     args.push(displayTimes[displayIndex].c_str());
                 }
             };
@@ -5364,7 +5369,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
             if (timetableEnabled)
             {
                 auto timetableToggleArgs = FormatArguments(timetableToggle.textArgs);
-                displayTimes[5] = formatTimetableTime(Vehicles::TimetableManager::getClockMinute());
+                displayTimes[5] = formatTimetableClockTime(Vehicles::TimetableManager::getClockMinute());
                 timetableToggleArgs.push(displayTimes[5].c_str());
             }
             self.widgets[widx::timetableSlots].text = StringIds::timetable_slots_count;
@@ -5429,7 +5434,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
             if (Vehicles::TimetableManager::getServiceId(EntityId(self.number)) != Vehicles::TimetableManager::kInvalidServiceId)
             {
                 const auto clockMinute = Vehicles::TimetableManager::getClockMinute();
-                const auto clockTime = formatTimetableTime(clockMinute);
+                const auto clockTime = formatTimetableClockTime(clockMinute);
                 std::string secondaryTime;
                 auto statusString = StringIds::timetable_status_not_started;
                 FormatArguments statusArgs{};
@@ -5456,14 +5461,14 @@ namespace OpenLoco::Ui::Windows::Vehicle
                             ? static_cast<uint64_t>(-(lateness + 1)) + 1
                             : static_cast<uint64_t>(lateness);
                         const auto roundedMinutes = absoluteLateness / rate + (absoluteLateness % rate != 0);
-                        secondaryTime = formatTimetableTime(roundedMinutes);
+                        secondaryTime = formatTimetableDuration(roundedMinutes);
                         statusString = lateness < 0 ? StringIds::timetable_status_early : StringIds::timetable_status_late;
                         statusArgs.push(secondaryTime.c_str());
                     }
                     if (runtime->atTimedStop && runtime->assignedSlotMinute.has_value())
                     {
                         const auto departureMinute = runtime->scheduledDepartureTick / rate + (runtime->scheduledDepartureTick % rate != 0);
-                        secondaryTime = formatTimetableTime(departureMinute);
+                        secondaryTime = formatTimetableClockTime(departureMinute);
                         statusString = StringIds::timetable_status_departure;
                         statusArgs = {};
                         statusArgs.push(clockTime.c_str());
@@ -5473,14 +5478,32 @@ namespace OpenLoco::Ui::Windows::Vehicle
                 tr.drawStringLeftClipped({ 3, static_cast<int16_t>(self.height - 28) }, self.widgets[widx::routeList].width(), Colour::black, statusString, statusArgs);
 
                 const auto* head = Common::getVehicle(self);
-                const auto estimate = head != nullptr && self.orderTableIndex >= 0 && self.orderTableIndex <= std::numeric_limits<uint8_t>::max()
-                    ? Vehicles::TimetableManager::getFleetEstimate(head->id, static_cast<uint8_t>(self.orderTableIndex))
-                    : std::nullopt;
+                std::optional<Vehicles::TimetableManager::FleetEstimate> estimate;
+                if (head != nullptr)
+                {
+                    if (self.orderTableIndex >= 0 && self.orderTableIndex <= std::numeric_limits<uint8_t>::max())
+                    {
+                        estimate = Vehicles::TimetableManager::getFleetEstimate(head->id, static_cast<uint8_t>(self.orderTableIndex));
+                    }
+                    if (!estimate.has_value())
+                    {
+                        const auto* service = Vehicles::TimetableManager::getServiceForVehicle(head->id);
+                        if (service != nullptr)
+                        {
+                            const auto entry = std::ranges::find_if(service->entries, [](const auto& item) { return item.dispatch.has_value() && !item.dispatch->slots.empty(); });
+                            if (entry != service->entries.end())
+                            {
+                                estimate = Vehicles::TimetableManager::getFleetEstimate(head->id, entry->orderIndex);
+                            }
+                        }
+                    }
+                }
+                auto estimateString = StringIds::timetable_fleet_no_slots;
+                FormatArguments estimateArgs{};
+                std::string cycleTime;
                 if (estimate.has_value())
                 {
-                    auto estimateString = StringIds::timetable_fleet_measuring;
-                    FormatArguments estimateArgs{};
-                    std::string cycleTime;
+                    estimateString = StringIds::timetable_fleet_measuring;
                     if (estimate->sampleCount == 0)
                     {
                         estimateArgs.push<int32_t>(estimate->activeVehicles);
@@ -5488,13 +5511,13 @@ namespace OpenLoco::Ui::Windows::Vehicle
                     else
                     {
                         estimateString = StringIds::timetable_fleet_estimate;
-                        cycleTime = formatTimetableTime(estimate->measuredCycleMinutes);
-                        estimateArgs.push(cycleTime.c_str());
+                        cycleTime = formatTimetableDuration(estimate->measuredCycleMinutes);
                         estimateArgs.push<int32_t>(std::min<uint32_t>(estimate->requiredVehicles, std::numeric_limits<int32_t>::max()));
                         estimateArgs.push<int32_t>(estimate->activeVehicles);
+                        estimateArgs.push(cycleTime.c_str());
                     }
-                    tr.drawStringLeftClipped({ 3, static_cast<int16_t>(self.height - 41) }, self.width - 6, Colour::black, estimateString, estimateArgs);
                 }
+                tr.drawStringLeftClipped({ 3, static_cast<int16_t>(self.height - 41) }, self.width - 6, Colour::black, estimateString, estimateArgs);
             }
 
             if (ToolManager::isToolActive(WindowType::vehicle, self.number))

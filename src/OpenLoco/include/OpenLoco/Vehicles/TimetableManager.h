@@ -23,7 +23,7 @@ namespace OpenLoco::Vehicles::TimetableManager
 
     constexpr ServiceId kInvalidServiceId = 0;
     constexpr EntryId kInvalidEntryId = 0;
-    constexpr uint16_t kDefaultTicksPerMinute = 32;
+    constexpr uint16_t kDefaultTicksPerMinute = 128;
     constexpr uint16_t kMinTicksPerMinute = 1;
     constexpr uint16_t kMaxTicksPerMinute = 1024;
     constexpr uint32_t kDefaultPeriodMinutes = 60;

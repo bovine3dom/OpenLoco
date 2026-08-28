@@ -2346,6 +2346,7 @@ namespace OpenLoco::StringIds
     constexpr StringId timetable_set_even_slots = 2634;
     constexpr StringId timetable_even_slots_prompt = 2635;
     constexpr StringId timetable_status_departure = 2636;
+    constexpr StringId timetable_fleet_no_slots = 2637;
 
     constexpr StringId temporary_object_load_str_0 = 8192;
     constexpr StringId temporary_object_load_str_1 = 8193;
