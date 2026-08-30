@@ -1,5 +1,7 @@
 #include "GameCommands/Buildings/CreateBuilding.h"
 #include "Economy/Economy.h"
+#include "GameCommands/Buildings/RemoveBuilding.h"
+#include "GameCommands/Road/RemoveRoad.h"
 #include "Localisation/StringIds.h"
 #include "Map/AnimationManager.h"
 #include "Map/BuildingElement.h"
@@ -20,15 +22,44 @@
 #include "ViewportManager.h"
 #include "World/Industry.h"
 #include "World/Station.h"
+#include "World/TownGrowth.h"
 #include "World/TownManager.h"
+#include "World/TownRoadPruning.h"
 
 namespace OpenLoco::GameCommands
 {
+    static bool executeRoadPruningPlan(const TownRoadPruning::Plan& plan, const uint8_t flags)
+    {
+        for (const auto& building : plan.buildings)
+        {
+            BuildingRemovalArgs removalArgs{};
+            removalArgs.pos = building;
+            if (doCommand(removalArgs, flags) == kFailure)
+            {
+                return false;
+            }
+        }
+        for (const auto& road : plan.roads)
+        {
+            if (doCommand(TownRoadPruning::makeRemovalArgs(road), flags) == kFailure)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
     // 0x0042D133
     static uint32_t createBuilding(const BuildingPlacementArgs& args, uint8_t flags)
     {
         GameCommands::setExpenditureType(ExpenditureType::Construction);
         GameCommands::setPosition(args.pos + World::Pos3{ 16, 16, 0 });
+
+        if (args.allowTownRoadPruning
+            && (GameCommands::getUpdatingCompanyId() != CompanyId::neutral || (flags & (Flags::ghost | Flags::aiAllocated | Flags::preventBuildingClearing))))
+        {
+            return kFailure;
+        }
 
         // 0x00525D2C
         currency32_t totalCost = 0;
@@ -74,6 +105,25 @@ namespace OpenLoco::GameCommands
 
         const auto buildingFootprint = getBuildingTileOffsets(buildingObj->hasFlags(BuildingObjectFlags::largeTile));
 
+        std::optional<TownRoadPruning::Plan> roadPruningPlan;
+        if (args.allowTownRoadPruning)
+        {
+            const auto townId = TownManager::getClosestTown(args.pos);
+            if (!townId.has_value())
+            {
+                return kFailure;
+            }
+            roadPruningPlan = TownRoadPruning::plan(*townId, args.pos, clearHeight, buildingObj->hasFlags(BuildingObjectFlags::largeTile));
+            if (!roadPruningPlan.has_value())
+            {
+                return kFailure;
+            }
+            if (!executeRoadPruningPlan(*roadPruningPlan, Flags::noPayment | Flags::noErrorWindow))
+            {
+                return kFailure;
+            }
+        }
+
         for (auto& offset : buildingFootprint)
         {
             const auto tilePos = World::toTileSpace(World::Pos2(args.pos) + offset.pos);
@@ -102,7 +152,7 @@ namespace OpenLoco::GameCommands
                 const auto clearZ = (args.pos.z + clearHeight) / World::kSmallZStep;
 
                 World::QuarterTile qt(0xF, 0xF);
-                auto clearFunc = [tilePos, &removedBuildings, flags, &totalCost](World::TileElementEntry& entry) {
+                auto clearFunc = [tilePos, &removedBuildings, flags, &totalCost, &roadPruningPlan](World::TileElementEntry& entry) {
                     switch (entry.type())
                     {
                         case World::ElementType::tree:
@@ -117,6 +167,15 @@ namespace OpenLoco::GameCommands
                                 return World::TileClearance::ClearFuncResult::collision;
                             }
                             return World::TileClearance::clearBuildingCollision(entry, World::toWorldSpace(tilePos), removedBuildings, flags, totalCost);
+                        case World::ElementType::road:
+                        {
+                            const auto* road = entry.as<World::RoadElement>();
+                            if (roadPruningPlan.has_value() && road != nullptr && TownRoadPruning::contains(*roadPruningPlan, World::toWorldSpace(tilePos), *road))
+                            {
+                                return World::TileClearance::ClearFuncResult::noCollision;
+                            }
+                            return World::TileClearance::ClearFuncResult::collision;
+                        }
                         default:
                             return World::TileClearance::ClearFuncResult::collision;
                     }
@@ -253,6 +312,15 @@ namespace OpenLoco::GameCommands
                 Ui::ViewportManager::invalidate(World::toWorldSpace(tilePos), elBuilding.baseHeight(), elBuilding.clearHeight());
                 Scenario::getOptions().madeAnyChanges = 1;
             }
+        }
+
+        if ((flags & Flags::apply) && roadPruningPlan.has_value())
+        {
+            if (!executeRoadPruningPlan(*roadPruningPlan, Flags::apply | Flags::noPayment | Flags::noErrorWindow))
+            {
+                return kFailure;
+            }
+            TownGrowth::recordRoadPruning(roadPruningPlan->roads.size(), roadPruningPlan->buildings.size());
         }
 
         if ((flags & Flags::apply) && !(flags & Flags::ghost) && !buildingObj->hasFlags(BuildingObjectFlags::miscBuilding))

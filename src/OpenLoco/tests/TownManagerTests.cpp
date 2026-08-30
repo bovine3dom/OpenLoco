@@ -1,10 +1,14 @@
 #include "CargoDist/CargoDist.h"
 #include "Config.h"
+#include "GameCommands/Buildings/CreateBuilding.h"
 #include "GameState.h"
 #include "Localisation/StringIds.h"
+#include "Map/RoadElement.h"
 #include "Map/TileManager.h"
-#include "World/TownManager.h"
+#include "Map/Track/TrackData.h"
 #include "World/TownGrowth.h"
+#include "World/TownManager.h"
+#include "World/TownRoadPruning.h"
 #include <algorithm>
 #include <gtest/gtest.h>
 #include <limits>
@@ -209,6 +213,115 @@ TEST_F(TownManagerTest, RoadTraversalVisitsEachPositionAndDirectionOnce)
     auto bridgeVariant = visited;
     bridgeVariant[0].isBridge = true;
     EXPECT_TRUE(TownGrowth::wasRoadStateVisited(bridgeVariant, pos, 3));
+}
+
+TEST(TownRoadPruning, BuildingCommandRoundTripsPruningFlag)
+{
+    GameCommands::BuildingPlacementArgs args{};
+    args.rotation = 3;
+    args.allowTownRoadPruning = true;
+    args.buildImmediately = true;
+
+    const auto regs = static_cast<GameCommands::registers>(args);
+    const GameCommands::BuildingPlacementArgs decoded(regs);
+
+    EXPECT_EQ(static_cast<uint8_t>(regs.bh), 0xC3);
+    EXPECT_EQ(decoded.rotation, args.rotation);
+    EXPECT_TRUE(decoded.allowTownRoadPruning);
+    EXPECT_TRUE(decoded.buildImmediately);
+}
+
+TEST(TownRoadPruning, IdentifiesWholeRoadPieceFromAnySequence)
+{
+    constexpr uint8_t kObjectId = 4;
+    const World::Pos3 roadStart{ 320, 640, 80 };
+    for (uint8_t roadId = 0; roadId < World::TrackData::kRoadPieceCount; ++roadId)
+    {
+        for (uint8_t rotation = 0; rotation < 4; ++rotation)
+        {
+            for (const auto& piece : World::TrackData::getRoadPiece(roadId))
+            {
+                const auto piecePos = roadStart + World::Pos3{ Math::Vector::rotate(World::Pos2{ piece.x, piece.y }, rotation), piece.z };
+                World::RoadElement road(piecePos.z / World::kSmallZStep, piecePos.z / World::kSmallZStep + 1);
+                road.setRoadId(roadId);
+                road.setRotation(rotation);
+                road.setSequenceIndex(piece.index);
+                road.setRoadObjectId(kObjectId);
+
+                const auto id = TownRoadPruning::getRoadPieceId(piecePos, road);
+                ASSERT_TRUE(id.has_value());
+                EXPECT_EQ(id->pos, roadStart);
+                EXPECT_EQ(id->roadId, roadId);
+                EXPECT_EQ(id->rotation, rotation);
+                EXPECT_EQ(id->objectId, kObjectId);
+            }
+        }
+    }
+
+    constexpr uint8_t kRoadId = 3;
+    constexpr uint8_t kRotation = 1;
+    const TownRoadPruning::RoadPieceId id{ roadStart, kRoadId, kRotation, kObjectId };
+    const auto removal = TownRoadPruning::makeRemovalArgs(id);
+    EXPECT_EQ(removal.pos, roadStart);
+    EXPECT_EQ(removal.roadId, kRoadId);
+    EXPECT_EQ(removal.rotation, kRotation);
+    EXPECT_EQ(removal.sequenceIndex, 0);
+    EXPECT_EQ(removal.objectId, kObjectId);
+}
+
+TEST(TownRoadPruning, MatchesForwardAndReverseWaypointGeometry)
+{
+    for (uint8_t roadId = 0; roadId < World::TrackData::kRoadPieceCount; ++roadId)
+    {
+        for (uint8_t rotation = 0; rotation < 4; ++rotation)
+        {
+            const TownRoadPruning::RoadPieceId road{ { 320, 640, 80 }, roadId, rotation, 4 };
+            const auto tad = static_cast<uint16_t>((road.roadId << 3) | road.rotation);
+            EXPECT_TRUE(TownRoadPruning::matchesWaypoint(road, road.pos, tad));
+
+            const auto& roadSize = World::TrackData::getUnkRoad(tad);
+            auto reversePos = road.pos + roadSize.pos;
+            if (roadSize.rotationEnd < 12)
+            {
+                reversePos -= World::Pos3{ World::kRotationOffset[roadSize.rotationEnd], 0 };
+            }
+            EXPECT_TRUE(TownRoadPruning::matchesWaypoint(road, reversePos, tad | (1U << 2)));
+        }
+    }
+
+    const TownRoadPruning::RoadPieceId road{ { 320, 640, 80 }, 3, 1, 4 };
+    const auto tad = static_cast<uint16_t>((road.roadId << 3) | road.rotation);
+    EXPECT_FALSE(TownRoadPruning::matchesWaypoint(road, road.pos + World::Pos3{ World::kTileSize, 0, 0 }, tad));
+}
+
+TEST(TownRoadPruning, RejectsMalformedRoadIdentity)
+{
+    World::RoadElement road(20, 21);
+    road.setRoadId(15);
+    EXPECT_FALSE(TownRoadPruning::getRoadPieceId({ 320, 640 }, road).has_value());
+
+    road.setRoadId(0);
+    road.setSequenceIndex(3);
+    EXPECT_FALSE(TownRoadPruning::getRoadPieceId({ 320, 640 }, road).has_value());
+}
+
+TEST(TownRoadPruning, PruningFlagRequiresNeutralCompany)
+{
+    const auto previousCompany = GameCommands::getUpdatingCompanyId();
+    GameCommands::setUpdatingCompanyId(CompanyId{ 0 });
+
+    GameCommands::BuildingPlacementArgs args{};
+    args.allowTownRoadPruning = true;
+    auto regs = static_cast<GameCommands::registers>(args);
+    GameCommands::createBuilding(regs, 0);
+
+    EXPECT_EQ(regs.ebx, GameCommands::kFailure);
+
+    GameCommands::setUpdatingCompanyId(CompanyId::neutral);
+    regs = static_cast<GameCommands::registers>(args);
+    GameCommands::createBuilding(regs, GameCommands::Flags::preventBuildingClearing);
+    EXPECT_EQ(regs.ebx, GameCommands::kFailure);
+    GameCommands::setUpdatingCompanyId(previousCompany);
 }
 
 TEST(TownGrowthDiagnostics, ClassifiesLastUpdateOutcome)

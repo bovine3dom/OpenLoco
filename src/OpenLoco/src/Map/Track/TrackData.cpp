@@ -305,7 +305,7 @@ namespace OpenLoco::World::TrackData
     };
 
     // 0x004F6D1C, 0x004F6F1C
-    const std::array<std::span<const PreviewTrack>, 10> roadPieces = { {
+    const std::array<std::span<const PreviewTrack>, kRoadPieceCount> roadPieces = { {
         roadPiece0,
         roadPiece1,
         roadPiece2,

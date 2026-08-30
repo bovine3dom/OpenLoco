@@ -410,6 +410,7 @@ set(OLOCO_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/World/Station.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/World/StationManager.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/World/Town.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/World/TownRoadPruning.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/World/TownManager.cpp")
 
 set(OLOCO_HEADERS
@@ -791,6 +792,7 @@ set(OLOCO_HEADERS
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/World/Town.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/World/TownGrowth.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/World/TownManager.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/World/TownRoadPruning.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/OpenLoco/ZoomLevel.hpp")
 
 set(public_link_libraries

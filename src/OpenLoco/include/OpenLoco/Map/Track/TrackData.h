@@ -19,6 +19,7 @@ namespace OpenLoco::World::Track
 namespace OpenLoco::World::TrackData
 {
     constexpr size_t kTrackPieceCount = 44;
+    constexpr size_t kRoadPieceCount = 10;
     using ConnectionsByRotation = std::array<uint8_t, 4>;
 
     enum class PreviewTrackFlags : uint8_t

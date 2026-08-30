@@ -140,6 +140,7 @@ namespace OpenLoco::GameCommands
         setVehiclesNeverExpire = 89,
         vehicleTimetable = 90,
     };
+    constexpr uint8_t kGameCommandCount = enumValue(GameCommand::vehicleTimetable) + 1;
 
     constexpr int32_t kDefaultRegValue = 0xCCCCCCCC;
 #pragma pack(push, 1)

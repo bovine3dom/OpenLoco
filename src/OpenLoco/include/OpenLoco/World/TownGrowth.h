@@ -41,6 +41,16 @@ namespace OpenLoco::TownGrowth
         UpdateKind kind = UpdateKind::disabled;
     };
 
+    struct CumulativeDiagnostics
+    {
+        uint64_t densityUpgradeAttempts{};
+        uint64_t roadBlockedUpgrades{};
+        uint64_t roadClearableUpgrades{};
+        uint64_t roadPruningAttempts{};
+        uint64_t roadsPruned{};
+        uint64_t buildingsRedeveloped{};
+    };
+
     constexpr Outcome getOutcome(const GrowthDiagnostics& diagnostics)
     {
         if (diagnostics.kind == UpdateKind::disabled)
@@ -75,6 +85,9 @@ namespace OpenLoco::TownGrowth
     }
 
     const GrowthDiagnostics* getLastGrowth(TownId id);
+    const CumulativeDiagnostics& getCumulativeDiagnostics();
+    void recordRoadPruning(size_t roads, size_t buildings);
+    void resetCumulativeDiagnostics();
     void resetLastGrowth();
     void resetLastGrowth(TownId id);
 
