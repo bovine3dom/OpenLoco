@@ -478,6 +478,31 @@ TEST_F(CargoDistServiceSimulationTest, ServiceRecalculationDiscardsSupersededGen
     EXPECT_FALSE(getStateConst().graphDirty);
 }
 
+TEST_F(CargoDistServiceSimulationTest, RemovingVehicleDiscardsPendingServiceSnapshot)
+{
+    const auto vehicle = createVehicle()->id;
+    recalculateNow();
+    ASSERT_TRUE(getStateConst().vehicleServiceLegs.contains(vehicle));
+
+    markServicesDirty();
+    update();
+    ASSERT_TRUE(isServiceRecalculationPending());
+
+    removeVehicleService(vehicle);
+    EntityManager::reset();
+    getGameState().scenarioTicks += 48;
+    update();
+
+    EXPECT_FALSE(getStateConst().vehicleServiceLegs.contains(vehicle));
+    EXPECT_TRUE(isServiceRecalculationPending());
+
+    getGameState().scenarioTicks += 48;
+    update();
+
+    EXPECT_FALSE(isServiceRecalculationPending());
+    EXPECT_FALSE(getStateConst().vehicleServiceLegs.contains(vehicle));
+}
+
 TEST_F(CargoDistServiceSimulationTest, ServiceRecalculationDiscardsStaleGraphSnapshot)
 {
     auto* head = createVehicle();
@@ -1283,6 +1308,50 @@ TEST(CargoDistSimulation, AppliesNativeStationLossAndPacketAgeing)
     EXPECT_EQ(cargo.enrouteAge, 5);
 }
 
+TEST_F(CargoDistServiceSimulationTest, LostCargoReversesTransferRevenueWithoutCashPayment)
+{
+    auto* head = createVehicle();
+    Vehicles::Vehicle train(*head);
+    head->aiThoughtId = 0xFF;
+    train.veh2->curMonthRevenue = 100;
+    getOrCreateStationCargo(station(1), 0).append({ 10, station(2), station(2), 4, {}, {}, station(2), 60 });
+    StationCargoStats cargo{};
+    synchroniseStationCargo(station(1), 0, cargo);
+    cargo.quantity = 0;
+    const auto cashBefore = getGameState().companies[0].cash.asInt64();
+
+    updateStationCargoDaily(station(1), 0, cargo, 10);
+
+    EXPECT_EQ(getStationCargoConst(station(1), 0)->quantity(), 0U);
+    EXPECT_EQ(cargo.quantity, 0);
+    EXPECT_EQ(train.veh2->curMonthRevenue, 40);
+    EXPECT_EQ(getGameState().companies[0].cash.asInt64(), cashBefore);
+    EXPECT_FALSE(consumeVehicleRevenueAdjustment(head->id).has_value());
+}
+
+TEST_F(CargoDistServiceSimulationTest, ExpiredReleasedReturnReversesTransferRevenue)
+{
+    auto* head = createVehicle();
+    Vehicles::Vehicle train(*head);
+    head->aiThoughtId = 0xFF;
+    train.veh2->curMonthRevenue = 100;
+    PendingHolidayReturn pending{};
+    pending.quantity = 10;
+    pending.resortStation = station(1);
+    pending.homeStation = station(2);
+    pending.age = std::numeric_limits<uint8_t>::max() - 1;
+    pending.released = true;
+    pending.transferCredit = 60;
+    getState().pendingHolidayReturns.push_back(pending);
+    const auto cashBefore = getGameState().companies[0].cash.asInt64();
+
+    updateDaily();
+
+    EXPECT_TRUE(getStateConst().pendingHolidayReturns.empty());
+    EXPECT_EQ(train.veh2->curMonthRevenue, 40);
+    EXPECT_EQ(getGameState().companies[0].cash.asInt64(), cashBefore);
+}
+
 TEST(CargoDistSimulation, LoadsOnlyCargoForVehiclesNextStop)
 {
     reset();
@@ -1849,6 +1918,29 @@ TEST_F(CargoDistHolidayReturnTest, DefersReturnUntilSameTownFallbackAcceptsPasse
     const auto* packets = getStationCargoConst(station(12), 0);
     ASSERT_NE(packets, nullptr);
     EXPECT_EQ(packets->packets().front().destination, station(11));
+}
+
+TEST_F(CargoDistHolidayReturnTest, AbandonsReturnWhenHomeRemainsUnavailable)
+{
+    getGameState().currentDay = 354;
+    getGameState().stations[10].cargoStats[0].isAccepted(false);
+    PendingHolidayReturn pending{};
+    pending.releaseDay = 100;
+    pending.quantity = 9;
+    pending.resortStation = station(12);
+    pending.homeStation = station(10);
+    pending.homeTown = kHomeTown;
+    pending.resort = kResort;
+    getState().pendingHolidayReturns.push_back(pending);
+
+    updateDaily();
+    ASSERT_EQ(getStateConst().pendingHolidayReturns.size(), 1);
+
+    getGameState().currentDay = 355;
+    updateDaily();
+
+    EXPECT_TRUE(getStateConst().pendingHolidayReturns.empty());
+    EXPECT_EQ(getStationCargoConst(station(12), 0), nullptr);
 }
 
 TEST_F(CargoDistHolidayReturnTest, CompletesReturnAlreadyAtAHomeTownStation)

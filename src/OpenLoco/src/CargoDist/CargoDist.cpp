@@ -478,11 +478,6 @@ namespace OpenLoco::CargoDist
         const auto before = quantity();
         for (auto it = _packets.begin(); it != _packets.end() && requested != 0;)
         {
-            if (it->tripKind == PassengerTripKind::holidayReturn)
-            {
-                ++it;
-                continue;
-            }
             const auto removed = static_cast<uint16_t>(std::min<uint32_t>(requested, it->quantity));
             it->extract(removed);
             requested -= removed;
@@ -498,6 +493,13 @@ namespace OpenLoco::CargoDist
         const auto removed = before - quantity();
         canonicalise();
         return removed;
+    }
+
+    uint32_t PacketList::removeExpired()
+    {
+        const auto before = quantity();
+        std::erase_if(_packets, [](const auto& packet) { return packet.age == std::numeric_limits<uint8_t>::max(); });
+        return before - quantity();
     }
 
     void PacketList::removeStationReferences(StationId station)

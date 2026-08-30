@@ -81,6 +81,7 @@ namespace OpenLoco::CargoDist
         PacketList takeForJourney(StationId destination, StationId nextHop, ServicePoint departure, uint32_t quantity);
         uint32_t remove(uint32_t quantity);
         uint32_t removeForRating(uint32_t quantity);
+        uint32_t removeExpired();
         void removeStationReferences(StationId station);
         void removeServiceReferences(ServiceId service, bool preserveNextHop = false);
         void ageAtStation(StationId station);

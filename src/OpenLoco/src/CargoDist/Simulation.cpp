@@ -199,6 +199,47 @@ namespace OpenLoco::CargoDist
             return cargoObject != nullptr && cargoObject->cargoCategory == CargoCategory::passengers;
         }
 
+        int64_t totalTransferCredit(const PacketList& packets)
+        {
+            return std::accumulate(packets.packets().begin(), packets.packets().end(), int64_t{}, [](const auto total, const auto& packet) {
+                return total + packet.transferCredit;
+            });
+        }
+
+        void writeOffTransferCredit(const StationId stationId, const int64_t credit)
+        {
+            const auto* station = StationManager::get(stationId);
+            if (credit == 0 || station == nullptr || station->empty())
+            {
+                return;
+            }
+
+            for (auto* head : VehicleManager::VehicleList())
+            {
+                if (head->owner != station->owner || head->has38Flags(Vehicles::Flags38::isGhost))
+                {
+                    continue;
+                }
+                addVehicleRevenueAdjustment(head->id, -credit);
+                if (head->var_58 == 0)
+                {
+                    head->settleCargoIncome();
+                }
+                return;
+            }
+        }
+
+        void writeOffTransferCredit(const PendingHolidayReturn& pending)
+        {
+            auto station = pending.resortStation;
+            const auto* resortStation = StationManager::get(station);
+            if (resortStation == nullptr || resortStation->empty())
+            {
+                station = pending.homeStation;
+            }
+            writeOffTransferCredit(station, pending.transferCredit);
+        }
+
         uint32_t saturatedAdd(uint32_t lhs, uint32_t rhs)
         {
             return rhs > std::numeric_limits<uint32_t>::max() - lhs
@@ -2447,14 +2488,18 @@ namespace OpenLoco::CargoDist
             }
             return;
         }
+        const auto transferCreditBeforeUpdate = totalTransferCredit(*packets);
         packets->ageAtStation(station);
+        bool changed = isPassengerCargo(cargo) && packets->removeExpired() != 0;
         if (nativeCargo.quantity < quantityBeforeUpdate)
         {
-            if (packets->removeForRating(quantityBeforeUpdate - nativeCargo.quantity) != 0)
-            {
-                invalidateJourneyGraph(cargo);
-                markCargoChanged();
-            }
+            changed |= packets->removeForRating(quantityBeforeUpdate - nativeCargo.quantity) != 0;
+        }
+        if (changed)
+        {
+            writeOffTransferCredit(station, transferCreditBeforeUpdate - totalTransferCredit(*packets));
+            invalidateJourneyGraph(cargo);
+            markCargoChanged();
         }
         synchroniseStationCargo(station, cargo, nativeCargo);
     }
@@ -3293,6 +3338,16 @@ namespace OpenLoco::CargoDist
             {
                 break;
             }
+            const auto expired = it->released
+                ? it->age == std::numeric_limits<uint8_t>::max()
+                : getCurrentDay() - it->releaseDay >= std::numeric_limits<uint8_t>::max();
+            if (expired)
+            {
+                writeOffTransferCredit(*it);
+                changed = true;
+                it = state.pendingHolidayReturns.erase(it);
+                continue;
+            }
             const auto resortStation = findResortStation(*it);
             const auto homeStation = findHomeStation(*it);
             if (resortStation == StationId::null || homeStation == StationId::null)
@@ -3698,8 +3753,7 @@ namespace OpenLoco::CargoDist
             rebuildDestinationFlows(cargo);
         }
         clearHolidayRouting();
-        state.graphDirty = true;
-        state.servicesDirty = true;
+        markServicesDirty();
         ++state.routingRevision;
     }
 

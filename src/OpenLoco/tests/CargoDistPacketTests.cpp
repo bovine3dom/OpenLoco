@@ -94,7 +94,7 @@ TEST(CargoDistPackets, CoalescesMatchingHolidayPacketsAcrossOtherCohorts)
     EXPECT_EQ(merged->transferCredit, 12);
 }
 
-TEST(CargoDistPackets, KeepsHolidayCohortsDistinctAndProtectsReturnsFromRatingLoss)
+TEST(CargoDistPackets, RatingLossRemovesTripKindsInPacketOrder)
 {
     CargoPacket outbound{ 5, station(1), station(2), 0, {}, {}, station(2) };
     outbound.tripKind = PassengerTripKind::holidayOutbound;
@@ -109,10 +109,24 @@ TEST(CargoDistPackets, KeepsHolidayCohortsDistinctAndProtectsReturnsFromRatingLo
     packets.append({ 11, station(1), station(2), 0, {}, {}, station(2) });
 
     EXPECT_EQ(packets.size(), 3);
-    EXPECT_EQ(packets.removeForRating(15), 15);
-    ASSERT_EQ(packets.size(), 2);
-    EXPECT_TRUE(std::ranges::all_of(packets.packets(), [](const auto& packet) { return packet.tripKind != PassengerTripKind::ordinary; }));
-    EXPECT_EQ(packets.quantity(), 8);
+    EXPECT_EQ(packets.removeForRating(20), 20);
+    ASSERT_EQ(packets.size(), 1);
+    EXPECT_EQ(packets.packets().front().tripKind, PassengerTripKind::holidayReturn);
+    EXPECT_EQ(packets.quantity(), 3);
+}
+
+TEST(CargoDistPackets, RemovesExpiredJourneys)
+{
+    PacketList packets;
+    packets.append({ 5, station(1), station(2), std::numeric_limits<uint8_t>::max() - 1 });
+    packets.append({ 7, station(1), station(2), std::numeric_limits<uint8_t>::max() });
+    auto returning = CargoPacket{ 9, station(2), station(1), std::numeric_limits<uint8_t>::max() };
+    returning.tripKind = PassengerTripKind::holidayReturn;
+    packets.append(returning);
+
+    EXPECT_EQ(packets.removeExpired(), 16);
+    ASSERT_EQ(packets.size(), 1);
+    EXPECT_EQ(packets.quantity(), 5);
 }
 
 TEST(CargoDistPackets, RepeatedSplitsConserveMaximumTransferCredit)
