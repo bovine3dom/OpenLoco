@@ -45,21 +45,44 @@ namespace OpenLoco
         return { interpolate(vpPosA.x, vpPosB.x), interpolate(vpPosA.y, vpPosB.y) };
     }
 
-    static bool hasRasterMovement(
+    static ZoomLevel getRasterMovementZoom(
         const World::Pos3& posA,
         const World::Pos3& posB,
         const uint32_t fractionA,
         const uint32_t fractionB,
         const uint8_t rotation)
     {
-        return fractionA != fractionB
-            && getInterpolatedRasterPosition(posA, posB, fractionA, rotation, ZoomLevel::sixteenfold)
-            != getInterpolatedRasterPosition(posA, posB, fractionB, rotation, ZoomLevel::sixteenfold);
+        if (fractionA != fractionB)
+        {
+            for (auto level = ZoomLevel::doubled; level >= ZoomLevel::sixteenfold; --level)
+            {
+                const auto zoom = ZoomLevel{ level };
+                if (getInterpolatedRasterPosition(posA, posB, fractionA, rotation, zoom)
+                    != getInterpolatedRasterPosition(posA, posB, fractionB, rotation, zoom))
+                {
+                    return zoom;
+                }
+            }
+        }
+        return ZoomLevel::full;
     }
 
     static bool isVisualVehicle(const Vehicles::VehicleBase* vehicle)
     {
         return vehicle != nullptr && (vehicle->isVehicleBody() || vehicle->isVehicleBogie());
+    }
+
+    static void invalidateRasterMovement(EntityBase* entity, const World::Pos3& posA, const World::Pos3& posB, const uint32_t fractionA, const uint32_t fractionB, const uint8_t rotation)
+    {
+        if (!isVisualVehicle(entity->asBase<Vehicles::VehicleBase>()))
+        {
+            return;
+        }
+        const auto zoom = getRasterMovementZoom(posA, posB, fractionA, fractionB, rotation);
+        if (zoom < ZoomLevel::full)
+        {
+            Ui::ViewportManager::invalidate(entity, zoom, EntityTweener::kRenderPadding);
+        }
     }
 
     template<EntityListType id, typename Pred>
@@ -160,19 +183,12 @@ namespace OpenLoco
             auto& posA = _prePos[i];
             auto& posB = _postPos[i];
 
-            const auto* vehicle = ent->asBase<Vehicles::VehicleBase>();
-            const auto rasterPositionChanged = isVisualVehicle(vehicle)
-                && hasRasterMovement(posA, posB, previousFraction, _tweenFraction, rotation);
-            if (rasterPositionChanged)
-            {
-                Ui::ViewportManager::invalidate(ent, ZoomLevel::doubled, kRenderPadding);
-            }
-
             if (posA == posB)
             {
                 continue;
             }
 
+            const auto* vehicle = ent->asBase<Vehicles::VehicleBase>();
             if (vehicle != nullptr && vehicle->isVehicle2())
             {
                 // The controller remains authoritative; its residual drives followed viewports.
@@ -185,14 +201,11 @@ namespace OpenLoco
 
             if (ent->position == newPos)
             {
+                invalidateRasterMovement(ent, posA, posB, previousFraction, _tweenFraction, rotation);
                 continue;
             }
 
             ent->moveTo(newPos);
-            if (rasterPositionChanged)
-            {
-                Ui::ViewportManager::invalidate(ent, ZoomLevel::doubled, kRenderPadding);
-            }
         }
     }
 
@@ -246,24 +259,13 @@ namespace OpenLoco
             }
 
             auto& newPos = _postPos[i];
-            const auto* vehicle = ent->asBase<Vehicles::VehicleBase>();
-            const auto rasterPositionChanged = isVisualVehicle(vehicle)
-                && hasRasterMovement(_prePos[i], newPos, previousFraction, _tweenFraction, rotation);
-            if (rasterPositionChanged)
-            {
-                Ui::ViewportManager::invalidate(ent, ZoomLevel::doubled, kRenderPadding);
-            }
-
             if (ent->position == newPos)
             {
+                invalidateRasterMovement(ent, _prePos[i], newPos, previousFraction, _tweenFraction, rotation);
                 continue;
             }
 
             ent->moveTo(newPos);
-            if (rasterPositionChanged)
-            {
-                Ui::ViewportManager::invalidate(ent, ZoomLevel::doubled, kRenderPadding);
-            }
         }
     }
 

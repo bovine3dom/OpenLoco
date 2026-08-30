@@ -2,6 +2,7 @@
 #include "DrawSprite.h"
 #include "Graphics/Gfx.h"
 #include "Graphics/PaletteMap.h"
+#include <algorithm>
 
 namespace OpenLoco::Gfx
 {
@@ -80,6 +81,46 @@ namespace OpenLoco::Gfx
         {
             dst = src;
             return true;
+        }
+    }
+
+    template<DrawBlendOp TBlendOp>
+    void blitPixelBlock(
+        const uint8_t src,
+        const uint8_t noiseMask,
+        const PaletteMap::View paletteMap,
+        uint8_t* const dst0,
+        const size_t dstLineWidth,
+        const int32_t left,
+        const int32_t top,
+        const int32_t right,
+        const int32_t bottom)
+    {
+        const auto width = right - left;
+        if constexpr ((TBlendOp & DrawBlendOp::dst) == DrawBlendOp::none)
+        {
+            uint8_t outputPixel = 0;
+            if (!blitPixel<TBlendOp>(src, outputPixel, paletteMap, noiseMask))
+            {
+                return;
+            }
+            auto* firstDst = dst0 + top * dstLineWidth + left;
+            std::fill_n(firstDst, width, outputPixel);
+            for (auto y = top + 1; y < bottom; ++y)
+            {
+                std::copy_n(firstDst, width, dst0 + y * dstLineWidth + left);
+            }
+        }
+        else
+        {
+            for (auto y = top; y < bottom; ++y)
+            {
+                auto* dst = dst0 + y * dstLineWidth + left;
+                for (auto x = 0; x < width; ++x)
+                {
+                    blitPixel<TBlendOp>(src, *dst++, paletteMap, noiseMask);
+                }
+            }
         }
     }
 }

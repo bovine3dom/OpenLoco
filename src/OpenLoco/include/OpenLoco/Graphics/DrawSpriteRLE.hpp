@@ -11,47 +11,50 @@ namespace OpenLoco::Gfx
     inline void drawRLESpriteMagnify(const RenderTarget& rt, ZoomLevel zoom, const DrawSpriteArgs& args)
     {
         const auto* src0 = args.sourceImage.offset;
-        const int32_t width = args.size.width;
-        const int32_t height = args.size.height;
+        const auto scale = zoom.applyInversedTo(1);
+        const auto clipLeft = args.srcPos.x;
+        const auto clipTop = args.srcPos.y;
+        const auto clipRight = clipLeft + args.size.width;
+        const auto clipBottom = clipTop + args.size.height;
+        const auto sourceLeft = zoom.applyTo(clipLeft);
+        const auto sourceTop = zoom.applyTo(clipTop);
+        const auto sourceRight = zoom.applyTo(clipRight - 1) + 1;
+        const auto sourceBottom = zoom.applyTo(clipBottom - 1) + 1;
         const auto dstLineWidth = static_cast<size_t>(rt.width) + rt.pitch;
-        auto* dst = rt.bits + dstLineWidth * args.dstPos.y + args.dstPos.x;
+        auto* const dst0 = rt.bits + dstLineWidth * args.dstPos.y + args.dstPos.x;
         const auto& paletteMap = args.palMap;
 
-        for (int32_t y = 0; y < height; y++)
+        for (auto sourceY = sourceTop; sourceY < sourceBottom; ++sourceY)
         {
-            auto* nextDst = dst + dstLineWidth;
-
-            const auto srcY = zoom.applyTo(args.srcPos.y + y);
-            const uint16_t lineOffset = src0[srcY * 2] | (src0[srcY * 2 + 1] << 8);
+            const auto dstTop = std::max(sourceY * scale, clipTop) - clipTop;
+            const auto dstBottom = std::min((sourceY + 1) * scale, clipBottom) - clipTop;
+            const uint16_t lineOffset = src0[sourceY * 2] | (src0[sourceY * 2 + 1] << 8);
             const auto* nextRun = src0 + lineOffset;
-
             auto isEndOfLine = false;
-            int32_t firstPixelX = 0;
-            int32_t numPixels = 0;
-            const uint8_t* runData = nullptr;
-
-            for (int32_t x = 0; x < width; x++, dst++)
+            while (!isEndOfLine)
             {
-                const auto srcX = zoom.applyTo(args.srcPos.x + x);
-
-                while (srcX >= firstPixelX + numPixels && !isEndOfLine)
+                const auto* runData = nextRun;
+                auto dataSize = *runData++;
+                const auto firstPixelX = *runData++;
+                isEndOfLine = (dataSize & 0x80) != 0;
+                dataSize &= 0x7F;
+                nextRun = runData + dataSize;
+                if (firstPixelX >= sourceRight)
                 {
-                    const auto* src = nextRun;
-                    auto dataSize = *src++;
-                    firstPixelX = *src++;
-                    isEndOfLine = (dataSize & 0x80) != 0;
-                    dataSize &= 0x7F;
-                    numPixels = dataSize;
-                    runData = src;
-                    nextRun = src + dataSize;
+                    break;
                 }
 
-                if (runData != nullptr && srcX >= firstPixelX && srcX < firstPixelX + numPixels)
+                const auto firstVisibleX = std::max<int32_t>(firstPixelX, sourceLeft);
+                const auto lastVisibleX = std::min<int32_t>(firstPixelX + dataSize, sourceRight);
+                for (auto sourceX = firstVisibleX; sourceX < lastVisibleX; ++sourceX)
                 {
-                    blitPixel<TBlendOp>(runData[srcX - firstPixelX], *dst, paletteMap, 0xFF);
+                    const auto dstLeft = std::max(sourceX * scale, clipLeft) - clipLeft;
+                    const auto dstRight = std::min((sourceX + 1) * scale, clipRight) - clipLeft;
+                    const auto sourcePixel = runData[sourceX - firstPixelX];
+
+                    blitPixelBlock<TBlendOp>(sourcePixel, 0xFF, paletteMap, dst0, dstLineWidth, dstLeft, dstTop, dstRight, dstBottom);
                 }
             }
-            dst = nextDst;
         }
     }
 
