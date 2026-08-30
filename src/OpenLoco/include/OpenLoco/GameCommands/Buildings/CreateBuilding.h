@@ -15,6 +15,7 @@ namespace OpenLoco::GameCommands
             , type(regs.dl)
             , variation(regs.dh)
             , colour(static_cast<Colour>((regs.edi >> 16) & 0x1F))
+            , allowTownRoadPruning(regs.bh & 0x40)
             , buildImmediately(regs.bh & 0x80)
         {
         }
@@ -24,6 +25,7 @@ namespace OpenLoco::GameCommands
         uint8_t type;
         uint8_t variation;
         Colour colour;
+        bool allowTownRoadPruning = false;
         bool buildImmediately = false; // No scaffolding required (editor mode)
         explicit operator registers() const
         {
@@ -33,7 +35,7 @@ namespace OpenLoco::GameCommands
             regs.edi = pos.z | (enumValue(colour) << 16);
             regs.dl = type;
             regs.dh = variation;
-            regs.bh = rotation | (buildImmediately ? 0x80 : 0);
+            regs.bh = rotation | (allowTownRoadPruning ? 0x40 : 0) | (buildImmediately ? 0x80 : 0);
             return regs;
         }
     };

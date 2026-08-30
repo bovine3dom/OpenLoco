@@ -65,6 +65,7 @@
 #include "Vehicles/Vehicle.h"
 #include "ViewportManager.h"
 #include "World/CompanyManager.h"
+#include "World/TownGrowth.h"
 #include <OpenLoco/Core/Numerics.hpp>
 #include <OpenLoco/Platform/Crash.h>
 #include <OpenLoco/Platform/Platform.h>
@@ -456,6 +457,11 @@ namespace OpenLoco
 
         Logging::info("File loaded. Starting simulation.");
 
+        auto& config = Config::get();
+        const auto autosaveFrequency = config.autosaveFrequency;
+        config.autosaveFrequency = 0;
+        TownGrowth::resetCumulativeDiagnostics();
+
         for (int32_t i = 0; i < ticks; i++)
         {
             if (SceneManager::isSceneTransitionPending())
@@ -465,8 +471,11 @@ namespace OpenLoco
 
             Scenes::GameScene::tick();
         }
+        config.autosaveFrequency = autosaveFrequency;
         const auto metrics = CargoDist::getRecalculationMetrics();
         Logging::info("CargoDist: {} recalculations, prepare={:.3f} ms, graph={:.3f} ms, solve={:.3f} ms, wait={:.3f} ms, commit={:.3f} ms", metrics.calculations, static_cast<double>(metrics.preparationNanoseconds) / 1'000'000.0, static_cast<double>(metrics.graphNanoseconds) / 1'000'000.0, static_cast<double>(metrics.solveNanoseconds) / 1'000'000.0, static_cast<double>(metrics.waitNanoseconds) / 1'000'000.0, static_cast<double>(metrics.commitNanoseconds) / 1'000'000.0);
+        const auto& growth = TownGrowth::getCumulativeDiagnostics();
+        Logging::info("Town growth: {} density upgrades, {} road-blocked, {} otherwise clear, {} pruning attempts, {} roads pruned, {} buildings redeveloped", growth.densityUpgradeAttempts, growth.roadBlockedUpgrades, growth.roadClearableUpgrades, growth.roadPruningAttempts, growth.roadsPruned, growth.buildingsRedeveloped);
     }
 
     bool runRenderBenchmark(const fs::path& savePath, int32_t warmupFrames, int32_t frames, int32_t width, int32_t height, float scaleFactor, bool fullRedraw)

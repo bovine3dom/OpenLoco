@@ -21,7 +21,7 @@ namespace OpenLoco::World::Track
     }
 
     // 0x004788C8
-    template<bool checkOneWay, bool aiAllocated>
+    template<bool checkOneWay, bool aiAllocated, bool filterByCompanyAndCompatibility = true>
     static RoadConnections getRoadConnectionsImpl(const World::Pos3& nextTrackPos, const uint8_t nextRotation, const CompanyId company, const uint8_t roadObjectId, const uint8_t requiredMods, const uint8_t queryMods)
     {
         RoadConnections result{};
@@ -36,10 +36,14 @@ namespace OpenLoco::World::Track
             {
                 continue;
             }
-
-            if (!(getGameState().roadObjectIdIsUsableByAllCompanies & (1 << elRoad->roadObjectId())))
+            if (elRoad->roadId() >= TrackData::kRoadPieceCount)
             {
-                if (elRoad->owner() != company)
+                continue;
+            }
+
+            if constexpr (filterByCompanyAndCompatibility)
+            {
+                if (!(getGameState().roadObjectIdIsUsableByAllCompanies & (1 << elRoad->roadObjectId())) && elRoad->owner() != company)
                 {
                     continue;
                 }
@@ -51,9 +55,12 @@ namespace OpenLoco::World::Track
                 {
                     continue;
                 }
-                if (!(getGameState().roadObjectIdIsAnyRoadTypeCompatible & (1 << elRoad->roadObjectId())))
+                if constexpr (filterByCompanyAndCompatibility)
                 {
-                    continue;
+                    if (!(getGameState().roadObjectIdIsAnyRoadTypeCompatible & (1 << elRoad->roadObjectId())))
+                    {
+                        continue;
+                    }
                 }
             }
 
@@ -127,6 +134,10 @@ namespace OpenLoco::World::Track
                 continue;
             }
             const auto& roadPiece = TrackData::getRoadPiece(elRoad->roadId());
+            if (elRoad->sequenceIndex() >= roadPiece.size())
+            {
+                continue;
+            }
             if (baseZ != (elRoad->baseZ() - (TrackData::getUnkRoad(trackAndDirection2).pos.z + roadPiece[elRoad->sequenceIndex()].z) / 4))
             {
                 continue;
@@ -176,6 +187,11 @@ namespace OpenLoco::World::Track
     RoadConnections getRoadConnections(const World::Pos3& nextTrackPos, const uint8_t nextRotation, const CompanyId company, const uint8_t roadObjectId, const uint8_t requiredMods, const uint8_t queryMods)
     {
         return getRoadConnectionsImpl<false, false>(nextTrackPos, nextRotation, company, roadObjectId, requiredMods, queryMods);
+    }
+
+    RoadConnections getRoadConnectionsAll(const World::Pos3& nextTrackPos, const uint8_t nextRotation)
+    {
+        return getRoadConnectionsImpl<false, false, false>(nextTrackPos, nextRotation, CompanyId::neutral, 0xFF, 0, 0);
     }
 
     // 0x00478D16

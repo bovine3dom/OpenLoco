@@ -1,4 +1,5 @@
 #include "Network/NetworkServer.h"
+#include "GameCommands/Buildings/CreateBuilding.h"
 #include "GameCommands/GameCommands.h"
 #include "GameState.h"
 #include "Logging.h"
@@ -200,7 +201,17 @@ void NetworkServer::onReceiveSendChatMessagePacket(Client& client, const SendCha
 
 void NetworkServer::onReceiveGameCommandPacket([[maybe_unused]] Client& client, const GameCommandPacket& packet)
 {
-    if (packet.regs.esi == enumValue(GameCommands::GameCommand::setVehiclesNeverExpire))
+    if (packet.regs.esi < 0 || packet.regs.esi >= GameCommands::kGameCommandCount)
+    {
+        return;
+    }
+    const auto command = static_cast<GameCommands::GameCommand>(packet.regs.esi);
+    if (command == GameCommands::GameCommand::setVehiclesNeverExpire)
+    {
+        return;
+    }
+    if (command == GameCommands::GameCommand::createBuilding
+        && GameCommands::BuildingPlacementArgs(packet.regs).allowTownRoadPruning)
     {
         return;
     }

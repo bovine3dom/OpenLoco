@@ -544,6 +544,7 @@ namespace OpenLoco::TownManager
     {
         _runtimeMetrics = {};
         TownGrowth::resetLastGrowth();
+        TownGrowth::resetCumulativeDiagnostics();
         for (auto& town : rawTowns())
         {
             town.name = StringIds::null;

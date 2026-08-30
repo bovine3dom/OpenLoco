@@ -34,6 +34,7 @@
 #include "World/StationManager.h"
 #include "World/TownGrowth.h"
 #include "World/TownManager.h"
+#include "World/TownRoadPruning.h"
 #include <OpenLoco/Core/Numerics.hpp>
 #include <algorithm>
 #include <bit>
@@ -50,6 +51,7 @@ namespace OpenLoco
         std::array<std::optional<TownGrowth::GrowthDiagnostics>, Limits::kMaxTowns> _lastGrowth;
         TownGrowth::GrowthDiagnostics* _activeGrowth{};
         TownId _activeGrowthTown = TownId::null;
+        TownGrowth::CumulativeDiagnostics _cumulativeGrowth{};
 
         TownGrowth::GrowthDiagnostics* getActiveGrowth(const Town& town)
         {
@@ -66,6 +68,22 @@ namespace OpenLoco
             return index < _lastGrowth.size() && town != nullptr && !town->empty() && _lastGrowth[index].has_value()
                 ? &*_lastGrowth[index]
                 : nullptr;
+        }
+
+        const CumulativeDiagnostics& getCumulativeDiagnostics()
+        {
+            return _cumulativeGrowth;
+        }
+
+        void recordRoadPruning(const size_t roads, const size_t buildings)
+        {
+            _cumulativeGrowth.roadsPruned += roads;
+            _cumulativeGrowth.buildingsRedeveloped += buildings;
+        }
+
+        void resetCumulativeDiagnostics()
+        {
+            _cumulativeGrowth = {};
         }
 
         void resetLastGrowth()
@@ -641,10 +659,11 @@ namespace OpenLoco
     // Part of calculating the max height clearance for a new building on this tile
     // A collision in this function means that the building/obstacle will not be removed
     // Optionally `allowBuildingUpdate` ignores buildings that are old and not headquarters (to allow for their removal)
-    static World::TileClearance::ClearFuncResult getBuildingMaxHeightClearFunc(World::TileElementEntry& el, uint8_t baseZ, uint8_t& minZDiff, bool allowBuildingUpdate)
+    static World::TileClearance::ClearFuncResult getBuildingMaxHeightClearFunc(World::TileElementEntry& el, uint8_t baseZ, uint8_t& minZDiff, bool allowBuildingUpdate, bool* roadBlocked)
     {
         auto* elTree = el.as<World::TreeElement>();
         auto* elBuilding = el.as<World::BuildingElement>();
+        auto* elRoad = el.as<World::RoadElement>();
         if (elTree != nullptr)
         {
             return World::TileClearance::ClearFuncResult::noCollision;
@@ -674,6 +693,11 @@ namespace OpenLoco
         else
         {
             const auto diff = el.baseZ() - baseZ;
+            if (elRoad != nullptr && diff <= 0 && roadBlocked != nullptr && TownRoadPruning::isPotentialBlocker(*elRoad))
+            {
+                *roadBlocked = true;
+                return World::TileClearance::ClearFuncResult::noCollision;
+            }
             if (diff <= 0)
             {
                 return World::TileClearance::ClearFuncResult::collision;
@@ -691,7 +715,7 @@ namespace OpenLoco
     // isLargeTile : bh bit 0
     // allowBuildingUpdate : bh bit 2
     // return maxHeightOfBuilding: ebp
-    static int16_t getMaxHeightOfNewBuilding(const World::Pos3 pos, bool isLargeTile, bool allowBuildingUpdate)
+    static int16_t getMaxHeightOfNewBuilding(const World::Pos3 pos, bool isLargeTile, bool allowBuildingUpdate, bool* roadBlocked = nullptr)
     {
         auto offsets = getBuildingTileOffsets(isLargeTile);
         int32_t maxHeightDiff = 0;
@@ -722,8 +746,8 @@ namespace OpenLoco
             const auto elSurface = World::TileManager::get(loc).surface();
             const auto minZ = std::min(elSurface->baseHeight(), pos.z) / World::kSmallZStep;
             World::QuarterTile qt(0xF, 0xF);
-            auto clearFunc = [baseZ = pos.z / World::kSmallZStep, &minClear, allowBuildingUpdate](World::TileElementEntry& el) {
-                return getBuildingMaxHeightClearFunc(el, baseZ, minClear, allowBuildingUpdate);
+            auto clearFunc = [baseZ = pos.z / World::kSmallZStep, &minClear, allowBuildingUpdate, roadBlocked](World::TileElementEntry& el) {
+                return getBuildingMaxHeightClearFunc(el, baseZ, minClear, allowBuildingUpdate, roadBlocked);
             };
             if (!World::TileClearance::applyClearAtStandardHeight(loc, minZ, 255, qt, clearFunc))
             {
@@ -742,7 +766,7 @@ namespace OpenLoco
     // targetHeight : ebp
     // return std::nullopt : Carry flag set
     //        See also BuildingPlacementArgs
-    static std::optional<GameCommands::BuildingPlacementArgs> generateNewBuildingArgs(const TownId targetTown, const World::Pos3 pos, int16_t targetHeight, uint8_t rotation, bool isLargeTile, bool buildImmediately, const uint8_t townDensity, const bool requireTargetDensity)
+    static std::optional<GameCommands::BuildingPlacementArgs> generateNewBuildingArgs(const TownId targetTown, const World::Pos3 pos, int16_t targetHeight, uint8_t rotation, bool isLargeTile, bool buildImmediately, const uint8_t townDensity, const bool requireMinimumDensity)
     {
         const auto townId = TownManager::getClosestTown(pos);
         if (!townId.has_value())
@@ -768,11 +792,18 @@ namespace OpenLoco
         auto potentialBuildings = sub_42CEBF(curYear, townDensity, isLargeTile, amenitiesToBuild, targetHeight);
         if (potentialBuildings.empty())
         {
-            if (townDensity == 0 || requireTargetDensity)
+            if (requireMinimumDensity)
             {
-                return std::nullopt;
+                // Some object sets omit a density tier; use the next denser tier rather than stalling upgrades.
+                for (uint8_t density = townDensity + 1; density < 4 && potentialBuildings.empty(); ++density)
+                {
+                    potentialBuildings = sub_42CEBF(curYear, density, isLargeTile, amenitiesToBuild, targetHeight);
+                }
             }
-            potentialBuildings = sub_42CEBF(curYear, townDensity - 1, isLargeTile, amenitiesToBuild, targetHeight);
+            else if (townDensity != 0)
+            {
+                potentialBuildings = sub_42CEBF(curYear, townDensity - 1, isLargeTile, amenitiesToBuild, targetHeight);
+            }
             if (potentialBuildings.empty())
             {
                 return std::nullopt;
@@ -1543,20 +1574,35 @@ namespace OpenLoco
         {
             allowBuildingUpdate = true;
             densityUpgrade = true;
+            _cumulativeGrowth.densityUpgradeAttempts++;
         }
 
-        const auto maxHeight = getMaxHeightOfNewBuilding(buildingPos, isLarge, allowBuildingUpdate);
+        bool roadBlocked = false;
+        const auto maxHeight = getMaxHeightOfNewBuilding(buildingPos, isLarge, allowBuildingUpdate, densityUpgrade ? &roadBlocked : nullptr);
+        if (roadBlocked)
+        {
+            _cumulativeGrowth.roadBlockedUpgrades++;
+        }
         if (maxHeight == 0)
         {
             return false;
+        }
+        if (roadBlocked)
+        {
+            _cumulativeGrowth.roadClearableUpgrades++;
         }
 
         auto args = generateNewBuildingArgs(town.id(), buildingPos, maxHeight, buildingRot, isLarge, false, desiredDensity, densityUpgrade);
         if (args.has_value())
         {
+            args->allowTownRoadPruning = roadBlocked;
             if ((growFlags & TownGrowFlags::buildImmediately) != TownGrowFlags::none)
             {
                 args->buildImmediately = true;
+            }
+            if (args->allowTownRoadPruning)
+            {
+                _cumulativeGrowth.roadPruningAttempts++;
             }
             return GameCommands::doCommand(args.value(), GameCommands::Flags::apply) != GameCommands::kFailure;
         }
