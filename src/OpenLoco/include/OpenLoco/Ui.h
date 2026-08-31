@@ -114,7 +114,7 @@ namespace OpenLoco::Ui
     void hideCursor();
     void showCursor();
     void tick();
-    void triggerResize();
+    bool triggerResize();
     void render();
     void showMessageBox(const std::string& title, const std::string& message);
     Config::Resolution getResolution();
@@ -126,12 +126,12 @@ namespace OpenLoco::Ui
     Resolution getClosestResolution(int32_t inWidth, int32_t inHeight);
     void handleInput();
     void minimalHandleInput();
-    void setWindowScaling(float newScaleFactor);
+    bool setWindowScaling(float newScaleFactor);
     void adjustWindowScale(float adjust_by);
     bool hasInputFocus();
 
     void windowPositionChanged(int32_t x, int32_t y);
-    void windowSizeChanged(int32_t width, int32_t height);
+    bool windowSizeChanged(int32_t width, int32_t height);
 
 #if !(defined(__APPLE__) && defined(__MACH__))
     void toggleFullscreenDesktop();

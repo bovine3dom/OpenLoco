@@ -319,6 +319,7 @@ namespace OpenLoco
                           .registerOption("--height", 1)
                           .registerOption("--scale-factor", 1)
                           .registerOption("--full-redraw")
+                          .registerOption("--require-gpu-palette")
                           .registerOption("--seed", 1)
                           .registerOption("--focus-town", 1)
                           .registerOption("--layout", 1)
@@ -379,6 +380,7 @@ namespace OpenLoco
                 options.width = parser.getArg<int32_t>("--width");
                 options.height = parser.getArg<int32_t>("--height");
                 options.fullRedraw = parser.hasOption("--full-redraw");
+                options.requireGpuPalette = parser.hasOption("--require-gpu-palette");
                 const auto scaleFactor = parser.getArg("--scale-factor");
                 if (!scaleFactor.empty())
                 {

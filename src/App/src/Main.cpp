@@ -17,8 +17,8 @@
 #include <OpenLoco/Vehicles/SignalFuzzer.h>
 #include <OpenLoco/Version.hpp>
 #include <SDL3/SDL_main.h>
-#include <fmt/chrono.h>
 #include <cmath>
+#include <fmt/chrono.h>
 #include <iostream>
 
 using namespace OpenLoco::Diagnostics;
@@ -59,6 +59,7 @@ namespace OpenLoco
         std::cout << "--height                    Render benchmark framebuffer height (default: 1080)" << std::endl;
         std::cout << "--scale-factor              Render benchmark UI scale (default: 2)" << std::endl;
         std::cout << "--full-redraw               Force a complete world/UI redraw for every benchmark frame" << std::endl;
+        std::cout << "--require-gpu-palette       Require the SDL GPU indexed-palette shader path" << std::endl;
         std::cout << "--seed                      Signal fuzz seed (default: 1)" << std::endl;
         std::cout << "--focus-town                Signal fuzz focus town (default: Beachtown)" << std::endl;
         std::cout << "--layout                    Signal fuzz layout: fixture, flat-merge, flat-fan," << std::endl;
@@ -232,15 +233,15 @@ namespace OpenLoco
         const auto width = options.width.value_or(1920);
         const auto height = options.height.value_or(1080);
         const auto scaleFactor = options.scaleFactor.value_or(2.0F);
-        if (frames <= 0 || warmupFrames < 0 || width <= 0 || height <= 0 || !std::isfinite(scaleFactor) || scaleFactor <= 1.0F || scaleFactor > 4.0F)
+        if (frames <= 0 || warmupFrames < 0 || width <= 0 || height <= 0 || !std::isfinite(scaleFactor) || scaleFactor < 1.0F || scaleFactor > 4.0F)
         {
-            Logging::error("Render benchmark requires positive dimensions and frames, non-negative warmup frames, and a scale factor in (1, 4]");
+            Logging::error("Render benchmark requires positive dimensions and frames, non-negative warmup frames, and a scale factor in [1, 4]");
             return EXIT_FAILURE;
         }
 
         try
         {
-            return runRenderBenchmark(fs::u8path(options.path), warmupFrames, frames, width, height, scaleFactor, options.fullRedraw)
+            return runRenderBenchmark(fs::u8path(options.path), warmupFrames, frames, width, height, scaleFactor, options.fullRedraw, options.requireGpuPalette)
                 ? EXIT_SUCCESS
                 : EXIT_FAILURE;
         }
@@ -326,7 +327,7 @@ namespace OpenLoco
     }
 
     // 0x00406386
-    static void run()
+    static int run()
     {
         auto& cfg = Config::get();
 
@@ -341,6 +342,7 @@ namespace OpenLoco
         {
             update();
         }
+        return Input::hasFatalError() ? EXIT_FAILURE : EXIT_SUCCESS;
     }
 
     static std::optional<int> runCommandLineOnlyCommand(const CommandLineOptions& options)
@@ -411,19 +413,18 @@ namespace OpenLoco
 
         try
         {
-            run();
-            exitCleanly();
+            exitCleanly(run());
         }
         catch (const std::exception& e)
         {
             Logging::error("Exception: {}", e.what());
             Ui::showMessageBox("Exception", e.what());
-            exitCleanly();
+            exitCleanly(EXIT_FAILURE);
         }
         catch (...)
         {
             Ui::showMessageBox("Exception", "Unsure what threw the exception!");
-            exitCleanly();
+            exitCleanly(EXIT_FAILURE);
         }
     }
 

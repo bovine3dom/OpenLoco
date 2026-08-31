@@ -1,5 +1,6 @@
 #include "Scenario/Scenario.h"
 #include <SDL3/SDL_events.h>
+#include <SDL3/SDL_render.h>
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -97,11 +98,11 @@ namespace OpenLoco
         StringManager::formatString(messageBuffer, 255, messageStringId);
         Ui::showMessageBox(titleBuffer, messageBuffer);
 
-        exitCleanly();
+        exitCleanly(EXIT_FAILURE);
     }
 
     // 0x004BE65E
-    [[noreturn]] void exitCleanly()
+    [[noreturn]] void exitCleanly(int32_t exitCode)
     {
         Audio::close();
         Audio::disposeDSound();
@@ -121,7 +122,7 @@ namespace OpenLoco
         Logging::shutdown();
 
         // SDL_Quit();
-        exit(0);
+        exit(exitCode);
     }
 
     // 0x00441400
@@ -478,7 +479,7 @@ namespace OpenLoco
         Logging::info("Town growth: {} density upgrades, {} road-blocked, {} otherwise clear, {} pruning attempts, {} roads pruned, {} buildings redeveloped", growth.densityUpgradeAttempts, growth.roadBlockedUpgrades, growth.roadClearableUpgrades, growth.roadPruningAttempts, growth.roadsPruned, growth.buildingsRedeveloped);
     }
 
-    bool runRenderBenchmark(const fs::path& savePath, int32_t warmupFrames, int32_t frames, int32_t width, int32_t height, float scaleFactor, bool fullRedraw)
+    bool runRenderBenchmark(const fs::path& savePath, int32_t warmupFrames, int32_t frames, int32_t width, int32_t height, float scaleFactor, bool fullRedraw, bool requireGpuPalette)
     {
         auto& config = Config::get();
         struct BenchmarkStateGuard
@@ -520,7 +521,11 @@ namespace OpenLoco
         const auto sceneChanged = SceneManager::applySceneTransition();
 
         auto& drawingEngine = Gfx::getDrawingEngine();
-        drawingEngine.resize(width, height);
+        if (!drawingEngine.resize(width, height))
+        {
+            Logging::error("Unable to create {}x{} render benchmark resources", width, height);
+            return false;
+        }
         Gui::resize();
         Gfx::invalidateScreen();
         const auto outputSize = drawingEngine.getOutputSize();
@@ -529,8 +534,10 @@ namespace OpenLoco
             || !sceneChanged
             || SceneManager::isSceneTransitionPending()
             || SceneManager::getCurrentScene() != SceneManager::SceneId::gameplay
-            || !drawingEngine.shouldUseSeparateWorld()
+            || (scaleFactor > 1.0F && !drawingEngine.shouldUseSeparateWorld())
             || !drawingEngine.setVSync(false)
+            || !drawingEngine.isVSyncDisabled()
+            || (requireGpuPalette && !drawingEngine.isGpuPaletteEnabled())
             || WindowManager::find(WindowType::topToolbar) == nullptr
             || presentationSize.width <= 0
             || presentationSize.height <= 0
@@ -538,16 +545,31 @@ namespace OpenLoco
             || outputSize.height != height)
         {
             Logging::error(
-                "Render benchmark setup failed (gameplay: {}, pending transition: {}, native renderer: {}, requested framebuffer: {}x{}, actual: {}x{})",
+                "Render benchmark setup failed (gameplay: {}, pending transition: {}, native renderer: {}, VSync disabled: {}, GPU palette: {}, required: {}, requested framebuffer: {}x{}, actual: {}x{})",
                 SceneManager::getCurrentScene() == SceneManager::SceneId::gameplay,
                 SceneManager::isSceneTransitionPending(),
                 drawingEngine.shouldUseSeparateWorld(),
+                drawingEngine.isVSyncDisabled(),
+                drawingEngine.isGpuPaletteEnabled(),
+                requireGpuPalette,
                 width,
                 height,
                 outputSize.width,
                 outputSize.height);
             return false;
         }
+
+        drawingEngine.setFrameStatsEnabled(true);
+        struct DrawingEngineStateGuard
+        {
+            Gfx::SoftwareDrawingEngine& engine;
+
+            ~DrawingEngineStateGuard()
+            {
+                engine.setFrameStatsEnabled(false);
+                engine.setPresentationReadbackEnabled(false);
+            }
+        } drawingEngineStateGuard{ drawingEngine };
 
         _numFrameUpdates = 1;
         _time_since_last_tick = Engine::UpdateRateInMs;
@@ -559,6 +581,14 @@ namespace OpenLoco
                 {
                     throw std::runtime_error("Render benchmark window was closed");
                 }
+                if (event.type == SDL_EVENT_RENDER_TARGETS_RESET || event.type == SDL_EVENT_RENDER_DEVICE_RESET)
+                {
+                    throw std::runtime_error("Rendering device was reset during render benchmark");
+                }
+                else if (event.type == SDL_EVENT_RENDER_DEVICE_LOST)
+                {
+                    throw std::runtime_error("Rendering device was lost during render benchmark");
+                }
             }
 
             const auto currentSize = drawingEngine.getPresentationSize();
@@ -569,14 +599,28 @@ namespace OpenLoco
         };
         constexpr std::array<float, 4> kTweenFrames = { 0.0F, 0.25F, 0.5F, 0.75F };
         auto& tweener = EntityTweener::get();
+        struct TweenRestoreGuard
+        {
+            EntityTweener* tweener;
+
+            ~TweenRestoreGuard()
+            {
+                if (tweener != nullptr)
+                {
+                    tweener->restore();
+                }
+            }
+        } tweenRestoreGuard{ &tweener };
         auto prepareFrame = [&](int32_t frame) {
             const auto tweenFrame = static_cast<size_t>(frame) % kTweenFrames.size();
             if (tweenFrame == 0)
             {
+                tweenRestoreGuard.tweener = nullptr;
                 tweener.preTick();
                 Scenes::GameScene::tick();
                 Scenes::GameScene::tickInterface();
                 tweener.postTick();
+                tweenRestoreGuard.tweener = &tweener;
                 if (SceneManager::isSceneTransitionPending())
                 {
                     throw std::runtime_error("Scene transition requested during render benchmark");
@@ -606,6 +650,16 @@ namespace OpenLoco
         std::vector<uint64_t> updateTotals(static_cast<size_t>(frames));
         std::vector<uint64_t> renderTotals(static_cast<size_t>(frames));
         std::vector<uint64_t> presentTotals(static_cast<size_t>(frames));
+        std::vector<uint64_t> dirtyRenderTotals(static_cast<size_t>(frames));
+        std::vector<uint64_t> uiCompositionTotals(static_cast<size_t>(frames));
+        std::vector<uint64_t> paletteConversionTotals(static_cast<size_t>(frames));
+        std::vector<uint64_t> textureUploadTotals(static_cast<size_t>(frames));
+        std::vector<uint64_t> composePresentTotals(static_cast<size_t>(frames));
+        std::vector<uint64_t> screenUploadBytes(static_cast<size_t>(frames));
+        std::vector<uint64_t> worldUploadBytes(static_cast<size_t>(frames));
+        std::vector<uint64_t> uiUploadBytes(static_cast<size_t>(frames));
+        std::vector<uint64_t> paletteChangeBytes(static_cast<size_t>(frames));
+        std::vector<uint64_t> textureUploadCounts(static_cast<size_t>(frames));
         for (int32_t frame = 0; frame < frames; ++frame)
         {
             const auto frameStart = BenchmarkClock::now();
@@ -632,6 +686,18 @@ namespace OpenLoco
             }
             presentTotals[index] = std::chrono::duration_cast<std::chrono::nanoseconds>(BenchmarkClock::now() - presentStart).count();
             frameTotals[index] = std::chrono::duration_cast<std::chrono::nanoseconds>(BenchmarkClock::now() - frameStart).count();
+
+            const auto& stats = drawingEngine.getLastFrameStats();
+            dirtyRenderTotals[index] = stats.dirtyRenderNs;
+            uiCompositionTotals[index] = stats.uiCompositionNs;
+            paletteConversionTotals[index] = stats.paletteConversionNs;
+            textureUploadTotals[index] = stats.textureUploadNs;
+            composePresentTotals[index] = stats.composePresentNs;
+            screenUploadBytes[index] = stats.screenUploadBytes;
+            worldUploadBytes[index] = stats.worldUploadBytes;
+            uiUploadBytes[index] = stats.uiUploadBytes;
+            paletteChangeBytes[index] = stats.paletteChangeBytes;
+            textureUploadCounts[index] = stats.textureUploadCount;
         }
 
         const auto logMetric = [](std::string_view name, std::vector<uint64_t> values) {
@@ -647,6 +713,44 @@ namespace OpenLoco
                 toMilliseconds(percentile(95)),
                 toMilliseconds(percentile(99)),
                 toMilliseconds(values.back()));
+        };
+        const auto logPayload = [](std::string_view name, std::vector<uint64_t> values) {
+            uint64_t total{};
+            for (const auto value : values)
+            {
+                total += value;
+            }
+            std::ranges::sort(values);
+            const auto percentile = [&](size_t value) {
+                return values[(values.size() * value + 99) / 100 - 1];
+            };
+            constexpr auto bytesPerKiB = 1024.0;
+            constexpr auto bytesPerMiB = bytesPerKiB * bytesPerKiB;
+            Logging::info(
+                "  {:<18} total={:>8.2f} MiB  median={:>8.2f} KiB  p95={:>8.2f} KiB  max={:>8.2f} KiB",
+                name,
+                static_cast<double>(total) / bytesPerMiB,
+                static_cast<double>(values[values.size() / 2]) / bytesPerKiB,
+                static_cast<double>(percentile(95)) / bytesPerKiB,
+                static_cast<double>(values.back()) / bytesPerKiB);
+        };
+        const auto logCount = [](std::string_view name, std::vector<uint64_t> values) {
+            uint64_t total{};
+            for (const auto value : values)
+            {
+                total += value;
+            }
+            std::ranges::sort(values);
+            const auto percentile = [&](size_t value) {
+                return values[(values.size() * value + 99) / 100 - 1];
+            };
+            Logging::info(
+                "  {:<18} total={:>8}  median={:>5}  p95={:>5}  max={:>5}",
+                name,
+                total,
+                values[values.size() / 2],
+                percentile(95),
+                values.back());
         };
 
         const auto hashFrame = [&] {
@@ -665,6 +769,8 @@ namespace OpenLoco
         };
         const auto frameHash = hashFrame();
         const auto benchmarkScenarioTicks = getGameState().scenarioTicks;
+        drawingEngine.setPresentationReadbackEnabled(true);
+
         constexpr int32_t kValidationFrames = 32;
         for (int32_t frame = 0; frame < kValidationFrames; ++frame)
         {
@@ -676,6 +782,7 @@ namespace OpenLoco
             {
                 throw std::runtime_error("Renderer presentation failed during incremental validation");
             }
+            const auto incrementalPresentationHash = drawingEngine.getLastPresentationHash();
 
             Gfx::invalidateScreen();
             drawingEngine.render();
@@ -684,6 +791,7 @@ namespace OpenLoco
             {
                 throw std::runtime_error("Renderer presentation failed during full-render validation");
             }
+            const auto fullPresentationHash = drawingEngine.getLastPresentationHash();
             if (incrementalHash != fullRenderHash)
             {
                 Logging::error(
@@ -691,27 +799,107 @@ namespace OpenLoco
                     frame,
                     incrementalHash,
                     fullRenderHash);
-                tweener.restore();
+                return false;
+            }
+            if (incrementalPresentationHash != fullPresentationHash)
+            {
+                Logging::error(
+                    "Validation frame {} incremental presentation hash 0x{:016X} differs from full render hash 0x{:016X}",
+                    frame,
+                    incrementalPresentationHash,
+                    fullPresentationHash);
                 return false;
             }
         }
-        tweener.restore();
+
+        const auto baselinePresentationHash = drawingEngine.getLastPresentationHash();
+        std::array<Gfx::PaletteEntry, 256> originalPalette{};
+        std::ranges::copy(Gfx::getRgbaPalette(), originalPalette.begin());
+        struct PaletteRestoreGuard
+        {
+            const std::array<Gfx::PaletteEntry, 256>& palette;
+            bool armed{};
+
+            ~PaletteRestoreGuard()
+            {
+                if (armed)
+                {
+                    Gfx::setPaletteEntries(palette.data(), 10, 236);
+                }
+            }
+        } paletteRestoreGuard{ originalPalette };
+        auto changedPalette = originalPalette;
+        for (size_t i = 10; i < 246; ++i)
+        {
+            auto& entry = changedPalette[i];
+            entry.r ^= 0xFF;
+            entry.g ^= 0xFF;
+            entry.b ^= 0xFF;
+        }
+        Gfx::setPaletteEntries(changedPalette.data(), 10, 236);
+        paletteRestoreGuard.armed = true;
+        drawingEngine.render();
+        if (!drawingEngine.present())
+        {
+            throw std::runtime_error("Renderer presentation failed during palette validation");
+        }
+        const auto changedPaletteHash = drawingEngine.getLastPresentationHash();
+
+        Gfx::setPaletteEntries(originalPalette.data(), 10, 236);
+        paletteRestoreGuard.armed = false;
+        drawingEngine.render();
+        if (!drawingEngine.present())
+        {
+            throw std::runtime_error("Renderer presentation failed while restoring palette validation");
+        }
+        const auto restoredPaletteHash = drawingEngine.getLastPresentationHash();
+        if (changedPaletteHash == baselinePresentationHash || restoredPaletteHash != baselinePresentationHash)
+        {
+            Logging::error(
+                "Palette-only presentation validation failed (baseline=0x{:016X}, changed=0x{:016X}, restored=0x{:016X})",
+                baselinePresentationHash,
+                changedPaletteHash,
+                restoredPaletteHash);
+            return false;
+        }
 
         Logging::info("--------------------------------");
         Logging::info("- Render benchmark");
         Logging::info("--------------------------------");
         Logging::info("  path:               {}", savePath.u8string());
+        Logging::info("  SDL renderer:       {}", drawingEngine.getRendererName());
+        Logging::info("  rendering mode:     {}", drawingEngine.shouldUseSeparateWorld() ? "separate world/UI" : "combined");
+        Logging::info("  VSync interval:     disabled");
+        const auto& presentationStats = drawingEngine.getLastFrameStats();
+        constexpr auto indexedTextureLabel = "INDEX8 + GPU palette shader";
+        Logging::info("  screen texture:     {}", presentationStats.screenTextureIndexed ? indexedTextureLabel : "ARGB8888 fallback");
+        if (drawingEngine.shouldUseSeparateWorld())
+        {
+            Logging::info("  world texture:      {}", presentationStats.worldTextureIndexed ? indexedTextureLabel : "ARGB8888 fallback");
+        }
         Logging::info("  framebuffer:        {}x{} at {:.2f}x", width, height, scaleFactor);
         Logging::info("  presentation:       {}x{}", presentationSize.width, presentationSize.height);
         Logging::info("  warmup / measured:  {} / {} frames", warmupFrames, frames);
         Logging::info("  redraw mode:        {}", fullRedraw ? "full" : "incremental");
+        Logging::info("  GPU palette needed: {}", requireGpuPalette ? "yes" : "no");
         Logging::info("  scenario ticks:     {}", benchmarkScenarioTicks);
         Logging::info("  framebuffer hash:   0x{:016X}", frameHash);
-        Logging::info("  validation frames:  {} incremental/full matches", kValidationFrames);
+        Logging::info("  validation frames:  {} framebuffer/presentation matches", kValidationFrames);
+        Logging::info("  palette validation: changed and restored presentation output");
         logMetric("end-to-end frame", std::move(frameTotals));
         logMetric("update total", std::move(updateTotals));
         logMetric("render total", std::move(renderTotals));
         logMetric("present total", std::move(presentTotals));
+        logMetric("dirty rendering", std::move(dirtyRenderTotals));
+        logMetric("UI composition", std::move(uiCompositionTotals));
+        logMetric("palette conversion", std::move(paletteConversionTotals));
+        logMetric("texture upload API", std::move(textureUploadTotals));
+        logMetric("compose / present", std::move(composePresentTotals));
+        logPayload("screen uploads", std::move(screenUploadBytes));
+        logPayload("world uploads", std::move(worldUploadBytes));
+        logPayload("UI uploads", std::move(uiUploadBytes));
+        logPayload("palette changes", std::move(paletteChangeBytes));
+        logCount("texture uploads", std::move(textureUploadCounts));
         return true;
     }
 

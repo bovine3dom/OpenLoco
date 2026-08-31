@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -95,5 +96,41 @@ namespace OpenLoco::Gfx
             }
         }
     };
+
+    namespace Detail
+    {
+        template<typename F>
+        bool uploadDirtyRegions(InvalidationGrid& grid, bool fullUpload, int32_t width, int32_t height, F&& upload)
+        {
+            const auto uploadFull = [&] {
+                const auto uploaded = upload(0, 0, width, height);
+                if (uploaded)
+                {
+                    grid.traverseDirtyCells([](int32_t, int32_t, int32_t, int32_t) {});
+                }
+                return uploaded;
+            };
+            if (fullUpload)
+            {
+                return uploadFull();
+            }
+
+            std::vector<std::array<int32_t, 4>> regions;
+            uint64_t dirtyArea{};
+            grid.traverseDirtyCells([&](int32_t left, int32_t top, int32_t right, int32_t bottom) {
+                regions.push_back({ left, top, right, bottom });
+                dirtyArea += static_cast<uint64_t>(right - left) * (bottom - top);
+            });
+
+            constexpr size_t kMaxPartialUploads = 64;
+            const auto fullArea = static_cast<uint64_t>(width) * height;
+            if (regions.size() > kMaxPartialUploads || dirtyArea * 2 >= fullArea)
+            {
+                return upload(0, 0, width, height);
+            }
+
+            return std::all_of(regions.begin(), regions.end(), [&](const auto& rect) { return upload(rect[0], rect[1], rect[2], rect[3]); });
+        }
+    }
 
 } // namespace OpenRCT2

@@ -1,8 +1,10 @@
 #pragma once
 
+#include <OpenLoco/Engine/Ui/Rect.hpp>
+
 namespace OpenLoco::Gfx
 {
     class DrawingContext;
 
-    void drawFPS(DrawingContext& drawingCtx, bool measure = true);
+    Ui::Rect drawFPS(DrawingContext& drawingCtx, bool measure = true);
 }

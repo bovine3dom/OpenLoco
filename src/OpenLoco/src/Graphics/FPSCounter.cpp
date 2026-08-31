@@ -35,7 +35,7 @@ namespace OpenLoco::Gfx
         return _currentFPS;
     }
 
-    void drawFPS(DrawingContext& drawingCtx, bool measure)
+    Ui::Rect drawFPS(DrawingContext& drawingCtx, bool measure)
     {
         auto tr = Gfx::TextRenderer(drawingCtx);
 
@@ -59,5 +59,6 @@ namespace OpenLoco::Gfx
 
         // Make area dirty so the text doesn't get drawn over the last
         invalidateUiRegion(point.x, point.y, point.x + stringWidth, point.y + 16);
+        return Ui::Rect(point.x, point.y, stringWidth, 16);
     }
 }

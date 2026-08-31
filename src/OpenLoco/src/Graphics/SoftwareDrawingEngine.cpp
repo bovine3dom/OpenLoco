@@ -10,11 +10,15 @@
 
 #include <SDL3/SDL.h>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <execution>
 #include <limits>
 #include <ranges>
+#include <string>
+#include <utility>
 
 using namespace OpenLoco::Gfx;
 using namespace OpenLoco::Ui;
@@ -36,6 +40,60 @@ namespace OpenLoco::Gfx
     static int32_t sampleNearest(int32_t position, int32_t sourceSize, int32_t destinationSize)
     {
         return static_cast<int32_t>((static_cast<int64_t>(position) * 2 + 1) * sourceSize / (static_cast<int64_t>(destinationSize) * 2));
+    }
+
+    template<typename F>
+    static void measure(bool enabled, uint64_t& elapsedNanoseconds, F&& func)
+    {
+        if (!enabled)
+        {
+            func();
+            return;
+        }
+
+        const auto start = std::chrono::steady_clock::now();
+        func();
+        elapsedNanoseconds += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
+    }
+
+    template<typename F>
+    static bool measureResult(bool enabled, uint64_t& elapsedNanoseconds, F&& func)
+    {
+        if (!enabled)
+        {
+            return func();
+        }
+
+        const auto start = std::chrono::steady_clock::now();
+        const auto result = func();
+        elapsedNanoseconds += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
+        return result;
+    }
+
+    static SDL_Texture* createPresentationTexture(SDL_Renderer* renderer, SDL_Palette* palette, int32_t width, int32_t height, bool& isIndexed)
+    {
+#if SDL_VERSION_ATLEAST(3, 4, 4)
+        if (std::string_view(SDL_GetRendererName(renderer)) == SDL_GPU_RENDERER
+            && SDL_GetVersion() >= SDL_VERSIONNUM(3, 4, 4))
+        {
+            auto* texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_INDEX8, SDL_TEXTUREACCESS_STREAMING, width, height);
+            if (texture != nullptr && SDL_SetTexturePalette(texture, palette))
+            {
+                isIndexed = true;
+                return texture;
+            }
+
+            const auto indexedError = std::string(SDL_GetError());
+            if (texture != nullptr)
+            {
+                SDL_DestroyTexture(texture);
+            }
+            Logging::warn("Unable to create indexed presentation texture: {}. Falling back to ARGB8888.", indexedError);
+        }
+#endif
+
+        isIndexed = false;
+        return SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, width, height);
     }
 
     SoftwareDrawingEngine::SoftwareDrawingEngine()
@@ -78,6 +136,7 @@ namespace OpenLoco::Gfx
         _worldTextureDirty = true;
         _uiTextureDirty = true;
         _uiTextureUploadPending = false;
+        _worldTextureIndexed = false;
         if (_uiTexture != nullptr)
         {
             SDL_DestroyTexture(_uiTexture);
@@ -108,6 +167,8 @@ namespace OpenLoco::Gfx
 
     void SoftwareDrawingEngine::destroyScreenResources()
     {
+        _screenTextureDirty = true;
+        _screenTextureIndexed = false;
         destroyScaledScreenResources();
         destroySeparateWorldResources();
         if (_screenTexture != nullptr)
@@ -129,13 +190,25 @@ namespace OpenLoco::Gfx
 
     void SoftwareDrawingEngine::initialize(SDL_Window* window)
     {
-        _renderer = SDL_CreateRenderer(window, nullptr);
+        const auto* requestedRenderer = SDL_GetHint(SDL_HINT_RENDER_DRIVER);
+        if (requestedRenderer != nullptr && requestedRenderer[0] != '\0')
+        {
+            _renderer = SDL_CreateRenderer(window, nullptr);
+        }
+        else
+        {
+            _renderer = SDL_CreateRenderer(window, SDL_GPU_RENDERER);
+            if (_renderer == nullptr)
+            {
+                Logging::warn("SDL GPU renderer is unavailable: {}. Falling back to the default renderer.", SDL_GetError());
+                _renderer = SDL_CreateRenderer(window, nullptr);
+            }
+        }
+
         if (_renderer == nullptr)
         {
-            // Try to fallback to software renderer.
-            Logging::warn("Hardware acceleration not available, falling back to software renderer.");
-
-            _renderer = SDL_CreateRenderer(window, "software");
+            Logging::warn("Hardware acceleration is unavailable, falling back to the software renderer.");
+            _renderer = SDL_CreateRenderer(window, SDL_SOFTWARE_RENDERER);
             if (_renderer == nullptr)
             {
                 Logging::error("Unable to create software renderer: {}", SDL_GetError());
@@ -143,11 +216,12 @@ namespace OpenLoco::Gfx
             }
         }
 
+        Logging::info("Using SDL '{}' renderer", SDL_GetRendererName(_renderer));
         _window = window;
         createPalette();
     }
 
-    void SoftwareDrawingEngine::resize(const int32_t width, const int32_t height)
+    bool SoftwareDrawingEngine::resize(const int32_t width, const int32_t height)
     {
         _outputWidth = width;
         _outputHeight = height;
@@ -167,30 +241,29 @@ namespace OpenLoco::Gfx
         if (_screenSurface == nullptr)
         {
             Logging::error("SDL_CreateSurface (_screenSurface) failed: {}", SDL_GetError());
-            return;
+            return false;
         }
 
-        _screenRGBASurface = SDL_CreateSurface(scaledWidth, scaledHeight, outputFormat);
-        if (_screenRGBASurface == nullptr)
-        {
-            Logging::error("SDL_CreateSurface (_screenRGBASurface) failed: {}", SDL_GetError());
-            return;
-        }
-
-        if (!SDL_SetSurfaceBlendMode(_screenRGBASurface, SDL_BLENDMODE_NONE))
-        {
-            Logging::error("SDL_SetSurfaceBlendMode (_screenRGBASurface) failed: {}", SDL_GetError());
-        }
         if (!SDL_SetSurfacePalette(_screenSurface, _palette))
         {
             Logging::error("SDL_SetSurfacePalette (_screenSurface) failed: {}", SDL_GetError());
+            return false;
         }
 
-        _screenTexture = SDL_CreateTexture(_renderer, outputFormat, SDL_TEXTUREACCESS_STREAMING, scaledWidth, scaledHeight);
+        _screenTexture = createPresentationTexture(_renderer, _palette, scaledWidth, scaledHeight, _screenTextureIndexed);
         if (_screenTexture == nullptr)
         {
             Logging::error("SDL_CreateTexture (_screenTexture) failed: {}", SDL_GetError());
-            return;
+            return false;
+        }
+        if (!_screenTextureIndexed)
+        {
+            _screenRGBASurface = SDL_CreateSurface(scaledWidth, scaledHeight, outputFormat);
+            if (_screenRGBASurface == nullptr || !SDL_SetSurfaceBlendMode(_screenRGBASurface, SDL_BLENDMODE_NONE))
+            {
+                Logging::error("Unable to create fallback screen surface: {}", SDL_GetError());
+                return false;
+            }
         }
 
         // Keep the palette buffer crisp when scaling the software-rendered frame.
@@ -202,11 +275,14 @@ namespace OpenLoco::Gfx
         if (Config::get().nativeViewportRendering && scaleFactor > 1.0f)
         {
             _worldSurface = SDL_CreateSurface(width, height, SDL_PIXELFORMAT_INDEX8);
-            _worldRGBASurface = SDL_CreateSurface(width, height, outputFormat);
             _uiRGBASurface = SDL_CreateSurface(scaledWidth, scaledHeight, outputFormat);
-            _worldTexture = SDL_CreateTexture(_renderer, outputFormat, SDL_TEXTUREACCESS_STREAMING, width, height);
+            _worldTexture = createPresentationTexture(_renderer, _palette, width, height, _worldTextureIndexed);
             _uiTexture = SDL_CreateTexture(_renderer, outputFormat, SDL_TEXTUREACCESS_STREAMING, scaledWidth, scaledHeight);
-            if (_worldSurface == nullptr || _worldRGBASurface == nullptr || _uiRGBASurface == nullptr || _worldTexture == nullptr || _uiTexture == nullptr)
+            if (!_worldTextureIndexed)
+            {
+                _worldRGBASurface = SDL_CreateSurface(width, height, outputFormat);
+            }
+            if (_worldSurface == nullptr || (!_worldTextureIndexed && _worldRGBASurface == nullptr) || _uiRGBASurface == nullptr || _worldTexture == nullptr || _uiTexture == nullptr)
             {
                 Logging::error("Unable to create separate world rendering resources: {}", SDL_GetError());
                 destroySeparateWorldResources();
@@ -216,7 +292,7 @@ namespace OpenLoco::Gfx
                 bool configured = true;
                 configured &= !SDL_MUSTLOCK(_worldSurface);
                 configured &= SDL_SetSurfacePalette(_worldSurface, _palette);
-                configured &= SDL_SetSurfaceBlendMode(_worldRGBASurface, SDL_BLENDMODE_NONE);
+                configured &= _worldTextureIndexed || SDL_SetSurfaceBlendMode(_worldRGBASurface, SDL_BLENDMODE_NONE);
                 configured &= SDL_SetSurfaceBlendMode(_uiRGBASurface, SDL_BLENDMODE_NONE);
                 configured &= SDL_SetTextureScaleMode(_worldTexture, SDL_SCALEMODE_LINEAR);
                 configured &= SDL_SetTextureScaleMode(_uiTexture, SDL_SCALEMODE_NEAREST);
@@ -316,7 +392,11 @@ namespace OpenLoco::Gfx
         int16_t blockHeight = 1 << heightShift;
 
         _invalidationGrid.reset(scaledWidth, scaledHeight, blockWidth, blockHeight);
+        _screenUploadGrid.reset(scaledWidth, scaledHeight, blockWidth, blockHeight);
         _worldUploadGrid.reset(width, height, blockWidth, blockHeight);
+
+        _screenTextureDirty = true;
+        _worldTextureDirty = true;
 
         // Reset the drawing context, this holds the old screen render target.
         _ctx.reset();
@@ -326,6 +406,7 @@ namespace OpenLoco::Gfx
 
         // Set the normal background colour.
         _ctx.clearSingle(PaletteIndex::black0);
+        return true;
     }
 
     /**
@@ -365,9 +446,6 @@ namespace OpenLoco::Gfx
     void SoftwareDrawingEngine::updatePalette(const PaletteEntry* entries, int32_t index, int32_t count)
     {
         assert(index >= 0 && count >= 0 && index + count <= 256);
-        _worldTextureDirty = true;
-        _uiTextureDirty = true;
-
         if (_palette == nullptr)
         {
             // In headless mode, the palette is not created, so we cannot update it.
@@ -388,44 +466,65 @@ namespace OpenLoco::Gfx
         if (!SDL_SetPaletteColors(_palette, &base[index], index, count))
         {
             Logging::error("SDL_SetPaletteColors failed: {}", SDL_GetError());
+            return;
         }
+
+        if (!_screenTextureIndexed)
+        {
+            _screenTextureDirty = true;
+        }
+        if (!_worldTextureIndexed)
+        {
+            _worldTextureDirty = true;
+        }
+        _uiTextureDirty = true;
+        _pendingPaletteChangeBytes += static_cast<uint64_t>(count) * sizeof(SDL_Color);
     }
 
     // 0x004C5CFA
     void SoftwareDrawingEngine::render()
     {
+        _frameStats = {};
+        _frameStats.paletteChangeBytes = std::exchange(_pendingPaletteChangeBytes, 0);
+        _frameStats.screenTextureIndexed = _screenTextureIndexed;
+        _frameStats.worldTextureIndexed = _worldTextureIndexed;
+
         if (shouldUseSeparateWorld())
         {
             if (!SceneManager::isProgressBarActive())
             {
-                WindowManager::updateViewports();
-                renderDirtyWorldRegions();
+                measure(_frameStatsEnabled, _frameStats.dirtyRenderNs, [&] {
+                    WindowManager::updateViewports();
+                    renderDirtyWorldRegions();
+                });
             }
 
             if (_uiTextureDirty)
             {
                 _uiTextureDirty = false;
-                renderSeparateUi();
+                const auto conversionBefore = _frameStats.paletteConversionNs;
+                measure(_frameStatsEnabled, _frameStats.uiCompositionNs, [&] {
+                    renderSeparateUi();
+                });
+                const auto conversionTime = _frameStats.paletteConversionNs - conversionBefore;
+                _frameStats.uiCompositionNs -= std::min(_frameStats.uiCompositionNs, conversionTime);
                 _uiTextureUploadPending = true;
             }
             return;
         }
 
-        // Need to first render the current dirty regions before updating the viewports.
-        // This is needed to ensure it will copy the correct pixels when the viewport will be moved.
-        renderDirtyRegions();
+        measure(_frameStatsEnabled, _frameStats.dirtyRenderNs, [&] {
+            // Render before moving viewport pixels, then render regions exposed by the move.
+            renderDirtyRegions();
+            WindowManager::updateViewports();
+            renderDirtyRegions();
 
-        // Updating the viewports will potentially move pixels and mark previously invisible regions as dirty.
-        WindowManager::updateViewports();
-
-        // Render the uncovered regions.
-        renderDirtyRegions();
-
-        // Draw FPS counter.
-        if (Config::get().showFPS)
-        {
-            Gfx::drawFPS(_ctx);
-        }
+            if (Config::get().showFPS)
+            {
+                const auto rect = Gfx::drawFPS(_ctx);
+                _screenUploadGrid.invalidate(rect.left(), rect.top(), rect.right(), rect.bottom());
+            }
+        });
     }
 
     bool SoftwareDrawingEngine::hasSeparateWorldResources() const
@@ -433,7 +532,7 @@ namespace OpenLoco::Gfx
         return Config::get().nativeViewportRendering
             && _worldRT.bits != nullptr
             && _worldSurface != nullptr
-            && _worldRGBASurface != nullptr
+            && (_worldTextureIndexed || _worldRGBASurface != nullptr)
             && _uiRGBASurface != nullptr
             && _worldTexture != nullptr
             && _uiTexture != nullptr;
@@ -488,6 +587,7 @@ namespace OpenLoco::Gfx
 
     void SoftwareDrawingEngine::renderSeparateUi()
     {
+        _screenTextureDirty = true;
         const auto uiStride = _screenRT.width + _screenRT.pitch;
         const auto isProgressBarActive = SceneManager::isProgressBarActive();
         if (!isProgressBarActive)
@@ -564,32 +664,34 @@ namespace OpenLoco::Gfx
             }
         }
 
-        const auto palette = Gfx::getRgbaPalette();
-        const auto rows = std::views::iota(0, _screenRT.height);
-        std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int32_t y) {
-            auto* output = static_cast<uint32_t*>(_uiRGBASurface->pixels) + static_cast<size_t>(y) * _uiRGBASurface->pitch / sizeof(uint32_t);
-            for (int32_t x = 0; x < _screenRT.width; ++x)
-            {
-                const auto offset = static_cast<size_t>(y) * uiStride + x;
-                if (!isProgressBarActive)
+        measure(_frameStatsEnabled, _frameStats.paletteConversionNs, [&] {
+            const auto palette = Gfx::getRgbaPalette();
+            const auto rows = std::views::iota(0, _screenRT.height);
+            std::for_each(std::execution::par, rows.begin(), rows.end(), [&](int32_t y) {
+                auto* output = static_cast<uint32_t*>(_uiRGBASurface->pixels) + static_cast<size_t>(y) * _uiRGBASurface->pitch / sizeof(uint32_t);
+                for (int32_t x = 0; x < _screenRT.width; ++x)
                 {
-                    const auto isCovered = _uiCoverage[offset] != 0xFF || _screenRT.bits[offset] != _uiBase[offset];
-                    _uiCoverage[offset] = isCovered ? 0xFF : 0;
-                }
-                else if (_screenRT.bits[offset] != _uiBase[offset])
-                {
-                    _uiCoverage[offset] = 0xFF;
-                }
+                    const auto offset = static_cast<size_t>(y) * uiStride + x;
+                    if (!isProgressBarActive)
+                    {
+                        const auto isCovered = _uiCoverage[offset] != 0xFF || _screenRT.bits[offset] != _uiBase[offset];
+                        _uiCoverage[offset] = isCovered ? 0xFF : 0;
+                    }
+                    else if (_screenRT.bits[offset] != _uiBase[offset])
+                    {
+                        _uiCoverage[offset] = 0xFF;
+                    }
 
-                if (_uiCoverage[offset] == 0)
-                {
-                    output[x] = 0;
-                    continue;
-                }
+                    if (_uiCoverage[offset] == 0)
+                    {
+                        output[x] = 0;
+                        continue;
+                    }
 
-                const auto& colour = palette[_screenRT.bits[offset]];
-                output[x] = 0xFF000000U | static_cast<uint32_t>(colour.r) << 16 | static_cast<uint32_t>(colour.g) << 8 | colour.b;
-            }
+                    const auto& colour = palette[_screenRT.bits[offset]];
+                    output[x] = 0xFF000000U | static_cast<uint32_t>(colour.r) << 16 | static_cast<uint32_t>(colour.g) << 8 | colour.b;
+                }
+            });
         });
     }
 
@@ -605,6 +707,10 @@ namespace OpenLoco::Gfx
         _uiTextureDirty = true;
         auto max = Rect(0, 0, Ui::width(), Ui::height());
         auto rect = _rect.intersection(max);
+        if (rect.width() <= 0 || rect.height() <= 0)
+        {
+            return;
+        }
 
         RenderTarget rt;
         rt.width = rect.width();
@@ -624,127 +730,225 @@ namespace OpenLoco::Gfx
 
         // Restore state.
         _ctx.popRenderTarget();
+
+        _screenUploadGrid.invalidate(rect.left(), rect.top(), rect.right(), rect.bottom());
     }
 
     bool SoftwareDrawingEngine::present()
     {
-        if (shouldUseSeparateWorld())
+        _lastPresentationHash = 0;
+        const auto result = shouldUseSeparateWorld() ? presentSeparate() : presentStandard();
+        _lastFrameStats = _frameStats;
+        return result;
+    }
+
+    bool SoftwareDrawingEngine::capturePresentationHash()
+    {
+        if (!_presentationReadbackEnabled)
         {
-            return presentSeparate();
+            return true;
         }
 
-        if (_screenSurface == nullptr || _screenRGBASurface == nullptr || _screenTexture == nullptr)
+        auto* surface = SDL_RenderReadPixels(_renderer, nullptr);
+        if (surface == nullptr)
         {
+            Logging::error("Unable to read presentation pixels: {}", SDL_GetError());
             return false;
         }
 
-        // Lock the surface before setting its pixels
-        if (SDL_MUSTLOCK(_screenSurface))
+        if (surface->format != SDL_PIXELFORMAT_RGBA32)
         {
-            if (!SDL_LockSurface(_screenSurface))
+            auto* convertedSurface = SDL_ConvertSurface(surface, SDL_PIXELFORMAT_RGBA32);
+            SDL_DestroySurface(surface);
+            surface = convertedSurface;
+            if (surface == nullptr)
             {
+                Logging::error("Unable to convert presentation pixels: {}", SDL_GetError());
                 return false;
             }
         }
 
-        // Copy pixels from the virtual screen buffer to the surface
-        auto& rt = getScreenRT();
-        if (rt.bits != nullptr)
+        uint64_t hash = 14695981039346656037ULL;
+        for (int32_t y = 0; y < surface->h; ++y)
         {
-            std::memcpy(_screenSurface->pixels, rt.bits, _screenSurface->pitch * _screenSurface->h);
-        }
-
-        // Unlock the surface
-        if (SDL_MUSTLOCK(_screenSurface))
-        {
-            SDL_UnlockSurface(_screenSurface);
-        }
-
-        // Convert colours via palette mapping onto the RGBA surface.
-        if (!SDL_BlitSurface(_screenSurface, nullptr, _screenRGBASurface, nullptr))
-        {
-            Logging::error("SDL_BlitSurface {}", SDL_GetError());
-            return false;
-        }
-
-        // Copy the RGBA pixels into screen texture.
-        if (!SDL_UpdateTexture(_screenTexture, nullptr, _screenRGBASurface->pixels, _screenRGBASurface->pitch))
-        {
-            Logging::error("SDL_UpdateTexture {}", SDL_GetError());
-            return false;
-        }
-
-        auto* displayTexture = _screenTexture;
-        if (_scaledScreenTexture != nullptr && _pixelScaleFactor > 1)
-        {
-            // Integer nearest-neighbour prescale followed by linear downsampling.
-            if (!SDL_SetRenderTarget(_renderer, _scaledScreenTexture))
+            const auto* pixels = static_cast<const uint8_t*>(surface->pixels) + static_cast<size_t>(y) * surface->pitch;
+            for (int32_t x = 0; x < surface->w * 4; ++x)
             {
-                Logging::error("SDL_SetRenderTarget (_scaledScreenTexture) failed: {}", SDL_GetError());
-                return false;
+                hash ^= pixels[x];
+                hash *= 1099511628211ULL;
             }
-            if (!SDL_RenderTexture(_renderer, _screenTexture, nullptr, nullptr))
-            {
-                Logging::error("SDL_RenderTexture (_screenTexture) failed: {}", SDL_GetError());
-                SDL_SetRenderTarget(_renderer, nullptr);
-                return false;
-            }
-
-            if (!SDL_SetRenderTarget(_renderer, nullptr))
-            {
-                Logging::error("SDL_SetRenderTarget (nullptr) failed: {}", SDL_GetError());
-                return false;
-            }
-            displayTexture = _scaledScreenTexture;
         }
-
-        if (!SDL_RenderTexture(_renderer, displayTexture, nullptr, nullptr))
-        {
-            Logging::error("SDL_RenderTexture failed: {}", SDL_GetError());
-            return false;
-        }
-
-        // Display buffers.
-        if (!SDL_RenderPresent(_renderer))
-        {
-            Logging::error("SDL_RenderPresent failed: {}", SDL_GetError());
-            return false;
-        }
+        SDL_DestroySurface(surface);
+        _lastPresentationHash = hash;
         return true;
+    }
+
+    bool SoftwareDrawingEngine::presentStandard()
+    {
+        if (_screenSurface == nullptr || (!_screenTextureIndexed && _screenRGBASurface == nullptr) || _screenTexture == nullptr)
+        {
+            return false;
+        }
+
+        const auto& rt = getScreenRT();
+        const auto indexedPitch = rt.width + rt.pitch;
+        const auto uploadRegion = [&](const SDL_Rect& rect) {
+            const void* pixels = rt.bits + static_cast<size_t>(rect.y) * indexedPitch + rect.x;
+            auto pitch = indexedPitch;
+            auto bytesPerPixel = sizeof(PaletteIndex_t);
+
+            if (!_screenTextureIndexed)
+            {
+                const auto converted = measureResult(_frameStatsEnabled, _frameStats.paletteConversionNs, [&] {
+                    if (SDL_MUSTLOCK(_screenSurface) && !SDL_LockSurface(_screenSurface))
+                    {
+                        return false;
+                    }
+
+                    for (int32_t y = rect.y; y < rect.y + rect.h; ++y)
+                    {
+                        auto* destination = static_cast<uint8_t*>(_screenSurface->pixels) + static_cast<size_t>(y) * _screenSurface->pitch + rect.x;
+                        const auto* source = rt.bits + static_cast<size_t>(y) * indexedPitch + rect.x;
+                        std::memcpy(destination, source, rect.w);
+                    }
+
+                    if (SDL_MUSTLOCK(_screenSurface))
+                    {
+                        SDL_UnlockSurface(_screenSurface);
+                    }
+                    return SDL_BlitSurface(_screenSurface, &rect, _screenRGBASurface, &rect);
+                });
+                if (!converted)
+                {
+                    return false;
+                }
+
+                pixels = static_cast<uint8_t*>(_screenRGBASurface->pixels)
+                    + static_cast<size_t>(rect.y) * _screenRGBASurface->pitch
+                    + static_cast<size_t>(rect.x) * sizeof(uint32_t);
+                pitch = _screenRGBASurface->pitch;
+                bytesPerPixel = sizeof(uint32_t);
+            }
+
+            const auto uploaded = measureResult(_frameStatsEnabled, _frameStats.textureUploadNs, [&] {
+                return SDL_UpdateTexture(_screenTexture, &rect, pixels, pitch);
+            });
+            if (uploaded)
+            {
+                _frameStats.screenUploadBytes += static_cast<uint64_t>(rect.w) * rect.h * bytesPerPixel;
+                _frameStats.textureUploadCount++;
+            }
+            return uploaded;
+        };
+
+        const auto uploaded = Detail::uploadDirtyRegions(_screenUploadGrid, _screenTextureDirty, rt.width, rt.height, [&](int32_t left, int32_t top, int32_t right, int32_t bottom) {
+            return uploadRegion(SDL_Rect{ left, top, right - left, bottom - top });
+        });
+        _screenTextureDirty = !uploaded;
+
+        if (!uploaded)
+        {
+            Logging::error("Unable to update screen texture: {}", SDL_GetError());
+            return false;
+        }
+
+        return measureResult(_frameStatsEnabled, _frameStats.composePresentNs, [&] {
+            auto* displayTexture = _screenTexture;
+            if (_scaledScreenTexture != nullptr && _pixelScaleFactor > 1)
+            {
+                // Integer nearest-neighbour prescale followed by linear downsampling.
+                if (!SDL_SetRenderTarget(_renderer, _scaledScreenTexture))
+                {
+                    Logging::error("SDL_SetRenderTarget (_scaledScreenTexture) failed: {}", SDL_GetError());
+                    return false;
+                }
+                if (!SDL_RenderTexture(_renderer, _screenTexture, nullptr, nullptr))
+                {
+                    Logging::error("SDL_RenderTexture (_screenTexture) failed: {}", SDL_GetError());
+                    SDL_SetRenderTarget(_renderer, nullptr);
+                    return false;
+                }
+
+                if (!SDL_SetRenderTarget(_renderer, nullptr))
+                {
+                    Logging::error("SDL_SetRenderTarget (nullptr) failed: {}", SDL_GetError());
+                    return false;
+                }
+                displayTexture = _scaledScreenTexture;
+            }
+
+            if (!SDL_RenderTexture(_renderer, displayTexture, nullptr, nullptr))
+            {
+                Logging::error("SDL_RenderTexture failed: {}", SDL_GetError());
+                return false;
+            }
+
+            if (!capturePresentationHash())
+            {
+                return false;
+            }
+            if (!SDL_RenderPresent(_renderer))
+            {
+                Logging::error("SDL_RenderPresent failed: {}", SDL_GetError());
+                return false;
+            }
+            return true;
+        });
     }
 
     bool SoftwareDrawingEngine::presentSeparate()
     {
-        auto worldUploaded = true;
-        if (_worldTextureDirty)
-        {
-            worldUploaded = SDL_BlitSurface(_worldSurface, nullptr, _worldRGBASurface, nullptr)
-                && SDL_UpdateTexture(_worldTexture, nullptr, _worldRGBASurface->pixels, _worldRGBASurface->pitch);
-            if (worldUploaded)
+        const auto worldPitch = _worldRT.width + _worldRT.pitch;
+        const auto uploadWorldRegion = [&](const SDL_Rect& rect) {
+            const void* pixels = _worldRT.bits + static_cast<size_t>(rect.y) * worldPitch + rect.x;
+            auto pitch = worldPitch;
+            auto bytesPerPixel = sizeof(PaletteIndex_t);
+
+            if (!_worldTextureIndexed)
             {
-                _worldUploadGrid.traverseDirtyCells([](int32_t, int32_t, int32_t, int32_t) {});
-            }
-        }
-        else
-        {
-            _worldUploadGrid.traverseDirtyCells([&](int32_t left, int32_t top, int32_t right, int32_t bottom) {
-                if (!worldUploaded)
+                const auto converted = measureResult(_frameStatsEnabled, _frameStats.paletteConversionNs, [&] {
+                    return SDL_BlitSurface(_worldSurface, &rect, _worldRGBASurface, &rect);
+                });
+                if (!converted)
                 {
-                    return;
+                    return false;
                 }
 
-                const SDL_Rect rect{ left, top, right - left, bottom - top };
-                auto* pixels = static_cast<uint8_t*>(_worldRGBASurface->pixels)
-                    + static_cast<size_t>(top) * _worldRGBASurface->pitch
-                    + static_cast<size_t>(left) * sizeof(uint32_t);
-                worldUploaded = SDL_BlitSurface(_worldSurface, &rect, _worldRGBASurface, &rect)
-                    && SDL_UpdateTexture(_worldTexture, &rect, pixels, _worldRGBASurface->pitch);
+                pixels = static_cast<uint8_t*>(_worldRGBASurface->pixels)
+                    + static_cast<size_t>(rect.y) * _worldRGBASurface->pitch
+                    + static_cast<size_t>(rect.x) * sizeof(uint32_t);
+                pitch = _worldRGBASurface->pitch;
+                bytesPerPixel = sizeof(uint32_t);
+            }
+
+            const auto uploaded = measureResult(_frameStatsEnabled, _frameStats.textureUploadNs, [&] {
+                return SDL_UpdateTexture(_worldTexture, &rect, pixels, pitch);
             });
-        }
+            if (uploaded)
+            {
+                _frameStats.worldUploadBytes += static_cast<uint64_t>(rect.w) * rect.h * bytesPerPixel;
+                _frameStats.textureUploadCount++;
+            }
+            return uploaded;
+        };
+
+        const auto worldUploaded = Detail::uploadDirtyRegions(_worldUploadGrid, _worldTextureDirty, _worldRT.width, _worldRT.height, [&](int32_t left, int32_t top, int32_t right, int32_t bottom) {
+            return uploadWorldRegion(SDL_Rect{ left, top, right - left, bottom - top });
+        });
         _worldTextureDirty = !worldUploaded;
 
-        const auto uiUploaded = !_uiTextureUploadPending
-            || SDL_UpdateTexture(_uiTexture, nullptr, _uiRGBASurface->pixels, _uiRGBASurface->pitch);
+        auto uiUploaded = true;
+        if (_uiTextureUploadPending)
+        {
+            uiUploaded = measureResult(_frameStatsEnabled, _frameStats.textureUploadNs, [&] {
+                return SDL_UpdateTexture(_uiTexture, nullptr, _uiRGBASurface->pixels, _uiRGBASurface->pitch);
+            });
+            if (uiUploaded)
+            {
+                _frameStats.uiUploadBytes += static_cast<uint64_t>(_uiRGBASurface->w) * _uiRGBASurface->h * sizeof(uint32_t);
+                _frameStats.textureUploadCount++;
+            }
+        }
         _uiTextureUploadPending = !uiUploaded;
 
         if (!worldUploaded || !uiUploaded)
@@ -753,9 +957,12 @@ namespace OpenLoco::Gfx
             return false;
         }
 
-        const auto presented = SDL_RenderTexture(_renderer, _worldTexture, nullptr, nullptr)
-            && SDL_RenderTexture(_renderer, _uiTexture, nullptr, nullptr)
-            && SDL_RenderPresent(_renderer);
+        const auto presented = measureResult(_frameStatsEnabled, _frameStats.composePresentNs, [&] {
+            return SDL_RenderTexture(_renderer, _worldTexture, nullptr, nullptr)
+                && SDL_RenderTexture(_renderer, _uiTexture, nullptr, nullptr)
+                && capturePresentationHash()
+                && SDL_RenderPresent(_renderer);
+        });
         if (!presented)
         {
             Logging::error("Unable to present separate world rendering textures: {}", SDL_GetError());
@@ -765,6 +972,9 @@ namespace OpenLoco::Gfx
 
     DrawingContext& SoftwareDrawingEngine::getDrawingContext()
     {
+        // Callers can mutate the default screen target directly.
+        _screenTextureDirty = true;
+        _uiTextureDirty = true;
         return _ctx;
     }
 
@@ -828,6 +1038,10 @@ namespace OpenLoco::Gfx
         dstY -= tmargin;
         width += lmargin + rmargin;
         height += tmargin + bmargin;
+        if (width <= 0 || height <= 0)
+        {
+            return;
+        }
 
         int32_t stride = rt.width + rt.pitch;
         uint8_t* to = rt.bits + dstY * stride + dstX;
@@ -848,6 +1062,7 @@ namespace OpenLoco::Gfx
             to += stride;
             from += stride;
         }
+        _screenUploadGrid.invalidate(dstX, dstY, dstX + width, dstY + height);
     }
 
     const Ui::ScreenInfo& SoftwareDrawingEngine::getScreenInfo() const
@@ -869,12 +1084,47 @@ namespace OpenLoco::Gfx
 
     bool SoftwareDrawingEngine::setVSync(bool state)
     {
-        if (SDL_SetRenderVSync(_renderer, state ? 1 : 0))
-        {
-            _vsync = state;
-            return true;
-        }
+        return SDL_SetRenderVSync(_renderer, state ? 1 : SDL_RENDERER_VSYNC_DISABLED);
+    }
 
-        return false;
+    bool SoftwareDrawingEngine::isVSyncDisabled() const
+    {
+        int vsync{};
+        return _renderer != nullptr
+            && SDL_GetRenderVSync(_renderer, &vsync)
+            && vsync == SDL_RENDERER_VSYNC_DISABLED;
+    }
+
+    bool SoftwareDrawingEngine::isGpuPaletteEnabled() const
+    {
+        return getRendererName() == SDL_GPU_RENDERER
+            && _screenTextureIndexed
+            && (!hasSeparateWorldResources() || _worldTextureIndexed);
+    }
+
+    void SoftwareDrawingEngine::setFrameStatsEnabled(bool enabled)
+    {
+        _frameStatsEnabled = enabled;
+    }
+
+    const RenderFrameStats& SoftwareDrawingEngine::getLastFrameStats() const
+    {
+        return _lastFrameStats;
+    }
+
+    void SoftwareDrawingEngine::setPresentationReadbackEnabled(bool enabled)
+    {
+        _presentationReadbackEnabled = enabled;
+    }
+
+    uint64_t SoftwareDrawingEngine::getLastPresentationHash() const
+    {
+        return _lastPresentationHash;
+    }
+
+    std::string_view SoftwareDrawingEngine::getRendererName() const
+    {
+        const auto* name = _renderer == nullptr ? nullptr : SDL_GetRendererName(_renderer);
+        return name == nullptr ? std::string_view{} : name;
     }
 }

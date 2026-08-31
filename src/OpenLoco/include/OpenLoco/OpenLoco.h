@@ -20,7 +20,7 @@ namespace OpenLoco
     void* hInstance();
     void resetSubsystems();
     void simulateGame(const fs::path& path, int32_t ticks);
-    bool runRenderBenchmark(const fs::path& path, int32_t warmupFrames, int32_t frames, int32_t width, int32_t height, float scaleFactor, bool fullRedraw);
+    bool runRenderBenchmark(const fs::path& path, int32_t warmupFrames, int32_t frames, int32_t width, int32_t height, float scaleFactor, bool fullRedraw, bool requireGpuPalette);
 
     void initialise();
     void update();
@@ -28,6 +28,6 @@ namespace OpenLoco
     uint16_t getTimeSinceLastTick();
     uint16_t getNumFrameUpdates();
     bool promptTickLoop(std::function<bool()> tickAction);
-    [[noreturn]] void exitCleanly();
+    [[noreturn]] void exitCleanly(int32_t exitCode = 0);
     [[noreturn]] void exitWithError(StringId titleStringId, StringId messageStringId);
 }

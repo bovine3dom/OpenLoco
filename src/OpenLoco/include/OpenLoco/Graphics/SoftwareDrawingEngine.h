@@ -7,7 +7,9 @@
 #include <SDL3/SDL_pixels.h>
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <string_view>
 #include <vector>
 
 struct SDL_Palette;
@@ -25,6 +27,22 @@ namespace OpenLoco::Gfx
 {
     struct RenderTarget;
 
+    struct RenderFrameStats
+    {
+        uint64_t dirtyRenderNs{};
+        uint64_t uiCompositionNs{};
+        uint64_t paletteConversionNs{};
+        uint64_t textureUploadNs{};
+        uint64_t composePresentNs{};
+        uint64_t screenUploadBytes{};
+        uint64_t worldUploadBytes{};
+        uint64_t uiUploadBytes{};
+        uint64_t paletteChangeBytes{};
+        uint64_t textureUploadCount{};
+        bool screenTextureIndexed{};
+        bool worldTextureIndexed{};
+    };
+
     class SoftwareDrawingEngine
     {
     public:
@@ -33,7 +51,7 @@ namespace OpenLoco::Gfx
 
         void initialize(SDL_Window* window);
 
-        void resize(int32_t width, int32_t height);
+        bool resize(int32_t width, int32_t height);
 
         // Renders all invalidated regions.
         void render();
@@ -74,6 +92,14 @@ namespace OpenLoco::Gfx
         bool shouldUseSeparateWorld() const;
 
         bool setVSync(bool state);
+        bool isVSyncDisabled() const;
+        bool isGpuPaletteEnabled() const;
+
+        void setFrameStatsEnabled(bool enabled);
+        const RenderFrameStats& getLastFrameStats() const;
+        void setPresentationReadbackEnabled(bool enabled);
+        uint64_t getLastPresentationHash() const;
+        std::string_view getRendererName() const;
 
     private:
         void destroyScaledScreenResources();
@@ -82,6 +108,8 @@ namespace OpenLoco::Gfx
         void renderSeparateWorld(const Ui::Rect& rect);
         void renderDirtyWorldRegions();
         void renderSeparateUi();
+        bool capturePresentationHash();
+        bool presentStandard();
         bool presentSeparate();
         void renderDirtyRegions();
 
@@ -108,12 +136,21 @@ namespace OpenLoco::Gfx
 
         SoftwareDrawingContext _ctx;
         InvalidationGrid _invalidationGrid;
+        InvalidationGrid _screenUploadGrid;
         InvalidationGrid _worldUploadGrid;
 
-        bool _vsync = false;
+        bool _screenTextureDirty = true;
         bool _worldTextureDirty = true;
         bool _uiTextureDirty = true;
         bool _uiTextureUploadPending = false;
+        bool _screenTextureIndexed = false;
+        bool _worldTextureIndexed = false;
+        bool _frameStatsEnabled = false;
+        bool _presentationReadbackEnabled = false;
+        uint64_t _pendingPaletteChangeBytes{};
+        uint64_t _lastPresentationHash{};
+        RenderFrameStats _frameStats{};
+        RenderFrameStats _lastFrameStats{};
         int32_t _outputWidth{};
         int32_t _outputHeight{};
     };

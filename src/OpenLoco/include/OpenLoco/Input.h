@@ -78,6 +78,7 @@ namespace OpenLoco::Input
 
     bool processMessages();
     bool processMessagesMini();
+    bool hasFatalError();
 
     Ui::Point getMouseLocation();
     Ui::Point getMouseLocation2();

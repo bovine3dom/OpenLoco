@@ -43,6 +43,7 @@
 #include "Ui/Widgets/StepperWidget.h"
 #include "Ui/Widgets/TabWidget.h"
 #include "Ui/WindowManager.h"
+#include <OpenLoco/Core/Exception.hpp>
 
 #include <array>
 #include <cassert>
@@ -345,8 +346,16 @@ namespace OpenLoco::Ui::Windows::Options
                 {
                     auto& cfg = OpenLoco::Config::get();
                     cfg.nativeViewportRendering = !cfg.nativeViewportRendering;
+                    if (!Ui::triggerResize())
+                    {
+                        cfg.nativeViewportRendering = !cfg.nativeViewportRendering;
+                        if (!Ui::triggerResize())
+                        {
+                            throw Exception::RuntimeError("Unable to restore rendering resources after changing native viewport rendering.");
+                        }
+                        return;
+                    }
                     OpenLoco::Config::write();
-                    Ui::triggerResize();
                     Gfx::invalidateScreen();
                     return;
                 }

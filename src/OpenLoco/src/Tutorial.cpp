@@ -84,7 +84,11 @@ namespace OpenLoco::Tutorial
             // Don't scale if it means the new window won't fit the desktop.
             if (newResolution > desktopResolution)
             {
-                Ui::setWindowScaling(1.0);
+                if (!Ui::setWindowScaling(1.0))
+                {
+                    _state = State::none;
+                    return;
+                }
                 newResolution = tutorialResolution;
             }
         }

@@ -2,6 +2,7 @@
 #include "Audio/Audio.h"
 #include "Config.h"
 #include "Localisation/StringIds.h"
+#include "Logging.h"
 #include "Ui.h"
 #include "Ui/ScrollView.h"
 #include "Ui/Window.h"
@@ -16,11 +17,30 @@ namespace OpenLoco::Input
     static Ui::Point _cursorDragStartOutput;
     static uint32_t _cursorDragState;
     static bool _exitRequested = false;
+    static bool _fatalError = false;
+
+    static bool tryResizeWindow()
+    {
+        if (Ui::triggerResize())
+        {
+            return true;
+        }
+
+        Diagnostics::Logging::error("Unable to recreate rendering resources");
+        _fatalError = true;
+        _exitRequested = true;
+        return false;
+    }
 
     void init()
     {
         _flags = Flags::none;
         _state = State::reset;
+    }
+
+    bool hasFatalError()
+    {
+        return _fatalError;
     }
 
     bool hasFlag(Flags value)
@@ -121,8 +141,23 @@ namespace OpenLoco::Input
                 case SDL_EVENT_WINDOW_RESIZED:
                 case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
                 case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
-                    Ui::triggerResize();
+                    if (!tryResizeWindow())
+                    {
+                        return false;
+                    }
                     break;
+                case SDL_EVENT_RENDER_TARGETS_RESET:
+                case SDL_EVENT_RENDER_DEVICE_RESET:
+                    if (!tryResizeWindow())
+                    {
+                        return false;
+                    }
+                    break;
+                case SDL_EVENT_RENDER_DEVICE_LOST:
+                    Diagnostics::Logging::error("The rendering device was lost and cannot be recovered");
+                    _fatalError = true;
+                    _exitRequested = true;
+                    return false;
             }
         }
         return false;
@@ -153,8 +188,23 @@ namespace OpenLoco::Input
                 case SDL_EVENT_WINDOW_RESIZED:
                 case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
                 case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
-                    Ui::triggerResize();
+                    if (!tryResizeWindow())
+                    {
+                        return false;
+                    }
                     break;
+                case SDL_EVENT_RENDER_TARGETS_RESET:
+                case SDL_EVENT_RENDER_DEVICE_RESET:
+                    if (!tryResizeWindow())
+                    {
+                        return false;
+                    }
+                    break;
+                case SDL_EVENT_RENDER_DEVICE_LOST:
+                    Diagnostics::Logging::error("The rendering device was lost and cannot be recovered");
+                    _fatalError = true;
+                    _exitRequested = true;
+                    return false;
 
                 case SDL_EVENT_MOUSE_MOTION:
                 {

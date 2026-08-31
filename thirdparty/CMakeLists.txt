@@ -32,7 +32,7 @@ if (${OPENLOCO_BUILD_TESTS})
     find_package(GTest REQUIRED)
 endif()
 
-find_package(SDL3 REQUIRED CONFIG)
+find_package(SDL3 3.4 REQUIRED CONFIG)
 
 find_package(PNG REQUIRED)
 find_package(ZLIB REQUIRED) # Dependency of PNG not really required but vcpkg not mapping static png dependencies

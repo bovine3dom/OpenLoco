@@ -29,8 +29,8 @@ namespace OpenLoco::Gfx
     {
         _blockWidth = blockWidth;
         _blockHeight = blockHeight;
-        _columnCount = (width / blockWidth) + 1;
-        _rowCount = (height / blockHeight) + 1;
+        _columnCount = (width + blockWidth - 1) / blockWidth;
+        _rowCount = (height + blockHeight - 1) / blockHeight;
         _screenWidth = width;
         _screenHeight = height;
 
@@ -58,17 +58,17 @@ namespace OpenLoco::Gfx
         }
 
         left /= _blockWidth;
-        right /= _blockWidth;
+        right = (right - 1) / _blockWidth;
 
         top /= _blockHeight;
-        bottom /= _blockHeight;
+        bottom = (bottom - 1) / _blockHeight;
 
         // TODO: Remove this once _blocks is no longer interop wrapper.
         auto& blocks = _blocks;
 
         const auto columnSize = right - left + 1;
 
-        for (int16_t y = top; y <= bottom; y++)
+        for (int32_t y = top; y <= bottom; y++)
         {
             const auto yOffset = y * _columnCount;
 

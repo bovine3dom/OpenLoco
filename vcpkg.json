@@ -23,6 +23,10 @@
         {
           "name": "wayland",
           "platform": "linux"
+        },
+        {
+          "name": "vulkan",
+          "platform": "linux"
         }
       ]
     },

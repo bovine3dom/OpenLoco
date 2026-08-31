@@ -69,6 +69,7 @@ namespace OpenLoco::Ui
 
     static bool _resolutionsAllowAnyAspectRatio = false;
     static bool _isChangingDisplayMode = false;
+    static bool _isRestoringDisplayMode = false;
     static Config::Resolution _lastWindowedResolution{};
     static std::vector<Resolution> _fsResolutions;
 
@@ -254,6 +255,7 @@ namespace OpenLoco::Ui
 
         auto width = SDL_GetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, 640);
         auto height = SDL_GetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, 480);
+        SDL_DestroyProperties(props);
         if (cfg.mode == Config::ScreenMode::window)
         {
             _lastWindowedResolution = { static_cast<int32_t>(width), static_cast<int32_t>(height) };
@@ -263,14 +265,15 @@ namespace OpenLoco::Ui
         auto& drawingEngine = Gfx::getDrawingEngine();
         drawingEngine.initialize(_window);
         drawingEngine.setVSync(cfg.vsync);
-        drawingEngine.resize(width, height);
+        if (!drawingEngine.resize(width, height))
+        {
+            throw Exception::RuntimeError("Unable to create rendering resources.");
+        }
 
         // SDL2 always activated text input by default on desktop platforms, SDL3 does not.
         // TODO: Do this properly and activate/deactivate depending on textbox focus, we should also
         // set the input rectangle to avoid IME issues.
         SDL_StartTextInput(_window);
-
-        SDL_DestroyProperties(props);
 
 #if !(defined(__APPLE__) && defined(__MACH__))
         if (cfg.mode != Config::ScreenMode::window)
@@ -523,7 +526,7 @@ namespace OpenLoco::Ui
         }
     }
 
-    void windowSizeChanged(int32_t width, int32_t height)
+    bool windowSizeChanged(int32_t width, int32_t height)
     {
         int32_t pixelWidth = width;
         int32_t pixelHeight = height;
@@ -532,9 +535,27 @@ namespace OpenLoco::Ui
             pixelWidth = width;
             pixelHeight = height;
         }
+        if (pixelWidth <= 0 || pixelHeight <= 0)
+        {
+            Logging::error("Unable to resize rendering resources to invalid dimensions {}x{}", pixelWidth, pixelHeight);
+            return false;
+        }
 
         auto& drawingEngine = Gfx::getDrawingEngine();
-        drawingEngine.resize(pixelWidth, pixelHeight);
+        const auto previousSize = drawingEngine.getOutputSize();
+        if (!drawingEngine.resize(pixelWidth, pixelHeight))
+        {
+            Diagnostics::Logging::error("Unable to resize rendering resources to {}x{}", pixelWidth, pixelHeight);
+            const auto restored = previousSize.width > 0 && previousSize.height > 0
+                && drawingEngine.resize(previousSize.width, previousSize.height);
+            if (restored)
+            {
+                Gui::resize();
+                Gfx::invalidateScreen();
+                Input::refreshMouseLocation();
+            }
+            return restored && previousSize.width == pixelWidth && previousSize.height == pixelHeight;
+        }
 
         Gui::resize();
         Gfx::invalidateScreen();
@@ -542,7 +563,7 @@ namespace OpenLoco::Ui
 
         if (Tutorial::state() != Tutorial::State::none)
         {
-            return;
+            return true;
         }
 
         // Save window size to config if NOT maximized
@@ -561,14 +582,19 @@ namespace OpenLoco::Ui
                 Config::write();
             }
         }
+        return true;
     }
 
-    void triggerResize()
+    bool triggerResize()
     {
         int width = 0;
         int height = 0;
-        SDL_GetWindowSize(_window, &width, &height);
-        windowSizeChanged(width, height);
+        if (_window == nullptr || !SDL_GetWindowSize(_window, &width, &height) || width <= 0 || height <= 0)
+        {
+            Logging::error("Unable to query a valid window size");
+            return false;
+        }
+        return windowSizeChanged(width, height);
     }
 
     void render()
@@ -649,6 +675,15 @@ namespace OpenLoco::Ui
     bool setDisplayMode(Config::ScreenMode mode, Config::Resolution newResolution)
     {
         _isChangingDisplayMode = true;
+        auto& config = Config::get();
+        const auto previousDisplay = config.display;
+        const auto restorePreviousDisplay = [&] {
+            config.display = previousDisplay;
+            _isRestoringDisplayMode = true;
+            const auto restored = setDisplayMode(previousDisplay.mode);
+            _isRestoringDisplayMode = false;
+            return restored;
+        };
 
         // *HACK* Set window to non fullscreen before switching resolution.
         // This fixes issues with high dpi and Windows scaling affecting the GUI size.
@@ -683,7 +718,6 @@ namespace OpenLoco::Ui
             return false;
         }
 
-        auto& config = Config::get();
         /*
         if (config.display.mode == Config::ScreenMode::window)
         {
@@ -765,7 +799,15 @@ namespace OpenLoco::Ui
 
         if (Tutorial::state() == Tutorial::State::initialising)
         {
-            Ui::triggerResize();
+            if (!Ui::triggerResize())
+            {
+                if (!_isRestoringDisplayMode && !restorePreviousDisplay())
+                {
+                    throw Exception::RuntimeError("Unable to restore the previous display mode.");
+                }
+                _isChangingDisplayMode = false;
+                return false;
+            }
             Gfx::invalidateScreen();
             _isChangingDisplayMode = false;
             return true;
@@ -783,8 +825,17 @@ namespace OpenLoco::Ui
             config.display.fullscreenResolution = newResolution;
         }
 
+        if (!Ui::triggerResize())
+        {
+            config.display = previousDisplay;
+            if (!_isRestoringDisplayMode && !restorePreviousDisplay())
+            {
+                throw Exception::RuntimeError("Unable to restore the previous display mode.");
+            }
+            _isChangingDisplayMode = false;
+            return false;
+        }
         OpenLoco::Config::write();
-        Ui::triggerResize();
         Gfx::invalidateScreen();
         _isChangingDisplayMode = false;
 
@@ -1077,19 +1128,29 @@ namespace OpenLoco::Ui
         WindowManager::callHandleInputEndEventOnAllWindows();
     }
 
-    void setWindowScaling(float newScaleFactor)
+    bool setWindowScaling(float newScaleFactor)
     {
         auto& config = Config::get();
         newScaleFactor = std::clamp(newScaleFactor, ScaleFactor::min, ScaleFactor::max);
         if (config.scaleFactor == newScaleFactor)
         {
-            return;
+            return true;
         }
 
+        const auto previousScaleFactor = config.scaleFactor;
         config.scaleFactor = newScaleFactor;
 
-        Ui::triggerResize();
+        if (!Ui::triggerResize())
+        {
+            config.scaleFactor = previousScaleFactor;
+            if (!Ui::triggerResize())
+            {
+                throw Exception::RuntimeError("Unable to restore rendering resources after changing scale.");
+            }
+            return false;
+        }
         Gfx::invalidateScreen();
+        return true;
     }
 
     void adjustWindowScale(float adjust_by)
@@ -1101,8 +1162,10 @@ namespace OpenLoco::Ui
             return;
         }
 
-        setWindowScaling(newScaleFactor);
-        Config::write();
+        if (setWindowScaling(newScaleFactor))
+        {
+            Config::write();
+        }
     }
 
     bool hasInputFocus()

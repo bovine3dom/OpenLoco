@@ -189,6 +189,7 @@ namespace OpenLoco::Gfx
     void loadCurrency();
     void loadDefaultPalette();
     void loadPalette(uint32_t imageIndex, uint8_t modifier);
+    void setPaletteEntries(const PaletteEntry* entries, int32_t index, int32_t count);
     std::span<const PaletteEntry> getRgbaPalette();
 
     ImageExtents getImagesMaxExtent(const ImageId baseImageId, const size_t numImages);

@@ -36,6 +36,7 @@ namespace OpenLoco
         std::optional<int32_t> height;
         std::optional<float> scaleFactor;
         bool fullRedraw{};
+        bool requireGpuPalette{};
         std::optional<int32_t> cases;
         std::optional<int32_t> seed;
         std::string focusTown;
