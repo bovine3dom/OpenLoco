@@ -7,10 +7,12 @@
 #include "Map/TileManager.h"
 #include "Objects/DockObject.h"
 #include "Objects/ObjectManager.h"
+#include "Objects/VehicleObject.h"
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/Orders.h"
 #include "Vehicles/Vehicle.h"
 #include "Vehicles/Vehicle2.h"
+#include "Vehicles/VehicleBody.h"
 #include "Vehicles/VehicleHead.h"
 #include "World/Station.h"
 #include "World/StationManager.h"
@@ -33,6 +35,10 @@ namespace OpenLoco::Vehicles::WaterPathfinding
     static constexpr size_t kMaxCachedRoutes = 8;
     static constexpr uint32_t kCardinalStepCost = 1000;
     static constexpr uint32_t kDiagonalStepCost = 1414;
+    static constexpr Speed16 kUphillSpeedLimit{ 20 };
+    static constexpr Speed16 kDownhillSpeedLimit{ 25 };
+    // Integer slope interpolation may differ slightly across an otherwise continuous tile edge.
+    static constexpr coord_t kSurfaceSampleTolerance = 2;
 
     // Ordered to match sprite yaw, starting at west and rotating towards south.
     static constexpr std::array<TilePos2, 8> kDirectionOffsets = {
@@ -59,9 +65,9 @@ namespace OpenLoco::Vehicles::WaterPathfinding
         };
     }
 
-    bool isNavigable(const TilePos2 tilePos, const MicroZ waterLevel)
+    bool isNavigable(const TilePos2 tilePos, const MicroZ waterLevel, const NavigationMode mode)
     {
-        if (waterLevel == 0 || !validCoords(tilePos))
+        if (!validCoords(tilePos))
         {
             return false;
         }
@@ -69,9 +75,29 @@ namespace OpenLoco::Vehicles::WaterPathfinding
         const auto tile = TileManager::get(tilePos);
         const auto* surfaceEntry = tile.surfaceEntry();
         const auto* surface = surfaceEntry == nullptr ? nullptr : surfaceEntry->as<SurfaceElement>();
-        if (surface == nullptr || surface->water() != waterLevel)
+        if (surface == nullptr)
         {
             return false;
+        }
+
+        SmallZ traversalZ;
+        if (mode == NavigationMode::waterOnly)
+        {
+            if (waterLevel == 0 || surface->water() != waterLevel)
+            {
+                return false;
+            }
+            traversalZ = waterLevel * kMicroToSmallZStep;
+        }
+        else
+        {
+            const auto landTop = TileManager::getSurfaceCornerHeight(*surface);
+            const auto waterTop = static_cast<SmallZ>(surface->water() * kMicroToSmallZStep);
+            if (surface->isSlopeDoubleHeight() && landTop >= waterTop)
+            {
+                return false;
+            }
+            traversalZ = std::max(landTop, waterTop);
         }
 
         for (auto* element = surfaceEntry; !element->isLast();)
@@ -82,8 +108,7 @@ namespace OpenLoco::Vehicles::WaterPathfinding
                 continue;
             }
 
-            const auto clearance = static_cast<int16_t>(element->baseZ()) / kMicroToSmallZStep - waterLevel;
-            return clearance >= 1;
+            return element->baseZ() >= traversalZ + kMicroToSmallZStep;
         }
         return true;
     }
@@ -103,19 +128,122 @@ namespace OpenLoco::Vehicles::WaterPathfinding
         return isDiagonal(direction) ? kDiagonalStepCost : kCardinalStepCost;
     }
 
-    static bool isNavigableTransition(const TilePos2 start, const uint8_t direction, const MicroZ waterLevel)
+    static coord_t getSurfaceHeight(const Pos2 pos)
+    {
+        const auto height = TileManager::getHeight(pos);
+        return std::max(height.landHeight, height.waterHeight);
+    }
+
+    Speed16 getAmphibiousSpeedLimit(const Pos2 current, const Pos2 target, const Speed16 maximumSpeed)
+    {
+        const auto currentHeight = getSurfaceHeight(current);
+        const auto targetHeight = getSurfaceHeight(target);
+        if (targetHeight > currentHeight)
+        {
+            return std::min(maximumSpeed, kUphillSpeedLimit);
+        }
+        if (targetHeight < currentHeight)
+        {
+            return std::min(maximumSpeed, kDownhillSpeedLimit);
+        }
+        return maximumSpeed;
+    }
+
+    static bool hasContinuousSurface(const TilePos2 start, const TilePos2 destination)
+    {
+        const auto offset = destination - start;
+        const auto startOrigin = toWorldSpace(start);
+        const auto destinationOrigin = toWorldSpace(destination);
+        const Pos2 startSample = startOrigin + Pos2{
+            offset.x < 0 ? 0 : offset.x > 0 ? kTileSize - 1
+                                            : kTileSize / 2,
+            offset.y < 0 ? 0 : offset.y > 0 ? kTileSize - 1
+                                            : kTileSize / 2,
+        };
+        const Pos2 destinationSample = destinationOrigin + Pos2{
+            offset.x < 0 ? kTileSize - 1 : offset.x > 0 ? 0
+                                                        : kTileSize / 2,
+            offset.y < 0 ? kTileSize - 1 : offset.y > 0 ? 0
+                                                        : kTileSize / 2,
+        };
+        const auto startHeight = getSurfaceHeight(startSample);
+        const auto destinationHeight = getSurfaceHeight(destinationSample);
+        return std::max(startHeight, destinationHeight) - std::min(startHeight, destinationHeight) <= kSurfaceSampleTolerance;
+    }
+
+    static bool hasContinuousDiagonalCorner(const TilePos2 start, const TilePos2 offset)
+    {
+        const auto corner = toWorldSpace(start) + Pos2{
+            offset.x > 0 ? kTileSize : 0,
+            offset.y > 0 ? kTileSize : 0,
+        };
+        const auto sourceX = offset.x > 0 ? -1 : 0;
+        const auto destinationX = offset.x > 0 ? 0 : -1;
+        const auto sourceY = offset.y > 0 ? -1 : 0;
+        const auto destinationY = offset.y > 0 ? 0 : -1;
+        const std::array samples = {
+            corner + Pos2{ sourceX, sourceY },
+            corner + Pos2{ destinationX, sourceY },
+            corner + Pos2{ sourceX, destinationY },
+            corner + Pos2{ destinationX, destinationY },
+        };
+
+        auto minHeight = std::numeric_limits<coord_t>::max();
+        auto maxHeight = std::numeric_limits<coord_t>::min();
+        for (const auto sample : samples)
+        {
+            const auto height = getSurfaceHeight(sample);
+            minHeight = std::min(minHeight, height);
+            maxHeight = std::max(maxHeight, height);
+        }
+        return maxHeight - minHeight <= kSurfaceSampleTolerance;
+    }
+
+    static bool isNavigableCached(const TilePos2 tilePos, const MicroZ waterLevel, const NavigationMode mode, std::span<int8_t> cache)
+    {
+        if (cache.empty())
+        {
+            return isNavigable(tilePos, waterLevel, mode);
+        }
+
+        auto& result = cache[getTileIndex(tilePos)];
+        if (result < 0)
+        {
+            result = isNavigable(tilePos, waterLevel, mode);
+        }
+        return result != 0;
+    }
+
+    static bool isNavigableTransition(
+        const TilePos2 start,
+        const uint8_t direction,
+        const MicroZ waterLevel,
+        const NavigationMode mode,
+        std::span<int8_t> navigabilityCache = {})
     {
         const auto offset = kDirectionOffsets[direction];
-        if (!isNavigable(start + offset, waterLevel))
+        const auto destination = start + offset;
+        if (!isNavigableCached(destination, waterLevel, mode, navigabilityCache))
         {
             return false;
         }
         if (!isDiagonal(direction))
         {
-            return true;
+            return mode == NavigationMode::waterOnly || hasContinuousSurface(start, destination);
         }
-        return isNavigable(start + TilePos2{ offset.x, 0 }, waterLevel)
-            && isNavigable(start + TilePos2{ 0, offset.y }, waterLevel);
+        const auto horizontal = start + TilePos2{ offset.x, 0 };
+        const auto vertical = start + TilePos2{ 0, offset.y };
+        if (!isNavigableCached(horizontal, waterLevel, mode, navigabilityCache)
+            || !isNavigableCached(vertical, waterLevel, mode, navigabilityCache))
+        {
+            return false;
+        }
+        return mode == NavigationMode::waterOnly
+            || (hasContinuousDiagonalCorner(start, offset)
+                && hasContinuousSurface(start, horizontal)
+                && hasContinuousSurface(start, vertical)
+                && hasContinuousSurface(horizontal, destination)
+                && hasContinuousSurface(vertical, destination));
     }
 
     static bool isBlockedTransition(const TilePos2 start, const uint8_t direction, std::span<const TilePos2> blockedTiles)
@@ -155,6 +283,7 @@ namespace OpenLoco::Vehicles::WaterPathfinding
     struct RouteCache
     {
         MicroZ waterLevel;
+        NavigationMode mode;
         std::vector<TilePos2> goals;
         std::vector<TilePos2> blockedTiles;
         std::vector<uint32_t> distances;
@@ -163,17 +292,18 @@ namespace OpenLoco::Vehicles::WaterPathfinding
         Frontier frontier;
         uint64_t lastUse{};
 
-        RouteCache(const MicroZ level, std::span<const TilePos2> routeGoals, std::span<const TilePos2> routeBlockedTiles = {})
+        RouteCache(const MicroZ level, const NavigationMode navigationMode, std::span<const TilePos2> routeGoals, std::span<const TilePos2> routeBlockedTiles = {})
             : distances(kMapSize, kUnreachable)
             , goalIndices(kMapSize, kNoGoal)
             , settled(kMapSize, false)
         {
-            initialise(level, routeGoals, routeBlockedTiles);
+            initialise(level, navigationMode, routeGoals, routeBlockedTiles);
         }
 
-        void initialise(const MicroZ level, std::span<const TilePos2> routeGoals, std::span<const TilePos2> routeBlockedTiles = {})
+        void initialise(const MicroZ level, const NavigationMode navigationMode, std::span<const TilePos2> routeGoals, std::span<const TilePos2> routeBlockedTiles = {})
         {
             waterLevel = level;
+            mode = navigationMode;
             goals.assign(routeGoals.begin(), routeGoals.end());
             blockedTiles.assign(routeBlockedTiles.begin(), routeBlockedTiles.end());
             std::ranges::fill(distances, kUnreachable);
@@ -184,7 +314,7 @@ namespace OpenLoco::Vehicles::WaterPathfinding
             for (size_t i = 0; i < goals.size(); ++i)
             {
                 const auto goal = goals[i];
-                if (!isNavigable(goal, waterLevel) || isBlocked(goal, blockedTiles))
+                if (!isNavigable(goal, waterLevel, mode) || isBlocked(goal, blockedTiles))
                 {
                     continue;
                 }
@@ -204,6 +334,11 @@ namespace OpenLoco::Vehicles::WaterPathfinding
         void expandTo(const TilePos2 destination)
         {
             const auto destinationIndex = getTileIndex(destination);
+            if (settled[destinationIndex])
+            {
+                return;
+            }
+            std::vector<int8_t> navigabilityCache(kMapSize, -1);
             while (!settled[destinationIndex] && !frontier.empty())
             {
                 const auto [distance, goal, index] = frontier.top();
@@ -235,7 +370,7 @@ namespace OpenLoco::Vehicles::WaterPathfinding
                     {
                         continue;
                     }
-                    if (!isNavigableTransition(tilePos, direction, waterLevel)
+                    if (!isNavigableTransition(tilePos, direction, waterLevel, mode, navigabilityCache)
                         || isBlockedTransition(tilePos, direction, blockedTiles))
                     {
                         continue;
@@ -262,7 +397,7 @@ namespace OpenLoco::Vehicles::WaterPathfinding
         _useCounter = 0;
     }
 
-    static RouteCache& getRoute(const MicroZ waterLevel, std::span<const TilePos2> goals)
+    static RouteCache& getRoute(const MicroZ waterLevel, const NavigationMode mode, std::span<const TilePos2> goals)
     {
         const auto revision = TileManager::getMapRevision();
         if (_mapRevision != revision)
@@ -270,8 +405,8 @@ namespace OpenLoco::Vehicles::WaterPathfinding
             reset();
         }
 
-        const auto matches = [waterLevel, goals](const RouteCache& route) {
-            return route.waterLevel == waterLevel && std::ranges::equal(route.goals, goals);
+        const auto matches = [waterLevel, mode, goals](const RouteCache& route) {
+            return route.waterLevel == waterLevel && route.mode == mode && std::ranges::equal(route.goals, goals);
         };
         auto route = std::ranges::find_if(_routeCache, matches);
         if (route == _routeCache.end())
@@ -279,11 +414,11 @@ namespace OpenLoco::Vehicles::WaterPathfinding
             if (_routeCache.size() == kMaxCachedRoutes)
             {
                 route = std::ranges::min_element(_routeCache, {}, &RouteCache::lastUse);
-                route->initialise(waterLevel, goals);
+                route->initialise(waterLevel, mode, goals);
             }
             else
             {
-                _routeCache.emplace_back(waterLevel, goals);
+                _routeCache.emplace_back(waterLevel, mode, goals);
                 route = std::prev(_routeCache.end());
             }
         }
@@ -291,21 +426,22 @@ namespace OpenLoco::Vehicles::WaterPathfinding
         return *route;
     }
 
-    static RouteCache& getDetourRoute(const MicroZ waterLevel, std::span<const TilePos2> goals, std::span<const TilePos2> blockedTiles)
+    static RouteCache& getDetourRoute(const MicroZ waterLevel, const NavigationMode mode, std::span<const TilePos2> goals, std::span<const TilePos2> blockedTiles)
     {
         const auto matches = _detourCache.has_value()
             && _detourCache->waterLevel == waterLevel
+            && _detourCache->mode == mode
             && std::ranges::equal(_detourCache->goals, goals)
             && std::ranges::equal(_detourCache->blockedTiles, blockedTiles);
         if (!matches)
         {
             if (_detourCache.has_value())
             {
-                _detourCache->initialise(waterLevel, goals, blockedTiles);
+                _detourCache->initialise(waterLevel, mode, goals, blockedTiles);
             }
             else
             {
-                _detourCache.emplace(waterLevel, goals, blockedTiles);
+                _detourCache.emplace(waterLevel, mode, goals, blockedTiles);
             }
         }
         return *_detourCache;
@@ -347,7 +483,7 @@ namespace OpenLoco::Vehicles::WaterPathfinding
             {
                 continue;
             }
-            if (!isNavigableTransition(start, direction, route.waterLevel))
+            if (!isNavigableTransition(start, direction, route.waterLevel, route.mode))
             {
                 hasStaleRoute = true;
                 continue;
@@ -373,15 +509,16 @@ namespace OpenLoco::Vehicles::WaterPathfinding
         std::span<const TilePos2> goals,
         std::span<const TilePos2> blockedTiles,
         const uint8_t currentYaw,
+        const NavigationMode mode,
         const bool canRefresh)
     {
         SearchResult result{ RouteStatus::unreachable, start, kNoGoal, kUnreachable };
-        if (!isNavigable(start, waterLevel) || goals.empty() || goals.size() >= kNoGoal)
+        if (!isNavigable(start, waterLevel, mode) || goals.empty() || goals.size() >= kNoGoal)
         {
             return result;
         }
 
-        auto& route = getRoute(waterLevel, goals);
+        auto& route = getRoute(waterLevel, mode, goals);
         route.expandTo(start);
 
         bool hasStaleRoute = false;
@@ -390,7 +527,7 @@ namespace OpenLoco::Vehicles::WaterPathfinding
         {
             _routeCache.clear();
             _detourCache.reset();
-            return findNextTileImpl(start, waterLevel, goals, blockedTiles, currentYaw, false);
+            return findNextTileImpl(start, waterLevel, goals, blockedTiles, currentYaw, mode, false);
         }
         if (result.status != RouteStatus::temporarilyBlocked)
         {
@@ -399,14 +536,14 @@ namespace OpenLoco::Vehicles::WaterPathfinding
 
         // Static routes ignore traffic. Build a reusable traffic-aware field only when the
         // shortest-path gradient is blocked.
-        auto& detour = getDetourRoute(waterLevel, goals, blockedTiles);
+        auto& detour = getDetourRoute(waterLevel, mode, goals, blockedTiles);
         detour.expandTo(start);
         bool hasStaleDetour = false;
         const auto detourResult = selectNextTile(detour, start, {}, currentYaw, hasStaleDetour);
         if (hasStaleDetour && canRefresh)
         {
             _detourCache.reset();
-            return findNextTileImpl(start, waterLevel, goals, blockedTiles, currentYaw, false);
+            return findNextTileImpl(start, waterLevel, goals, blockedTiles, currentYaw, mode, false);
         }
         return detourResult.status == RouteStatus::found ? detourResult : result;
     }
@@ -416,9 +553,11 @@ namespace OpenLoco::Vehicles::WaterPathfinding
         const MicroZ waterLevel,
         std::span<const TilePos2> goals,
         std::span<const TilePos2> blockedTiles,
-        const uint8_t currentYaw)
+        const uint8_t currentYaw,
+        const NavigationMode mode)
     {
-        return findNextTileImpl(start, waterLevel, goals, blockedTiles, currentYaw, true);
+        const auto navigationLevel = mode == NavigationMode::waterOnly ? waterLevel : MicroZ{};
+        return findNextTileImpl(start, navigationLevel, goals, blockedTiles, currentYaw, mode, true);
     }
 
     struct DockTarget
@@ -506,12 +645,13 @@ namespace OpenLoco::Vehicles::WaterPathfinding
         const TilePos2 start,
         const MicroZ waterLevel,
         const uint8_t currentYaw,
+        const NavigationMode mode,
         std::span<const TilePos2> blockedTiles)
     {
         bool hasBlockedTarget = false;
         for (const auto direction : getDirectionOrder(currentYaw))
         {
-            if (!isNavigableTransition(start, direction, waterLevel))
+            if (!isNavigableTransition(start, direction, waterLevel, mode))
             {
                 continue;
             }
@@ -530,6 +670,7 @@ namespace OpenLoco::Vehicles::WaterPathfinding
         const TilePos2 start,
         const MicroZ waterLevel,
         const uint8_t currentYaw,
+        const NavigationMode mode,
         std::span<const TilePos2> blockedTiles,
         std::span<const DockTarget> targets,
         const bool isLeavingDock)
@@ -541,14 +682,14 @@ namespace OpenLoco::Vehicles::WaterPathfinding
             goals.push_back(target.tile);
         }
 
-        const auto route = findNextTile(start, waterLevel, goals, blockedTiles, currentYaw);
+        const auto route = findNextTile(start, waterLevel, goals, blockedTiles, currentYaw, mode);
         if (route.status != RouteStatus::found && route.status != RouteStatus::arrived)
         {
             return makeResult(route.status, toWorldSpace(start) + Pos2{ 16, 16 });
         }
         if (route.status == RouteStatus::arrived && isLeavingDock)
         {
-            return findEgressTarget(start, waterLevel, currentYaw, blockedTiles);
+            return findEgressTarget(start, waterLevel, currentYaw, mode, blockedTiles);
         }
 
         const auto& target = targets[route.goal];
@@ -571,6 +712,9 @@ namespace OpenLoco::Vehicles::WaterPathfinding
 
         const Vehicle train(head);
         const auto& vehicle2 = *train.veh2;
+        const auto mode = !train.cars.empty() && isSrn4HovercraftObject(train.cars.firstCar.body->objectId)
+            ? NavigationMode::amphibious
+            : NavigationMode::waterOnly;
         const auto waterLevel = static_cast<MicroZ>(vehicle2.position.z / kMicroZStep);
         const auto currentYaw = vehicle2.spriteYaw;
         const auto blockedTiles = findBlockedNeighbours(head, start);
@@ -580,14 +724,14 @@ namespace OpenLoco::Vehicles::WaterPathfinding
         if (const auto* waypointOrder = currentOrder->as<OrderRouteWaypoint>(); waypointOrder != nullptr)
         {
             const std::array goals = { toTileSpace(waypointOrder->getWaypoint()) };
-            const auto route = findNextTile(start, waterLevel, goals, blockedTiles, currentYaw);
+            const auto route = findNextTile(start, waterLevel, goals, blockedTiles, currentYaw, mode);
             if (route.status == RouteStatus::found)
             {
                 return makeResult(RouteStatus::found, toWorldSpace(route.nextTile) + Pos2{ 16, 16 });
             }
             if (route.status == RouteStatus::arrived)
             {
-                return findEgressTarget(start, waterLevel, currentYaw, blockedTiles);
+                return findEgressTarget(start, waterLevel, currentYaw, mode, blockedTiles);
             }
             return makeResult(route.status, currentTarget);
         }
@@ -597,7 +741,7 @@ namespace OpenLoco::Vehicles::WaterPathfinding
         {
             if (isLeavingDock)
             {
-                return findEgressTarget(start, waterLevel, currentYaw, blockedTiles);
+                return findEgressTarget(start, waterLevel, currentYaw, mode, blockedTiles);
             }
             return makeResult(RouteStatus::unreachable, currentTarget);
         }
@@ -612,12 +756,12 @@ namespace OpenLoco::Vehicles::WaterPathfinding
         std::ranges::copy_if(targets, std::back_inserter(freeTargets), [](const auto& target) { return !target.occupied; });
         if (!freeTargets.empty())
         {
-            const auto result = findDockRoute(start, waterLevel, currentYaw, blockedTiles, freeTargets, isLeavingDock);
+            const auto result = findDockRoute(start, waterLevel, currentYaw, mode, blockedTiles, freeTargets, isLeavingDock);
             if (result.status != RouteStatus::unreachable)
             {
                 return result;
             }
         }
-        return findDockRoute(start, waterLevel, currentYaw, blockedTiles, targets, isLeavingDock);
+        return findDockRoute(start, waterLevel, currentYaw, mode, blockedTiles, targets, isLeavingDock);
     }
 }

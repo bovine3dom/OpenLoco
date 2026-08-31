@@ -13,6 +13,7 @@ using namespace OpenLoco::World;
 namespace
 {
     constexpr MicroZ kWaterLevel = 5;
+    constexpr SmallZ kWaterSurfaceZ = kWaterLevel * kMicroToSmallZStep;
     constexpr uint32_t kCardinalStepCost = 1000;
     constexpr uint32_t kDiagonalStepCost = 1414;
     constexpr uint8_t kWest = 0;
@@ -42,6 +43,16 @@ namespace
             auto* surface = TileManager::get(pos).surface();
             ASSERT_NE(surface, nullptr);
             surface->setWater(level);
+        }
+
+        static void setLand(const TilePos2 pos, const SmallZ baseZ = kWaterSurfaceZ, const uint8_t slope = SurfaceSlope::flat)
+        {
+            auto* surface = TileManager::get(pos).surface();
+            ASSERT_NE(surface, nullptr);
+            surface->setBaseZ(baseZ);
+            surface->setClearZ(baseZ);
+            surface->setSlope(slope);
+            surface->setWater(0);
         }
 
         static void setHorizontalWater(const tile_coord_t x1, const tile_coord_t x2, const tile_coord_t y)
@@ -144,6 +155,159 @@ TEST_F(WaterPathfindingTest, ReportsDisconnectedWaterAsUnreachable)
     const auto result = findNextTile(start, kWaterLevel, goals, {}, kEast);
 
     EXPECT_EQ(result.status, RouteStatus::unreachable);
+}
+
+TEST_F(WaterPathfindingTest, AmphibiousRouteCrossesLandThatBlocksOrdinaryShips)
+{
+    constexpr TilePos2 start{ 10, 10 };
+    constexpr TilePos2 middle{ 11, 10 };
+    constexpr TilePos2 goal{ 12, 10 };
+    setWater(start);
+    setLand(middle);
+    setWater(goal);
+
+    const std::array goals = { goal };
+    EXPECT_EQ(findNextTile(start, kWaterLevel, goals, {}, kEast).status, RouteStatus::unreachable);
+    const auto result = findNextTile(start, kWaterLevel, goals, {}, kEast, NavigationMode::amphibious);
+
+    EXPECT_EQ(result.status, RouteStatus::found);
+    EXPECT_EQ(result.remainingDistance, 2U * kCardinalStepCost);
+    expectPosition(result.nextTile, middle);
+}
+
+TEST_F(WaterPathfindingTest, DoesNotShareRouteCacheBetweenNavigationModes)
+{
+    constexpr TilePos2 start{ 10, 10 };
+    constexpr TilePos2 middle{ 11, 10 };
+    constexpr TilePos2 goal{ 12, 10 };
+    setWater(start);
+    setLand(middle);
+    setWater(goal);
+    const std::array goals = { goal };
+
+    EXPECT_EQ(findNextTile(start, kWaterLevel, goals, {}, kEast, NavigationMode::amphibious).status, RouteStatus::found);
+    EXPECT_EQ(findNextTile(start, kWaterLevel, goals, {}, kEast).status, RouteStatus::unreachable);
+}
+
+TEST_F(WaterPathfindingTest, AmphibiousRouteFollowsContinuousSlope)
+{
+    constexpr TilePos2 start{ 10, 10 };
+    constexpr TilePos2 slope{ 11, 10 };
+    constexpr TilePos2 goal{ 12, 10 };
+    setWater(start);
+    setLand(slope, kWaterSurfaceZ, SurfaceSlope::SideUp::northeast);
+    setLand(goal, kWaterSurfaceZ + kMicroToSmallZStep);
+
+    const std::array goals = { goal };
+    const auto result = findNextTile(start, kWaterLevel, goals, {}, kEast, NavigationMode::amphibious);
+
+    EXPECT_EQ(result.status, RouteStatus::found);
+    EXPECT_EQ(result.remainingDistance, 2U * kCardinalStepCost);
+    expectPosition(result.nextTile, slope);
+}
+
+TEST_F(WaterPathfindingTest, AmphibiousRouteFollowsTerrainAboveWater)
+{
+    constexpr TilePos2 start{ 10, 10 };
+    constexpr TilePos2 slope{ 11, 10 };
+    constexpr TilePos2 goal{ 12, 10 };
+    setWater(start);
+    setLand(slope, kWaterSurfaceZ, SurfaceSlope::SideUp::northeast);
+    setWater(slope);
+    setLand(goal, kWaterSurfaceZ + kMicroToSmallZStep);
+
+    const std::array goals = { goal };
+    const auto result = findNextTile(start, kWaterLevel, goals, {}, kEast, NavigationMode::amphibious);
+
+    EXPECT_EQ(result.status, RouteStatus::found);
+    EXPECT_EQ(result.remainingDistance, 2U * kCardinalStepCost);
+    expectPosition(result.nextTile, slope);
+}
+
+TEST_F(WaterPathfindingTest, AmphibiousSlopeSpeedLimitsAreDirectional)
+{
+    constexpr TilePos2 low{ 10, 10 };
+    constexpr TilePos2 slope{ 11, 10 };
+    constexpr TilePos2 high{ 12, 10 };
+    setWater(low);
+    setLand(slope, kWaterSurfaceZ, SurfaceSlope::SideUp::northeast);
+    setLand(high, kWaterSurfaceZ + kMicroToSmallZStep);
+    const auto lowCentre = toWorldSpace(low) + Pos2{ 16, 16 };
+    const auto slopeCentre = toWorldSpace(slope) + Pos2{ 16, 16 };
+    const auto highCentre = toWorldSpace(high) + Pos2{ 16, 16 };
+
+    EXPECT_EQ(getAmphibiousSpeedLimit(lowCentre, slopeCentre, Speed16{ 70 }), Speed16{ 20 });
+    EXPECT_EQ(getAmphibiousSpeedLimit(highCentre, slopeCentre, Speed16{ 70 }), Speed16{ 25 });
+    EXPECT_EQ(getAmphibiousSpeedLimit(lowCentre, lowCentre, Speed16{ 70 }), Speed16{ 70 });
+    EXPECT_EQ(getAmphibiousSpeedLimit(lowCentre, slopeCentre, Speed16{ 15 }), Speed16{ 15 });
+}
+
+TEST_F(WaterPathfindingTest, AmphibiousRouteOnlyAllowsSubmergedDoubleHeightTerrain)
+{
+    constexpr TilePos2 slope{ 11, 10 };
+    constexpr auto doubleHeightSlope = SurfaceSlope::CornerDown::west | SurfaceSlope::doubleHeight;
+    setLand(slope, kWaterSurfaceZ, doubleHeightSlope);
+
+    EXPECT_FALSE(isNavigable(slope, kWaterLevel, NavigationMode::amphibious));
+    setLand(slope, 4, doubleHeightSlope);
+    setWater(slope);
+    EXPECT_TRUE(isNavigable(slope, kWaterLevel, NavigationMode::amphibious));
+}
+
+TEST_F(WaterPathfindingTest, AmphibiousRouteRequiresClearanceAboveExposedFloodedTerrain)
+{
+    constexpr TilePos2 slope{ 11, 10 };
+    setLand(slope, kWaterSurfaceZ, SurfaceSlope::SideUp::northeast);
+    setWater(slope);
+    ASSERT_TRUE(isNavigable(slope, kWaterLevel, NavigationMode::amphibious));
+
+    ASSERT_NE(TileManager::insertElement<TrackElement>(toWorldSpace(slope), kWaterSurfaceZ + kMicroToSmallZStep, 0xF), nullptr);
+
+    EXPECT_FALSE(isNavigable(slope, kWaterLevel, NavigationMode::amphibious));
+}
+
+TEST_F(WaterPathfindingTest, AmphibiousRouteDoesNotCutAcrossDiscontinuousCorner)
+{
+    constexpr TilePos2 start{ 10, 10 };
+    constexpr TilePos2 horizontal{ 11, 10 };
+    constexpr TilePos2 vertical{ 10, 11 };
+    constexpr TilePos2 goal{ 11, 11 };
+    setLand(start, kWaterSurfaceZ, SurfaceSlope::CornerUp::north);
+    setLand(horizontal, kWaterSurfaceZ, SurfaceSlope::CornerDown::west);
+    setLand(vertical, kWaterSurfaceZ, SurfaceSlope::CornerUp::east);
+    setLand(goal, kWaterSurfaceZ, SurfaceSlope::CornerUp::south);
+
+    const std::array goals = { goal };
+    const auto result = findNextTile(start, kWaterLevel, goals, {}, kSouthEast, NavigationMode::amphibious);
+
+    EXPECT_EQ(result.status, RouteStatus::found);
+    EXPECT_EQ(result.remainingDistance, 2U * kCardinalStepCost);
+    expectPosition(result.nextTile, horizontal);
+}
+
+TEST_F(WaterPathfindingTest, AmphibiousRouteDoesNotCrossCliff)
+{
+    constexpr TilePos2 start{ 10, 10 };
+    constexpr TilePos2 goal{ 11, 10 };
+    setWater(start);
+    setLand(goal, kWaterSurfaceZ + kMicroToSmallZStep);
+
+    const std::array goals = { goal };
+    EXPECT_EQ(findNextTile(start, kWaterLevel, goals, {}, kEast, NavigationMode::amphibious).status, RouteStatus::unreachable);
+}
+
+TEST_F(WaterPathfindingTest, AmphibiousRouteDoesNotCrossSurfaceInfrastructure)
+{
+    constexpr TilePos2 start{ 10, 10 };
+    constexpr TilePos2 middle{ 11, 10 };
+    constexpr TilePos2 goal{ 12, 10 };
+    setWater(start);
+    setLand(middle);
+    setWater(goal);
+    ASSERT_NE(TileManager::insertElement<TrackElement>(toWorldSpace(middle), kWaterSurfaceZ, 0xF), nullptr);
+
+    const std::array goals = { goal };
+    EXPECT_EQ(findNextTile(start, kWaterLevel, goals, {}, kEast, NavigationMode::amphibious).status, RouteStatus::unreachable);
 }
 
 TEST_F(WaterPathfindingTest, DoesNotCrossDifferentWaterLevels)

@@ -2984,6 +2984,7 @@ namespace OpenLoco::Vehicles
     {
         Vehicle train(*this);
         Vehicle2* veh2 = train.veh2;
+        const auto isHovercraft = isSrn4HovercraftObject(train.cars.firstCar.body->objectId);
 
         // updates the current boats position and sets flags about position
         auto tile = TileManager::get(veh2->position);
@@ -3015,6 +3016,12 @@ namespace OpenLoco::Vehicles
                     targetSpeed = veh2->maxSpeed;
                 }
             }
+        }
+        if (isHovercraft)
+        {
+            targetSpeed = std::min(
+                targetSpeed,
+                WaterPathfinding::getAmphibiousSpeedLimit(veh2->position, position, veh2->maxSpeed));
         }
 
         if (targetSpeed == veh2->currentSpeed)
@@ -3174,7 +3181,13 @@ namespace OpenLoco::Vehicles
         veh1->var_4E = newVeh1Pos.x;
         veh1->var_50 = newVeh1Pos.y;
 
-        Pos3 newLocation = { newVeh2Pos.x, newVeh2Pos.y, veh2->position.z };
+        auto newZ = veh2->position.z;
+        if (isHovercraft)
+        {
+            const auto height = TileManager::getHeight(newVeh2Pos);
+            newZ = std::max(height.landHeight, height.waterHeight);
+        }
+        Pos3 newLocation = { newVeh2Pos.x, newVeh2Pos.y, newZ };
         moveBoatTo(newLocation, veh2->spriteYaw, Pitch::flat);
 
         return flags;

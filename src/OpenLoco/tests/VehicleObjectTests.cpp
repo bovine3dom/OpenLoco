@@ -66,6 +66,15 @@ TEST(VehicleObjectTest, DoesNotOverrideOtherObjects)
     EXPECT_EQ(getEffectiveVehicleCapacity(makeHeader("TRAMCOMB", SourceGame::vanilla, ObjectType::road), 85), 85);
 }
 
+TEST(VehicleObjectTest, IdentifiesOfficialSrn4Hovercraft)
+{
+    EXPECT_TRUE(isSrn4HovercraftObject(makeHeader("HCRAFT1 ")));
+    EXPECT_FALSE(isSrn4HovercraftObject(makeHeader("HCRAFT1 ", SourceGame::custom)));
+    EXPECT_FALSE(isSrn4HovercraftObject(makeHeader("HCRAFT1 ", SourceGame::openLoco)));
+    EXPECT_FALSE(isSrn4HovercraftObject(makeHeader("HCRAFT1 ", SourceGame::vanilla, ObjectType::road)));
+    EXPECT_FALSE(isSrn4HovercraftObject(makeHeader("JFOIL1  ")));
+}
+
 TEST(VehicleObjectTest, DoesNotOverrideCompactedSecondaryCargo)
 {
     EXPECT_EQ(getEffectiveVehicleCapacity(makeHeader("2EPB    "), 5), 5);

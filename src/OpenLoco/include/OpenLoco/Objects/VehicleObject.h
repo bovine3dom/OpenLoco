@@ -305,6 +305,8 @@ namespace OpenLoco
 
     uint8_t getEffectiveVehicleCapacity(const ObjectHeader& header, uint8_t capacity);
     uint8_t getEffectiveVehicleCapacity(const ObjectHeader& header, uint8_t capacity, uint8_t primaryCargoUnitSize, uint8_t cargoUnitSize);
+    bool isSrn4HovercraftObject(const ObjectHeader& header);
+    bool isSrn4HovercraftObject(LoadedObjectId objectId);
 
     namespace StringIds
     {

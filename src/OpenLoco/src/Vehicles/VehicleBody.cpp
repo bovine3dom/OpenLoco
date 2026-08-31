@@ -1357,6 +1357,11 @@ namespace OpenLoco::Vehicles
         auto positionFactor = vehicleObject->bodySprites[0].halfLength;
         auto invertedDirection = spriteYaw ^ (1 << 5);
         auto xyFactor = Math::Trigonometry::computeXYVector(positionFactor, invertedDirection) / 4;
+        const auto isHovercraft = isSrn4HovercraftObject(objectId);
+        const auto isOverWater = [](const World::Pos2 pos) {
+            const auto height = World::TileManager::getHeight(pos);
+            return height.waterHeight != 0 && height.waterHeight >= height.landHeight;
+        };
 
         World::Pos3 loc = position + World::Pos3(xyFactor.x, xyFactor.y, 0);
 
@@ -1367,7 +1372,10 @@ namespace OpenLoco::Vehicles
         loc.x += xyFactor.x;
         loc.y += xyFactor.y;
 
-        Exhaust::create(loc, vehicleObject->animation[num].objectId);
+        if (!isHovercraft || isOverWater(loc))
+        {
+            Exhaust::create(loc, vehicleObject->animation[num].objectId);
+        }
 
         if (vehicleObject->shipWakeSpacing == 0)
         {
@@ -1381,7 +1389,10 @@ namespace OpenLoco::Vehicles
         loc.x += xyFactor.x;
         loc.y += xyFactor.y;
 
-        Exhaust::create(loc, vehicleObject->animation[num].objectId);
+        if (!isHovercraft || isOverWater(loc))
+        {
+            Exhaust::create(loc, vehicleObject->animation[num].objectId);
+        }
     }
 
     // 0x004AC039

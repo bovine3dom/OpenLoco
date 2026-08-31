@@ -68,6 +68,23 @@ namespace OpenLoco
         return nullptr;
     }
 
+    bool isSrn4HovercraftObject(const ObjectHeader& header)
+    {
+        return header.getType() == ObjectType::vehicle
+            && header.getSourceGame() == SourceGame::vanilla
+            && header.getName() == "HCRAFT1 ";
+    }
+
+    bool isSrn4HovercraftObject(const LoadedObjectId objectId)
+    {
+        if (objectId >= ObjectManager::getMaxObjects(ObjectType::vehicle)
+            || ObjectManager::get<VehicleObject>(objectId) == nullptr)
+        {
+            return false;
+        }
+        return isSrn4HovercraftObject(ObjectManager::getHeader({ ObjectType::vehicle, objectId }));
+    }
+
     // 0x004B8C52
     void VehicleObject::drawPreviewImage(Gfx::DrawingContext& drawingCtx, const int16_t x, const int16_t y) const
     {

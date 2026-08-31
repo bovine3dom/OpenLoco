@@ -1,6 +1,7 @@
 #pragma once
 
 #include <OpenLoco/Engine/World.hpp>
+#include <OpenLoco/Speed.hpp>
 #include <OpenLoco/Types.hpp>
 #include <cstdint>
 #include <span>
@@ -12,6 +13,12 @@ namespace OpenLoco::Vehicles
 
 namespace OpenLoco::Vehicles::WaterPathfinding
 {
+    enum class NavigationMode : uint8_t
+    {
+        waterOnly,
+        amphibious,
+    };
+
     enum class RouteStatus : uint8_t
     {
         found,
@@ -36,12 +43,14 @@ namespace OpenLoco::Vehicles::WaterPathfinding
         World::Pos3 stationPos;
     };
 
-    bool isNavigable(World::TilePos2 tilePos, World::MicroZ waterLevel);
+    bool isNavigable(World::TilePos2 tilePos, World::MicroZ waterLevel, NavigationMode mode = NavigationMode::waterOnly);
+    Speed16 getAmphibiousSpeedLimit(World::Pos2 current, World::Pos2 target, Speed16 maximumSpeed);
     SearchResult findNextTile(
         World::TilePos2 start,
         World::MicroZ waterLevel,
         std::span<const World::TilePos2> goals,
         std::span<const World::TilePos2> blockedTiles,
-        uint8_t currentYaw);
+        uint8_t currentYaw,
+        NavigationMode mode = NavigationMode::waterOnly);
     PathingResult getNextTarget(const VehicleHead& head, bool isLeavingDock);
 }
