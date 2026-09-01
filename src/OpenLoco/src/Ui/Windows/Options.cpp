@@ -274,7 +274,13 @@ namespace OpenLoco::Ui::Windows::Options
 
     namespace Display
     {
-        static constexpr Ui::Size kWindowSize = { 400, 167 };
+        static constexpr Ui::Size kWindowSize = { 400, 183 };
+
+        static constexpr std::array<StringId, 3> kAntiAliasingStringIds = {
+            StringIds::anti_aliasing_none,
+            StringIds::anti_aliasing_fxaa,
+            StringIds::anti_aliasing_smaa,
+        };
 
         enum widx
         {
@@ -292,6 +298,9 @@ namespace OpenLoco::Ui::Windows::Options
             frame_limit_label,
             frame_limit,
             frame_limit_btn,
+            anti_aliasing_label,
+            anti_aliasing,
+            anti_aliasing_btn,
             native_viewport_rendering,
             show_fps,
         };
@@ -307,13 +316,15 @@ namespace OpenLoco::Ui::Windows::Options
             constexpr WidgetId kDisplayScaleUpBtn{ "display_scale_up_btn" };
             constexpr WidgetId kFrameLimit{ "frame_limit" };
             constexpr WidgetId kFrameLimitBtn{ "frame_limit_btn" };
+            constexpr WidgetId kAntiAliasing{ "anti_aliasing" };
+            constexpr WidgetId kAntiAliasingBtn{ "anti_aliasing_btn" };
             constexpr WidgetId kNativeViewportRendering{ "native_viewport_rendering" };
             constexpr WidgetId kShowFps{ "show_fps" };
         }
 
         static constexpr auto _widgets = makeWidgets(
             Common::makeCommonWidgets(kWindowSize, StringIds::options_title_display),
-            Widgets::GroupBox({ 4, 49 }, { 392, 113 }, WindowColour::secondary, StringIds::frame_hardware),
+            Widgets::GroupBox({ 4, 49 }, { 392, 129 }, WindowColour::secondary, StringIds::frame_hardware),
 
             Widgets::Label({ 10, 63 }, { 215, 12 }, WindowColour::secondary, ContentAlign::left, StringIds::options_screen_mode),
             Widgets::dropdownWidgets(Widx::kScreenMode, Widx::kScreenModeBtn, { 235, 63 }, { 154, 12 }, WindowColour::secondary, StringIds::empty),
@@ -327,8 +338,11 @@ namespace OpenLoco::Ui::Windows::Options
             Widgets::Label({ 10, 111 }, { 215, 12 }, WindowColour::secondary, ContentAlign::left, StringIds::frameRateLimitLabel),
             Widgets::dropdownWidgets(Widx::kFrameLimit, Widx::kFrameLimitBtn, { 235, 111 }, { 154, 12 }, WindowColour::secondary, StringIds::empty),
 
-            Widgets::Checkbox(Widx::kNativeViewportRendering, { 10, 127 }, { 380, 12 }, WindowColour::secondary, StringIds::nativeViewportRendering, StringIds::nativeViewportRenderingTooltip),
-            Widgets::Checkbox(Widx::kShowFps, { 10, 143 }, { 380, 12 }, WindowColour::secondary, StringIds::option_show_fps_counter, StringIds::option_show_fps_counter_tooltip)
+            Widgets::Label({ 10, 127 }, { 215, 12 }, WindowColour::secondary, ContentAlign::left, StringIds::anti_aliasing),
+            Widgets::dropdownWidgets(Widx::kAntiAliasing, Widx::kAntiAliasingBtn, { 235, 127 }, { 154, 12 }, WindowColour::secondary, StringIds::anti_aliasing_tooltip),
+
+            Widgets::Checkbox(Widx::kNativeViewportRendering, { 10, 143 }, { 380, 12 }, WindowColour::secondary, StringIds::nativeViewportRendering, StringIds::nativeViewportRenderingTooltip),
+            Widgets::Checkbox(Widx::kShowFps, { 10, 159 }, { 380, 12 }, WindowColour::secondary, StringIds::option_show_fps_counter, StringIds::option_show_fps_counter_tooltip)
 
         );
 
@@ -345,12 +359,19 @@ namespace OpenLoco::Ui::Windows::Options
                 case Widx::kNativeViewportRendering:
                 {
                     auto& cfg = OpenLoco::Config::get();
+                    const auto previousAntiAliasing = cfg.display.antiAliasing;
                     cfg.nativeViewportRendering = !cfg.nativeViewportRendering;
+                    if (!cfg.nativeViewportRendering)
+                    {
+                        cfg.display.antiAliasing = Config::AntiAliasing::none;
+                    }
                     if (!Ui::triggerResize())
                     {
                         cfg.nativeViewportRendering = !cfg.nativeViewportRendering;
+                        cfg.display.antiAliasing = previousAntiAliasing;
                         if (!Ui::triggerResize())
                         {
+                            OpenLoco::Config::write();
                             throw Exception::RuntimeError("Unable to restore rendering resources after changing native viewport rendering.");
                         }
                         return;
@@ -501,6 +522,68 @@ namespace OpenLoco::Ui::Windows::Options
             }
         }
 
+        static void antiAliasingMouseDown(const Window& self)
+        {
+            const auto& dropdown = self.widgets[widx::anti_aliasing];
+            Dropdown::show(self.x + dropdown.left, self.y + dropdown.top, dropdown.width() - 4, dropdown.height(), self.getColour(WindowColour::secondary), kAntiAliasingStringIds.size(), 0x80);
+
+            for (size_t i = 0; i < kAntiAliasingStringIds.size(); ++i)
+            {
+                Dropdown::add(i, StringIds::dropdown_stringid, kAntiAliasingStringIds[i]);
+            }
+            const auto& drawingEngine = Gfx::getDrawingEngine();
+            if (!drawingEngine.supportsAntiAliasing())
+            {
+                Dropdown::setItemDisabled(enumValue(Config::AntiAliasing::fxaa));
+                Dropdown::setItemDisabled(enumValue(Config::AntiAliasing::smaa));
+            }
+            Dropdown::setItemSelected(enumValue(drawingEngine.getActiveAntiAliasing()));
+        }
+
+        static void antiAliasingDropdown(const Window& self, int16_t itemIndex)
+        {
+            if (itemIndex < 0 || static_cast<size_t>(itemIndex) >= kAntiAliasingStringIds.size())
+            {
+                return;
+            }
+
+            auto& config = Config::get();
+            const auto previousMode = config.display.antiAliasing;
+            const auto previousActiveMode = Gfx::getDrawingEngine().getActiveAntiAliasing();
+            const auto previousNativeRendering = config.nativeViewportRendering;
+            const auto mode = static_cast<Config::AntiAliasing>(itemIndex);
+            if (mode == previousMode && mode == previousActiveMode)
+            {
+                return;
+            }
+
+            config.display.antiAliasing = mode;
+            if (mode != Config::AntiAliasing::none)
+            {
+                config.nativeViewportRendering = true;
+            }
+
+            const auto resized = Ui::triggerResize();
+            const auto activated = mode == Config::AntiAliasing::none
+                || Gfx::getDrawingEngine().getActiveAntiAliasing() == mode;
+            if (!resized || !activated)
+            {
+                config.display.antiAliasing = previousMode;
+                config.nativeViewportRendering = previousNativeRendering;
+                if (!Ui::triggerResize())
+                {
+                    Config::write();
+                    throw Exception::RuntimeError("Unable to restore rendering resources after changing anti-aliasing.");
+                }
+                Config::write();
+                return;
+            }
+
+            Config::write();
+            Gfx::invalidateScreen();
+            WindowManager::invalidateWidget(self.type, self.number, widx::anti_aliasing);
+        }
+
 #pragma mark -
 
         static void displayScaleMouseDown([[maybe_unused]] const Window& self, [[maybe_unused]] WidgetIndex_t wi, float adjust_by)
@@ -528,6 +611,9 @@ namespace OpenLoco::Ui::Windows::Options
                 case Widx::kFrameLimitBtn:
                     frameLimitMouseDown(self, wi);
                     break;
+                case Widx::kAntiAliasingBtn:
+                    antiAliasingMouseDown(self);
+                    break;
             }
         }
 
@@ -544,6 +630,9 @@ namespace OpenLoco::Ui::Windows::Options
                     break;
                 case Widx::kFrameLimitBtn:
                     frameLimitDropdown(self, item_index);
+                    break;
+                case Widx::kAntiAliasingBtn:
+                    antiAliasingDropdown(self, item_index);
                     break;
             }
         }
@@ -605,6 +694,9 @@ namespace OpenLoco::Ui::Windows::Options
                 }
             }
             self.widgets[widx::frame_limit].text = frameLimitStringId;
+
+            const auto antiAliasing = enumValue(Gfx::getDrawingEngine().getActiveAntiAliasing());
+            self.widgets[widx::anti_aliasing].text = kAntiAliasingStringIds[antiAliasing];
 
             if (Config::get().showFPS)
             {

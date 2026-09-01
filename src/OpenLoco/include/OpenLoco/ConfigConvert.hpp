@@ -230,6 +230,18 @@ namespace YAML
         static const convert_pair_vector<ScreenMode>& getEntries() { return kScreenModeEntries; }
     };
 
+    // AntiAliasing
+    const convert_pair_vector<AntiAliasing> kAntiAliasingEntries = {
+        enum_def(AntiAliasing, none),
+        enum_def(AntiAliasing, fxaa),
+        enum_def(AntiAliasing, smaa),
+    };
+    template<>
+    struct convert<AntiAliasing> : convert_enum_base<AntiAliasing>
+    {
+        static const convert_pair_vector<AntiAliasing>& getEntries() { return kAntiAliasingEntries; }
+    };
+
     // WindowFrameStyle
     const convert_pair_vector<WindowFrameStyle> kWindowFrameStyleEntries = {
         enum_def(WindowFrameStyle, background),

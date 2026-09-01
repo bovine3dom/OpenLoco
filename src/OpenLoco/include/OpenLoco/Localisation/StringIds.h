@@ -2378,6 +2378,11 @@ namespace OpenLoco::StringIds
     constexpr StringId cargo_flow_fifty_percent = 2666;
     constexpr StringId cargo_flow_hundred_percent = 2667;
     constexpr StringId tgv_la_poste_mail_carriage = 2668;
+    constexpr StringId anti_aliasing = 2669;
+    constexpr StringId anti_aliasing_none = 2670;
+    constexpr StringId anti_aliasing_fxaa = 2671;
+    constexpr StringId anti_aliasing_smaa = 2672;
+    constexpr StringId anti_aliasing_tooltip = 2673;
 
     constexpr StringId temporary_object_load_str_0 = 8192;
     constexpr StringId temporary_object_load_str_1 = 8193;

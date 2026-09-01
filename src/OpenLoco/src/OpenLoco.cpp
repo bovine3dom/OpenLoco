@@ -503,6 +503,7 @@ namespace OpenLoco
         config.display.mode = Config::ScreenMode::window;
         config.display.windowResolution = { width, height };
         config.display.vsync = false;
+        config.display.antiAliasing = Config::AntiAliasing::none;
         config.scaleFactor = scaleFactor;
         config.nativeViewportRendering = true;
         config.showFPS = false;

@@ -1,0 +1,571 @@
+#include <metal_stdlib>
+#include <simd/simd.h>
+
+using namespace metal;
+
+struct type_Parameters
+{
+    float2 reciprocalFrame;
+    float2 padding;
+};
+
+constant float4 _52 = {};
+
+struct main0_out
+{
+    float4 out_var_SV_Target0 [[color(0)]];
+};
+
+struct main0_in
+{
+    float4 in_var_COLOR0 [[user(locn0)]];
+    float2 in_var_TEXCOORD0 [[user(locn1)]];
+};
+
+fragment main0_out main0(main0_in in [[stage_in]], constant type_Parameters& Parameters [[buffer(0)]], texture2d<float> colorTexture [[texture(0)]], sampler colorSampler [[sampler(0)]])
+{
+    main0_out out = {};
+    float4 _487;
+    do
+    {
+        float2 _65 = float2(in.in_var_TEXCOORD0.x, in.in_var_TEXCOORD0.y);
+        float4 _67 = colorTexture.sample(colorSampler, _65, level(0.0));
+        float4 _69 = colorTexture.gather(colorSampler, _65, int2(0), component::y);
+        float4 _71 = colorTexture.gather(colorSampler, _65, int2(-1), component::y);
+        float _72 = _69.x;
+        float _73 = _67.y;
+        float _76 = _69.z;
+        float _79 = _71.z;
+        float _80 = _71.x;
+        float _83 = precise::max(precise::max(_79, _80), precise::max(_76, precise::max(_72, _73)));
+        float _86 = _83 - precise::min(precise::min(_79, _80), precise::min(_76, precise::min(_72, _73)));
+        if (_86 < precise::max(0.0, _83 * 0.125))
+        {
+            _487 = _67;
+            break;
+        }
+        float4 _92 = colorTexture.sample(colorSampler, _65, level(0.0), int2(1, -1));
+        float _93 = _92.y;
+        float4 _95 = colorTexture.sample(colorSampler, _65, level(0.0), int2(-1, 1));
+        float _96 = _95.y;
+        float _97 = _79 + _72;
+        float _98 = _80 + _76;
+        float _101 = (-2.0) * _73;
+        float _104 = _69.y;
+        float _105 = _93 + _104;
+        float _106 = _71.w;
+        float _112 = _106 + _96;
+        bool _132 = (abs(((-2.0) * _80) + _112) + ((abs(_101 + _97) * 2.0) + abs(((-2.0) * _76) + _105))) >= (abs(((-2.0) * _72) + (_96 + _104)) + ((abs(_101 + _98) * 2.0) + abs(((-2.0) * _79) + (_106 + _93))));
+        bool _135 = !_132;
+        float4 _139;
+        if (_135)
+        {
+            float4 _138;
+            _138.z = _80;
+            _139 = _138;
+        }
+        else
+        {
+            _139 = _71;
+        }
+        float4 _143;
+        if (_135)
+        {
+            float4 _142;
+            _142.x = _76;
+            _143 = _142;
+        }
+        else
+        {
+            _143 = _69;
+        }
+        float _147;
+        if (_132)
+        {
+            _147 = Parameters.reciprocalFrame.y;
+        }
+        else
+        {
+            _147 = Parameters.reciprocalFrame.x;
+        }
+        float _156 = abs(_139.z - _73);
+        float _157 = abs(_143.x - _73);
+        bool _158 = _156 >= _157;
+        float _163;
+        if (_158)
+        {
+            _163 = -_147;
+        }
+        else
+        {
+            _163 = _147;
+        }
+        float _166 = fast::clamp(abs(((((_97 + _98) * 2.0) + (_112 + _105)) * 0.083333335816860198974609375) - _73) * (1.0 / _86), 0.0, 1.0);
+        float _167 = _135 ? 0.0 : Parameters.reciprocalFrame.x;
+        float _172;
+        if (_132)
+        {
+            _172 = 0.0;
+        }
+        else
+        {
+            _172 = Parameters.reciprocalFrame.y;
+        }
+        float2 _178;
+        if (_135)
+        {
+            float2 _177 = _65;
+            _177.x = in.in_var_TEXCOORD0.x + (_163 * 0.5);
+            _178 = _177;
+        }
+        else
+        {
+            _178 = _65;
+        }
+        float2 _185;
+        if (_132)
+        {
+            float2 _184 = _178;
+            _184.y = _178.y + (_163 * 0.5);
+            _185 = _184;
+        }
+        else
+        {
+            _185 = _178;
+        }
+        float _187 = _185.x - _167;
+        float2 _190 = float2(_187, _185.y - _172);
+        float _191 = _185.x + _167;
+        float2 _193 = float2(_191, _185.y + _172);
+        float _205 = precise::max(_156, _157) * 0.25;
+        float _206 = ((!_158) ? (_143.x + _73) : (_139.z + _73)) * 0.5;
+        float _208 = (((-2.0) * _166) + 3.0) * (_166 * _166);
+        bool _209 = (_73 - _206) < 0.0;
+        float _210 = colorTexture.sample(colorSampler, _190, level(0.0)).y - _206;
+        float _211 = colorTexture.sample(colorSampler, _193, level(0.0)).y - _206;
+        bool _215 = abs(_211) >= _205;
+        bool _216 = !(abs(_210) >= _205);
+        float2 _222;
+        if (_216)
+        {
+            float2 _221 = _190;
+            _221.x = _187 - (_167 * 1.5);
+            _222 = _221;
+        }
+        else
+        {
+            _222 = _190;
+        }
+        float2 _229;
+        if (_216)
+        {
+            float2 _228 = _222;
+            _228.y = _222.y - (_172 * 1.5);
+            _229 = _228;
+        }
+        else
+        {
+            _229 = _222;
+        }
+        bool _234;
+        if (!_216)
+        {
+            _234 = !_215;
+        }
+        else
+        {
+            _234 = true;
+        }
+        bool _235 = !_215;
+        float2 _241;
+        if (_235)
+        {
+            float2 _240 = _193;
+            _240.x = _191 + (_167 * 1.5);
+            _241 = _240;
+        }
+        else
+        {
+            _241 = _193;
+        }
+        float2 _248;
+        if (_235)
+        {
+            float2 _247 = _241;
+            _247.y = _241.y + (_172 * 1.5);
+            _248 = _247;
+        }
+        else
+        {
+            _248 = _241;
+        }
+        float2 _435;
+        float2 _436;
+        float _437;
+        float _438;
+        if (_234)
+        {
+            float _256;
+            if (_216)
+            {
+                _256 = colorTexture.sample(colorSampler, _229, level(0.0)).y;
+            }
+            else
+            {
+                _256 = _210;
+            }
+            float _262;
+            if (_235)
+            {
+                _262 = colorTexture.sample(colorSampler, _248, level(0.0)).y;
+            }
+            else
+            {
+                _262 = _211;
+            }
+            float _266;
+            if (_216)
+            {
+                _266 = _256 - _206;
+            }
+            else
+            {
+                _266 = _256;
+            }
+            float _270;
+            if (_235)
+            {
+                _270 = _262 - _206;
+            }
+            else
+            {
+                _270 = _262;
+            }
+            bool _274 = abs(_270) >= _205;
+            bool _275 = !(abs(_266) >= _205);
+            float2 _282;
+            if (_275)
+            {
+                float2 _281 = _229;
+                _281.x = _229.x - (_167 * 2.0);
+                _282 = _281;
+            }
+            else
+            {
+                _282 = _229;
+            }
+            float2 _289;
+            if (_275)
+            {
+                float2 _288 = _282;
+                _288.y = _282.y - (_172 * 2.0);
+                _289 = _288;
+            }
+            else
+            {
+                _289 = _282;
+            }
+            bool _294;
+            if (!_275)
+            {
+                _294 = !_274;
+            }
+            else
+            {
+                _294 = true;
+            }
+            bool _295 = !_274;
+            float2 _302;
+            if (_295)
+            {
+                float2 _301 = _248;
+                _301.x = _248.x + (_167 * 2.0);
+                _302 = _301;
+            }
+            else
+            {
+                _302 = _248;
+            }
+            float2 _309;
+            if (_295)
+            {
+                float2 _308 = _302;
+                _308.y = _302.y + (_172 * 2.0);
+                _309 = _308;
+            }
+            else
+            {
+                _309 = _302;
+            }
+            float2 _431;
+            float2 _432;
+            float _433;
+            float _434;
+            if (_294)
+            {
+                float _317;
+                if (_275)
+                {
+                    _317 = colorTexture.sample(colorSampler, _289, level(0.0)).y;
+                }
+                else
+                {
+                    _317 = _266;
+                }
+                float _323;
+                if (_295)
+                {
+                    _323 = colorTexture.sample(colorSampler, _309, level(0.0)).y;
+                }
+                else
+                {
+                    _323 = _270;
+                }
+                float _327;
+                if (_275)
+                {
+                    _327 = _317 - _206;
+                }
+                else
+                {
+                    _327 = _317;
+                }
+                float _331;
+                if (_295)
+                {
+                    _331 = _323 - _206;
+                }
+                else
+                {
+                    _331 = _323;
+                }
+                bool _335 = abs(_331) >= _205;
+                bool _336 = !(abs(_327) >= _205);
+                float2 _343;
+                if (_336)
+                {
+                    float2 _342 = _289;
+                    _342.x = _289.x - (_167 * 4.0);
+                    _343 = _342;
+                }
+                else
+                {
+                    _343 = _289;
+                }
+                float2 _350;
+                if (_336)
+                {
+                    float2 _349 = _343;
+                    _349.y = _343.y - (_172 * 4.0);
+                    _350 = _349;
+                }
+                else
+                {
+                    _350 = _343;
+                }
+                bool _355;
+                if (!_336)
+                {
+                    _355 = !_335;
+                }
+                else
+                {
+                    _355 = true;
+                }
+                bool _356 = !_335;
+                float2 _363;
+                if (_356)
+                {
+                    float2 _362 = _309;
+                    _362.x = _309.x + (_167 * 4.0);
+                    _363 = _362;
+                }
+                else
+                {
+                    _363 = _309;
+                }
+                float2 _370;
+                if (_356)
+                {
+                    float2 _369 = _363;
+                    _369.y = _363.y + (_172 * 4.0);
+                    _370 = _369;
+                }
+                else
+                {
+                    _370 = _363;
+                }
+                float2 _427;
+                float2 _428;
+                float _429;
+                float _430;
+                if (_355)
+                {
+                    float _378;
+                    if (_336)
+                    {
+                        _378 = colorTexture.sample(colorSampler, _350, level(0.0)).y;
+                    }
+                    else
+                    {
+                        _378 = _327;
+                    }
+                    float _384;
+                    if (_356)
+                    {
+                        _384 = colorTexture.sample(colorSampler, _370, level(0.0)).y;
+                    }
+                    else
+                    {
+                        _384 = _331;
+                    }
+                    float _388;
+                    if (_336)
+                    {
+                        _388 = _378 - _206;
+                    }
+                    else
+                    {
+                        _388 = _378;
+                    }
+                    float _392;
+                    if (_356)
+                    {
+                        _392 = _384 - _206;
+                    }
+                    else
+                    {
+                        _392 = _384;
+                    }
+                    bool _397 = !(abs(_388) >= _205);
+                    float2 _404;
+                    if (_397)
+                    {
+                        float2 _403 = _350;
+                        _403.x = _350.x - (_167 * 12.0);
+                        _404 = _403;
+                    }
+                    else
+                    {
+                        _404 = _350;
+                    }
+                    float2 _411;
+                    if (_397)
+                    {
+                        float2 _410 = _404;
+                        _410.y = _404.y - (_172 * 12.0);
+                        _411 = _410;
+                    }
+                    else
+                    {
+                        _411 = _404;
+                    }
+                    bool _412 = !(abs(_392) >= _205);
+                    float2 _419;
+                    if (_412)
+                    {
+                        float2 _418 = _370;
+                        _418.x = _370.x + (_167 * 12.0);
+                        _419 = _418;
+                    }
+                    else
+                    {
+                        _419 = _370;
+                    }
+                    float2 _426;
+                    if (_412)
+                    {
+                        float2 _425 = _419;
+                        _425.y = _419.y + (_172 * 12.0);
+                        _426 = _425;
+                    }
+                    else
+                    {
+                        _426 = _419;
+                    }
+                    _427 = _426;
+                    _428 = _411;
+                    _429 = _392;
+                    _430 = _388;
+                }
+                else
+                {
+                    _427 = _370;
+                    _428 = _350;
+                    _429 = _331;
+                    _430 = _327;
+                }
+                _431 = _427;
+                _432 = _428;
+                _433 = _429;
+                _434 = _430;
+            }
+            else
+            {
+                _431 = _309;
+                _432 = _289;
+                _433 = _270;
+                _434 = _266;
+            }
+            _435 = _431;
+            _436 = _432;
+            _437 = _433;
+            _438 = _434;
+        }
+        else
+        {
+            _435 = _248;
+            _436 = _229;
+            _437 = _211;
+            _438 = _210;
+        }
+        float _447;
+        if (_135)
+        {
+            _447 = in.in_var_TEXCOORD0.y - _436.y;
+        }
+        else
+        {
+            _447 = in.in_var_TEXCOORD0.x - _436.x;
+        }
+        float _452;
+        if (_135)
+        {
+            _452 = _435.y - in.in_var_TEXCOORD0.y;
+        }
+        else
+        {
+            _452 = _435.x - in.in_var_TEXCOORD0.x;
+        }
+        float _467 = precise::max(((_447 < _452) ? ((_438 < 0.0) != _209) : ((_437 < 0.0) != _209)) ? ((precise::min(_447, _452) * ((-1.0) / (_452 + _447))) + 0.5) : 0.0, (_208 * _208) * 0.75);
+        float2 _473;
+        if (_135)
+        {
+            float2 _472 = _65;
+            _472.x = in.in_var_TEXCOORD0.x + (_467 * _163);
+            _473 = _472;
+        }
+        else
+        {
+            _473 = _65;
+        }
+        float2 _480;
+        if (_132)
+        {
+            float2 _479 = _473;
+            _479.y = _473.y + (_467 * _163);
+            _480 = _479;
+        }
+        else
+        {
+            _480 = _473;
+        }
+        _487 = float4(colorTexture.sample(colorSampler, _480, level(0.0)).xyz, _73);
+        break;
+    } while(false);
+    float4 _488 = _487;
+    _488.w = 1.0;
+    out.out_var_SV_Target0 = _488 * in.in_var_COLOR0;
+    return out;
+}
+

@@ -33,6 +33,13 @@ namespace OpenLoco::Config
         fullscreenBorderless
     };
 
+    enum class AntiAliasing : uint8_t
+    {
+        none,
+        fxaa,
+        smaa,
+    };
+
     enum class MusicPlaylistType : uint8_t
     {
         currentEra,
@@ -82,6 +89,7 @@ namespace OpenLoco::Config
         Resolution windowResolution = { 800, 600 };
         Resolution fullscreenResolution;
         bool vsync = false;
+        AntiAliasing antiAliasing = AntiAliasing::none;
     };
 
     using Playlist = std::array<bool, 30>;

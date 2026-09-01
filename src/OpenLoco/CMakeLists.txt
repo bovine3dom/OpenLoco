@@ -121,6 +121,7 @@ set(OLOCO_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Graphics/Gfx.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Graphics/InvalidationGrid.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Graphics/PaletteMap.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/Graphics/PostProcessor.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Graphics/RenderTarget.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Graphics/SoftwareDrawingContext.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Graphics/SoftwareDrawingEngine.cpp"

@@ -1,0 +1,510 @@
+#include <metal_stdlib>
+#include <simd/simd.h>
+
+using namespace metal;
+
+struct type_Parameters
+{
+    float4 renderTargetMetrics;
+};
+
+constant float4 _148 = {};
+constant float2 _149 = {};
+constant float4 _150 = {};
+constant float3 _151 = {};
+constant float2 _152 = {};
+
+struct main0_out
+{
+    float4 out_var_SV_Target0 [[color(0)]];
+};
+
+struct main0_in
+{
+    float2 in_var_TEXCOORD0 [[user(locn1)]];
+};
+
+fragment main0_out main0(main0_in in [[stage_in]], constant type_Parameters& Parameters [[buffer(0)]], texture2d<float> edgesTex [[texture(0)]], texture2d<float> areaTex [[texture(1)]], texture2d<float> searchTex [[texture(2)]], sampler edgesTexSampler [[sampler(0)]], sampler areaTexSampler [[sampler(1)]], sampler searchTexSampler [[sampler(2)]])
+{
+    main0_out out = {};
+    float2 _158 = in.in_var_TEXCOORD0 * Parameters.renderTargetMetrics.zw;
+    float4 _16 = fma(Parameters.renderTargetMetrics.xyxy, float4(-0.25, -0.125, 1.25, -0.125), in.in_var_TEXCOORD0.xyxy);
+    float4 _17 = fma(Parameters.renderTargetMetrics.xyxy, float4(-0.125, -0.25, -0.125, 1.25), in.in_var_TEXCOORD0.xyxy);
+    float _162 = _16.x;
+    float _164 = _17.y;
+    float4 _18 = fma(Parameters.renderTargetMetrics.xxyy, float4(-32.0, 32.0, -32.0, 32.0), float4(_162, _16.z, _164, _17.w));
+    float4 _174 = edgesTex.sample(edgesTexSampler, in.in_var_TEXCOORD0);
+    float2 _175 = _174.xy;
+    float4 _549;
+    float2 _550;
+    if (_174.y > 0.0)
+    {
+        float2 _219;
+        float4 _220;
+        if (_174.x > 0.0)
+        {
+            float3 _190 = float3(Parameters.renderTargetMetrics.xy, 1.0);
+            float2 _192;
+            float4 _195;
+            _192 = _149;
+            _195 = float4(in.in_var_TEXCOORD0, -1.0, 1.0);
+            float _199;
+            for (;;)
+            {
+                _199 = _195.z;
+                bool _205;
+                if (_199 < 7.0)
+                {
+                    _205 = _195.w > 0.89999997615814208984375;
+                }
+                else
+                {
+                    _205 = false;
+                }
+                if (_205)
+                {
+                    float3 _25 = fma(_190, float3(-1.0, 1.0, 1.0), _195.xyz);
+                    float4 _207 = float4(_25.x, _25.y, _25.z, _195.w);
+                    float2 _193 = edgesTex.sample(edgesTexSampler, _25.xy, level(0.0)).xy;
+                    _207.w = dot(_193, float2(0.5));
+                    _192 = _193;
+                    _195 = _207;
+                    continue;
+                }
+                else
+                {
+                    break;
+                }
+            }
+            float4 _212 = float4(_195.z, _148.y, _195.w, _148.w);
+            _212.x = _199 + float(_192.y > 0.89999997615814208984375);
+            _219 = _192;
+            _220 = _212;
+        }
+        else
+        {
+            _219 = _149;
+            _220 = float4(float2(0.0).x, _148.y, float2(0.0).y, _148.w);
+        }
+        float4 _223 = float4(in.in_var_TEXCOORD0, -1.0, 1.0);
+        float3 _226 = float3(Parameters.renderTargetMetrics.xy, 1.0);
+        float2 _228;
+        float4 _231;
+        _228 = _219;
+        _231 = _223;
+        float _235;
+        for (;;)
+        {
+            _235 = _231.z;
+            bool _241;
+            if (_235 < 7.0)
+            {
+                _241 = _231.w > 0.89999997615814208984375;
+            }
+            else
+            {
+                _241 = false;
+            }
+            if (_241)
+            {
+                float3 _26 = fma(_226, float3(1.0, -1.0, 1.0), _231.xyz);
+                float4 _243 = float4(_26.x, _26.y, _26.z, _231.w);
+                float2 _229 = edgesTex.sample(edgesTexSampler, _26.xy, level(0.0)).xy;
+                _243.w = dot(_229, float2(0.5));
+                _228 = _229;
+                _231 = _243;
+                continue;
+            }
+            else
+            {
+                break;
+            }
+        }
+        float2 _294;
+        if ((_220.x + _235) > 2.0)
+        {
+            float4 _21 = fma(float4(0.25 - _220.x, _220.x, _235, (-0.25) - _235), Parameters.renderTargetMetrics.xyxy, in.in_var_TEXCOORD0.xyxy);
+            float4 _259 = edgesTex.sample(edgesTexSampler, _21.xy, level(0.0), int2(-1, 0));
+            float4 _262 = edgesTex.sample(edgesTexSampler, _21.zw, level(0.0), int2(1, 0));
+            float4 _263 = float4(_259.x, _259.y, _262.x, _262.y);
+            float2 _264 = _263.xz;
+            float2 _268 = _264 * abs((_264 * 5.0) - float2(3.75));
+            float4 _270 = rint(float4(_268.x, _263.y, _268.y, _263.w));
+            float2 _22 = fma(float2(2.0), _270.yw, _270.xz);
+            bool2 _275 = step(float2(0.89999997615814208984375), float4(_220.x, _231.z, _220.z, _231.w).zw) != float2(0.0);
+            float2 _280;
+            if (_275.x)
+            {
+                float2 _279 = _22;
+                _279.x = 0.0;
+                _280 = _279;
+            }
+            else
+            {
+                _280 = _22;
+            }
+            float2 _285;
+            if (_275.y)
+            {
+                float2 _284 = _280;
+                _284.y = 0.0;
+                _285 = _284;
+            }
+            else
+            {
+                _285 = _280;
+            }
+            float2 _28 = fma(float2(0.0062500000931322574615478515625, 0.001785714295692741870880126953125), fma(float2(20.0), _285, float4(_220.x, _231.z, _220.z, _231.w).xy), float2(0.00312500004656612873077392578125, 0.0008928571478463709354400634765625));
+            _294 = areaTex.sample(areaTexSampler, float2(_28.x + 0.5, _28.y), level(0.0)).xy;
+        }
+        else
+        {
+            _294 = float2(0.0);
+        }
+        _223.x = in.in_var_TEXCOORD0.x + (0.25 * Parameters.renderTargetMetrics.x);
+        float2 _301;
+        float4 _304;
+        _301 = _228;
+        _304 = _223;
+        for (;;)
+        {
+            bool _314;
+            if (_304.z < 7.0)
+            {
+                _314 = _304.w > 0.89999997615814208984375;
+            }
+            else
+            {
+                _314 = false;
+            }
+            if (_314)
+            {
+                float3 _29 = fma(_226, float3(-1.0, -1.0, 1.0), _304.xyz);
+                float4 _316 = float4(_29.x, _29.y, _29.z, _304.w);
+                float4 _319 = edgesTex.sample(edgesTexSampler, _29.xy, level(0.0));
+                float2 _320 = _319.xy;
+                float _321 = _319.x;
+                _320.x = _321 * abs((5.0 * _321) - 3.75);
+                float2 _302 = rint(_320);
+                _316.w = dot(_302, float2(0.5));
+                _301 = _302;
+                _304 = _316;
+                continue;
+            }
+            else
+            {
+                break;
+            }
+        }
+        float4 _370;
+        if (edgesTex.sample(edgesTexSampler, in.in_var_TEXCOORD0, level(0.0), int2(1, 0)).x > 0.0)
+        {
+            float2 _336;
+            float4 _339;
+            _336 = _301;
+            _339 = _223;
+            float _343;
+            for (;;)
+            {
+                _343 = _339.z;
+                bool _349;
+                if (_343 < 7.0)
+                {
+                    _349 = _339.w > 0.89999997615814208984375;
+                }
+                else
+                {
+                    _349 = false;
+                }
+                if (_349)
+                {
+                    float3 _30 = fma(_226, float3(1.0), _339.xyz);
+                    float4 _351 = float4(_30.x, _30.y, _30.z, _339.w);
+                    float4 _354 = edgesTex.sample(edgesTexSampler, _30.xy, level(0.0));
+                    float2 _355 = _354.xy;
+                    float _356 = _354.x;
+                    _355.x = _356 * abs((5.0 * _356) - 3.75);
+                    float2 _337 = rint(_355);
+                    _351.w = dot(_337, float2(0.5));
+                    _336 = _337;
+                    _339 = _351;
+                    continue;
+                }
+                else
+                {
+                    break;
+                }
+            }
+            float4 _363 = float4(_304.z, _339.z, _304.w, _339.w);
+            _363.y = _343 + float(_336.y > 0.89999997615814208984375);
+            _370 = _363;
+        }
+        else
+        {
+            _370 = float4(_304.z, float2(0.0).x, _304.w, float2(0.0).y);
+        }
+        float2 _416;
+        if ((_370.x + _370.y) > 2.0)
+        {
+            float _377 = -_370.x;
+            float4 _23 = fma(float4(_377, _377, _370.yy), Parameters.renderTargetMetrics.xyxy, in.in_var_TEXCOORD0.xyxy);
+            float2 _379 = _23.xy;
+            float4 _383;
+            _383.x = edgesTex.sample(edgesTexSampler, _379, level(0.0), int2(-1, 0)).y;
+            _383.y = edgesTex.sample(edgesTexSampler, _379, level(0.0), int2(0, -1)).x;
+            float4 _390 = edgesTex.sample(edgesTexSampler, _23.zw, level(0.0), int2(1, 0));
+            float4 _391 = float4(_383.x, _383.y, _390.y, _390.x);
+            float2 _24 = fma(float2(2.0), _391.xz, _391.yw);
+            bool2 _396 = step(float2(0.89999997615814208984375), _370.zw) != float2(0.0);
+            float2 _401;
+            if (_396.x)
+            {
+                float2 _400 = _24;
+                _400.x = 0.0;
+                _401 = _400;
+            }
+            else
+            {
+                _401 = _24;
+            }
+            float2 _406;
+            if (_396.y)
+            {
+                float2 _405 = _401;
+                _405.y = 0.0;
+                _406 = _405;
+            }
+            else
+            {
+                _406 = _401;
+            }
+            float2 _32 = fma(float2(0.0062500000931322574615478515625, 0.001785714295692741870880126953125), fma(float2(20.0), _406, _370.xy), float2(0.00312500004656612873077392578125, 0.0008928571478463709354400634765625));
+            _416 = _294 + areaTex.sample(areaTexSampler, float2(_32.x + 0.5, _32.y), level(0.0)).yx;
+        }
+        else
+        {
+            _416 = _294;
+        }
+        float4 _547;
+        float2 _548;
+        if (_416.x == (-_416.y))
+        {
+            float _426 = _18.x;
+            float2 _428;
+            float2 _431;
+            _428 = float2(0.0, 1.0);
+            _431 = _16.xy;
+            float _434;
+            for (;;)
+            {
+                _434 = _431.x;
+                bool _440;
+                if (_434 > _426)
+                {
+                    _440 = _428.y > 0.828100025653839111328125;
+                }
+                else
+                {
+                    _440 = false;
+                }
+                bool _445;
+                if (_440)
+                {
+                    _445 = _428.x == 0.0;
+                }
+                else
+                {
+                    _445 = false;
+                }
+                if (_445)
+                {
+                    _428 = edgesTex.sample(edgesTexSampler, _431, level(0.0)).xy;
+                    _431 = fma(float2(-2.0, -0.0), Parameters.renderTargetMetrics.xy, _431);
+                    continue;
+                }
+                else
+                {
+                    break;
+                }
+            }
+            float _35 = fma(Parameters.renderTargetMetrics.x, fma(-2.007874011993408203125, searchTex.sample(searchTexSampler, fma(float2(0.5, -2.0), _428, float2(0.0078125, 2.03125)), level(0.0)).x, 3.25), _434);
+            float3 _452;
+            _452.x = _35;
+            _452.y = _164;
+            float _459 = _18.y;
+            float2 _461;
+            float2 _464;
+            _461 = float2(0.0, 1.0);
+            _464 = _16.zw;
+            float _467;
+            for (;;)
+            {
+                _467 = _464.x;
+                bool _473;
+                if (_467 < _459)
+                {
+                    _473 = _461.y > 0.828100025653839111328125;
+                }
+                else
+                {
+                    _473 = false;
+                }
+                bool _478;
+                if (_473)
+                {
+                    _478 = _461.x == 0.0;
+                }
+                else
+                {
+                    _478 = false;
+                }
+                if (_478)
+                {
+                    _461 = edgesTex.sample(edgesTexSampler, _464, level(0.0)).xy;
+                    _464 = fma(float2(2.0, 0.0), Parameters.renderTargetMetrics.xy, _464);
+                    continue;
+                }
+                else
+                {
+                    break;
+                }
+            }
+            float _39 = fma(-Parameters.renderTargetMetrics.x, fma(-2.007874011993408203125, searchTex.sample(searchTexSampler, fma(float2(0.5, -2.0), _461, float2(0.5234375, 2.03125)), level(0.0)).x, 3.25), _467);
+            float3 _486 = float3(_35, _164, _39);
+            float2 _492 = abs(rint(fma(Parameters.renderTargetMetrics.zz, float2(_35, _39), -_158.xx)));
+            float2 _42 = fma(float2(0.0062500000931322574615478515625, 0.001785714295692741870880126953125), fma(float2(16.0), rint(float2(edgesTex.sample(edgesTexSampler, _452.xy, level(0.0)).x, edgesTex.sample(edgesTexSampler, _486.zy, level(0.0), int2(1, 0)).x) * 4.0), sqrt(_492)), float2(0.00312500004656612873077392578125, 0.0008928571478463709354400634765625));
+            _42.y = fma(0.14285714924335479736328125, 0.0, _42.y);
+            _486.y = in.in_var_TEXCOORD0.y;
+            float2 _510 = step(_492, _492.yx);
+            float2 _516 = (_510 * 0.75) / float2(_510.x + _510.y);
+            float _517 = _516.x;
+            float _524 = _516.y;
+            float _535 = 1.0 - (_517 * edgesTex.sample(edgesTexSampler, _486.xy, level(0.0), int2(0, -2)).x);
+            float2 _536 = float2((1.0 - (_517 * edgesTex.sample(edgesTexSampler, _486.xy, level(0.0), int2(0, 1)).x)) - (_524 * edgesTex.sample(edgesTexSampler, _486.zy, level(0.0), int2(1)).x), _535);
+            _536.y = _535 - (_524 * edgesTex.sample(edgesTexSampler, _486.zy, level(0.0), int2(1, -2)).x);
+            float2 _544 = areaTex.sample(areaTexSampler, _42, level(0.0)).xy * fast::clamp(_536, float2(0.0), float2(1.0));
+            _547 = float4(_544.x, _544.y, float4(0.0).z, float4(0.0).w);
+            _548 = _175;
+        }
+        else
+        {
+            float2 _546;
+            _546.x = 0.0;
+            _547 = float4(_416.x, _416.y, float4(0.0).z, float4(0.0).w);
+            _548 = _546;
+        }
+        _549 = _547;
+        _550 = _548;
+    }
+    else
+    {
+        _549 = float4(0.0);
+        _550 = _175;
+    }
+    float4 _680;
+    if (_550.x > 0.0)
+    {
+        float _556 = _18.z;
+        float2 _558;
+        float2 _561;
+        _558 = float2(1.0, 0.0);
+        _561 = _17.xy;
+        float _564;
+        for (;;)
+        {
+            _564 = _561.y;
+            bool _570;
+            if (_564 > _556)
+            {
+                _570 = _558.x > 0.828100025653839111328125;
+            }
+            else
+            {
+                _570 = false;
+            }
+            bool _575;
+            if (_570)
+            {
+                _575 = _558.y == 0.0;
+            }
+            else
+            {
+                _575 = false;
+            }
+            if (_575)
+            {
+                _558 = edgesTex.sample(edgesTexSampler, _561, level(0.0)).xy;
+                _561 = fma(float2(-0.0, -2.0), Parameters.renderTargetMetrics.xy, _561);
+                continue;
+            }
+            else
+            {
+                break;
+            }
+        }
+        float _46 = fma(Parameters.renderTargetMetrics.y, fma(-2.007874011993408203125, searchTex.sample(searchTexSampler, fma(float2(0.5, -2.0), _558.yx, float2(0.0078125, 2.03125)), level(0.0)).x, 3.25), _564);
+        float3 _585;
+        _585.y = _46;
+        _585.x = _162;
+        float _592 = _18.w;
+        float2 _594;
+        float2 _597;
+        _594 = float2(1.0, 0.0);
+        _597 = _17.zw;
+        float _600;
+        for (;;)
+        {
+            _600 = _597.y;
+            bool _606;
+            if (_600 < _592)
+            {
+                _606 = _594.x > 0.828100025653839111328125;
+            }
+            else
+            {
+                _606 = false;
+            }
+            bool _611;
+            if (_606)
+            {
+                _611 = _594.y == 0.0;
+            }
+            else
+            {
+                _611 = false;
+            }
+            if (_611)
+            {
+                _594 = edgesTex.sample(edgesTexSampler, _597, level(0.0)).xy;
+                _597 = fma(float2(0.0, 2.0), Parameters.renderTargetMetrics.xy, _597);
+                continue;
+            }
+            else
+            {
+                break;
+            }
+        }
+        float _50 = fma(-Parameters.renderTargetMetrics.y, fma(-2.007874011993408203125, searchTex.sample(searchTexSampler, fma(float2(0.5, -2.0), _594.yx, float2(0.5234375, 2.03125)), level(0.0)).x, 3.25), _600);
+        float3 _620 = float3(_162, _46, _50);
+        float2 _626 = abs(rint(fma(Parameters.renderTargetMetrics.ww, float2(_46, _50), -_158.yy)));
+        float2 _53 = fma(float2(0.0062500000931322574615478515625, 0.001785714295692741870880126953125), fma(float2(16.0), rint(float2(edgesTex.sample(edgesTexSampler, _585.xy, level(0.0)).y, edgesTex.sample(edgesTexSampler, _620.xz, level(0.0), int2(0, 1)).y) * 4.0), sqrt(_626)), float2(0.00312500004656612873077392578125, 0.0008928571478463709354400634765625));
+        _53.y = fma(0.14285714924335479736328125, 0.0, _53.y);
+        _620.x = in.in_var_TEXCOORD0.x;
+        float2 _644 = step(_626, _626.yx);
+        float2 _650 = (_644 * 0.75) / float2(_644.x + _644.y);
+        float _651 = _650.x;
+        float _658 = _650.y;
+        float _669 = 1.0 - (_651 * edgesTex.sample(edgesTexSampler, _620.xy, level(0.0), int2(-2, 0)).y);
+        float2 _670 = float2((1.0 - (_651 * edgesTex.sample(edgesTexSampler, _620.xy, level(0.0), int2(1, 0)).y)) - (_658 * edgesTex.sample(edgesTexSampler, _620.xz, level(0.0), int2(1)).y), _669);
+        _670.y = _669 - (_658 * edgesTex.sample(edgesTexSampler, _620.xz, level(0.0), int2(-2, 1)).y);
+        float2 _678 = areaTex.sample(areaTexSampler, _53, level(0.0)).xy * fast::clamp(_670, float2(0.0), float2(1.0));
+        _680 = float4(_549.x, _549.y, _678.x, _678.y);
+    }
+    else
+    {
+        _680 = _549;
+    }
+    out.out_var_SV_Target0 = _680;
+    return out;
+}
+

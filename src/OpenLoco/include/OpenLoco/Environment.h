@@ -66,6 +66,7 @@ namespace OpenLoco::Environment
         customObjects,
         objects,
         screenshots,
+        shaders,
     };
 
     void autoCreateDirectory(const fs::path& path);

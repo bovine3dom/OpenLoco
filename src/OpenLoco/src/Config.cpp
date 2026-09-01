@@ -74,6 +74,7 @@ namespace OpenLoco::Config
             displayConfig.windowResolution = displayNode["window_resolution"].as<Resolution>(Resolution{ 800, 600 });
             displayConfig.fullscreenResolution = displayNode["fullscreen_resolution"].as<Resolution>(Resolution{ 1920, 1080 });
             displayConfig.vsync = displayNode["vsync"].as<bool>(false);
+            displayConfig.antiAliasing = displayNode["anti_aliasing"].as<AntiAliasing>(AntiAliasing::none);
         }
 
         // Audio settings
@@ -244,6 +245,7 @@ namespace OpenLoco::Config
         displayNode["window_resolution"] = displayConfig.windowResolution;
         displayNode["fullscreen_resolution"] = displayConfig.fullscreenResolution;
         displayNode["vsync"] = displayConfig.vsync;
+        displayNode["anti_aliasing"] = displayConfig.antiAliasing;
         node["display"] = displayNode;
 
         // Audio

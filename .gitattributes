@@ -1,1 +1,4 @@
 text eol=lf
+data/shaders/*.dxil binary
+data/shaders/*.raw binary
+data/shaders/*.spv binary

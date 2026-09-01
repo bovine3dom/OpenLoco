@@ -23,8 +23,14 @@ namespace OpenLoco::Ui
     struct ScreenInfo;
 }
 
+namespace OpenLoco::Config
+{
+    enum class AntiAliasing : uint8_t;
+}
+
 namespace OpenLoco::Gfx
 {
+    class PostProcessor;
     struct RenderTarget;
 
     struct RenderFrameStats
@@ -94,6 +100,8 @@ namespace OpenLoco::Gfx
         bool setVSync(bool state);
         bool isVSyncDisabled() const;
         bool isGpuPaletteEnabled() const;
+        bool supportsAntiAliasing() const;
+        Config::AntiAliasing getActiveAntiAliasing() const;
 
         void setFrameStatsEnabled(bool enabled);
         const RenderFrameStats& getLastFrameStats() const;
@@ -126,6 +134,7 @@ namespace OpenLoco::Gfx
         SDL_Texture* _scaledScreenTexture{};
         SDL_Texture* _worldTexture{};
         SDL_Texture* _uiTexture{};
+        std::unique_ptr<PostProcessor> _postProcessor;
 
         std::vector<PaletteIndex_t> _uiBase;
         std::vector<uint8_t> _uiCoverage;

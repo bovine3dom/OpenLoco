@@ -1,6 +1,7 @@
 #include "Graphics/SoftwareDrawingEngine.h"
 #include "Config.h"
 #include "Graphics/FPSCounter.h"
+#include "Graphics/PostProcessor.h"
 #include "Graphics/RenderTarget.h"
 #include "Logging.h"
 #include "SceneManager.h"
@@ -97,6 +98,7 @@ namespace OpenLoco::Gfx
     }
 
     SoftwareDrawingEngine::SoftwareDrawingEngine()
+        : _postProcessor(std::make_unique<PostProcessor>())
     {
         RenderTarget rtDummy{};
         _ctx.pushRenderTarget(rtDummy);
@@ -105,6 +107,7 @@ namespace OpenLoco::Gfx
     SoftwareDrawingEngine::~SoftwareDrawingEngine()
     {
         destroyScreenResources();
+        _postProcessor.reset();
 
         if (_palette != nullptr)
         {
@@ -162,11 +165,16 @@ namespace OpenLoco::Gfx
             SDL_DestroySurface(_worldSurface);
             _worldSurface = nullptr;
         }
+        _uiBase.clear();
+        _uiCoverage.clear();
+        _uiToWorldX.clear();
+        _uiToWorldY.clear();
         _worldRT = {};
     }
 
     void SoftwareDrawingEngine::destroyScreenResources()
     {
+        _postProcessor->reset();
         _screenTextureDirty = true;
         _screenTextureIndexed = false;
         destroyScaledScreenResources();
@@ -272,7 +280,10 @@ namespace OpenLoco::Gfx
             Logging::error("SDL_SetTextureScaleMode (_screenTexture) failed: {}", SDL_GetError());
         }
 
-        if (Config::get().nativeViewportRendering && scaleFactor > 1.0f)
+        const auto requestedAntiAliasing = Config::get().display.antiAliasing;
+        const auto canUseAntiAliasing = requestedAntiAliasing != Config::AntiAliasing::none
+            && PostProcessor::isSupported(_renderer);
+        if (Config::get().nativeViewportRendering && (scaleFactor > 1.0f || canUseAntiAliasing))
         {
             _worldSurface = SDL_CreateSurface(width, height, SDL_PIXELFORMAT_INDEX8);
             _uiRGBASurface = SDL_CreateSurface(scaledWidth, scaledHeight, outputFormat);
@@ -406,6 +417,18 @@ namespace OpenLoco::Gfx
 
         // Set the normal background colour.
         _ctx.clearSingle(PaletteIndex::black0);
+
+        const auto antiAliasing = hasSeparateWorldResources() && canUseAntiAliasing
+            ? requestedAntiAliasing
+            : Config::AntiAliasing::none;
+        if (!_postProcessor->configure(_renderer, width, height, antiAliasing) && antiAliasing != Config::AntiAliasing::none)
+        {
+            Logging::warn("Anti-aliasing is unavailable; using unfiltered presentation.");
+            if (scaleFactor <= 1.0F)
+            {
+                destroySeparateWorldResources();
+            }
+        }
         return true;
     }
 
@@ -958,7 +981,14 @@ namespace OpenLoco::Gfx
         }
 
         const auto presented = measureResult(_frameStatsEnabled, _frameStats.composePresentNs, [&] {
-            return SDL_RenderTexture(_renderer, _worldTexture, nullptr, nullptr)
+            auto worldPresented = _postProcessor->render(_worldTexture);
+            if (!worldPresented && _postProcessor->getMode() != Config::AntiAliasing::none)
+            {
+                Logging::error("Anti-aliasing failed during presentation: {}. Disabling it.", SDL_GetError());
+                _postProcessor->reset();
+                worldPresented = SDL_RenderTexture(_renderer, _worldTexture, nullptr, nullptr);
+            }
+            return worldPresented
                 && SDL_RenderTexture(_renderer, _uiTexture, nullptr, nullptr)
                 && capturePresentationHash()
                 && SDL_RenderPresent(_renderer);
@@ -1100,6 +1130,16 @@ namespace OpenLoco::Gfx
         return getRendererName() == SDL_GPU_RENDERER
             && _screenTextureIndexed
             && (!hasSeparateWorldResources() || _worldTextureIndexed);
+    }
+
+    bool SoftwareDrawingEngine::supportsAntiAliasing() const
+    {
+        return PostProcessor::isSupported(_renderer);
+    }
+
+    Config::AntiAliasing SoftwareDrawingEngine::getActiveAntiAliasing() const
+    {
+        return _postProcessor->getMode();
     }
 
     void SoftwareDrawingEngine::setFrameStatsEnabled(bool enabled)

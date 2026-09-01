@@ -2721,3 +2721,8 @@ strings:
   2666: "50%"
   2667: "100%"
   2668: "TGV La Poste Mail Carriage"
+  2669: "Anti-aliasing:"
+  2670: "None"
+  2671: "FXAA"
+  2672: "SMAA"
+  2673: "Smooth world edges using the SDL GPU renderer. Native viewport rendering is required."

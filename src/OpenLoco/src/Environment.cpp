@@ -314,6 +314,7 @@ namespace OpenLoco::Environment
                 return Platform::getUserDirectory();
             case PathId::languageFiles:
             case PathId::objects:
+            case PathId::shaders:
 #if defined(__APPLE__) && defined(__MACH__)
                 return Platform::GetBundlePath();
 #else
@@ -326,7 +327,7 @@ namespace OpenLoco::Environment
 
     static fs::path getSubPath(PathId id)
     {
-        static constexpr std::array<const char*, 60> kPaths = {
+        static constexpr std::array<const char*, 61> kPaths = {
             "Data/g1.DAT",
             "plugin.dat",
             "plugin2.dat",
@@ -387,6 +388,7 @@ namespace OpenLoco::Environment
             "objects",
             "objects",
             "screenshots",
+            "shaders",
         };
 
         size_t index = (size_t)id;

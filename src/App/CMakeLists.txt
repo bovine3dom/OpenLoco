@@ -74,11 +74,12 @@ if (APPLE)
     list(APPEND BUNDLE_RESOURCES ${CMAKE_SOURCE_DIR}/LICENSE)
 
     file(GLOB BUNDLE_LANGUAGES "${CMAKE_SOURCE_DIR}/data/language/*")
+    file(GLOB_RECURSE BUNDLE_SHADERS "${CMAKE_SOURCE_DIR}/data/shaders/*")
     file(GLOB_RECURSE  BUNDLE_OBJECTS "${openloco_objects_SOURCE_DIR}/*")
 
-    target_sources(App PRIVATE "${BUNDLE_RESOURCES}" "${BUNDLE_LANGUAGES}" "${BUNDLE_OBJECTS}")
+    target_sources(App PRIVATE "${BUNDLE_RESOURCES}" "${BUNDLE_LANGUAGES}" "${BUNDLE_SHADERS}" "${BUNDLE_OBJECTS}")
 
-    set_target_properties(App PROPERTIES RESOURCE "${BUNDLE_RESOURCES}" "${BUNDLE_LANGUAGES}" "${BUNDLE_OBJECTS}")
+    set_target_properties(App PROPERTIES RESOURCE "${BUNDLE_RESOURCES}")
 
     set_property(
         SOURCE ${BUNDLE_LANGUAGES}
@@ -88,5 +89,10 @@ if (APPLE)
     set_property(
         SOURCE ${BUNDLE_OBJECTS}
         PROPERTY MACOSX_PACKAGE_LOCATION "Resources/objects"
+    )
+
+    set_property(
+        SOURCE ${BUNDLE_SHADERS}
+        PROPERTY MACOSX_PACKAGE_LOCATION "Resources/shaders"
     )
 endif ()
