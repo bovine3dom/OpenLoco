@@ -1622,6 +1622,8 @@ namespace OpenLoco::Vehicles
             return true;
         }
 
+        const auto departureFrom = stationId;
+        const auto departureTo = CargoDist::getNextStop(*this);
         leaveUnbunchingStop();
         beginNewJourney();
         TimetableManager::departFromOrder(id);
@@ -1630,14 +1632,21 @@ namespace OpenLoco::Vehicles
 
         if (hasVehicleFlags(VehicleFlags::manualControl))
         {
+            CargoDist::recordVehicleDeparture(*this, departureFrom, departureTo);
             return true;
         }
 
         if (pathingShouldReverse())
         {
-            return tryReverse();
+            const auto reversed = tryReverse();
+            if (reversed)
+            {
+                CargoDist::recordVehicleDeparture(*this, departureFrom, departureTo);
+            }
+            return reversed;
         }
 
+        CargoDist::recordVehicleDeparture(*this, departureFrom, departureTo);
         return true;
     }
 
@@ -2229,6 +2238,8 @@ namespace OpenLoco::Vehicles
             return true;
         }
 
+        const auto departureFrom = stationId;
+        const auto departureTo = CargoDist::getNextStop(*this);
         advanceToNextRoutableOrder();
         status = Status::travelling;
         status = airplaneGetNewStatus().first;
@@ -2249,6 +2260,7 @@ namespace OpenLoco::Vehicles
             // most likely to not cause issues.
             AirplaneApproachTargetParams approachParams{};
             approachParams.targetZ = position.z;
+            CargoDist::recordVehicleDeparture(*this, departureFrom, departureTo);
             leaveUnbunchingStop();
             TimetableManager::departFromOrder(id);
             return sub_4A9348(newMovementEdge, approachParams);
@@ -2499,6 +2511,8 @@ namespace OpenLoco::Vehicles
                 return true;
             }
 
+            const auto departureFrom = stationId;
+            const auto departureTo = CargoDist::getNextStop(*this);
             const auto previousJourneyStartPos = journeyStartPos;
             const auto previousJourneyStartTicks = journeyStartTicks;
             const auto previousBreakdownFlags = breakdownFlags;
@@ -2514,6 +2528,7 @@ namespace OpenLoco::Vehicles
                 status = Status::loading;
                 return true;
             }
+            CargoDist::recordVehicleDeparture(*this, departureFrom, departureTo);
             leaveUnbunchingStop();
             TimetableManager::departFromOrder(id);
             produceLeavingDockSound();

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include <OpenLoco/CargoDist/Simulation.h>
 
+#include "CargoDist/FlowAnalytics.h"
 #include "Date.h"
 #include "GameState.h"
 #include "Map/SurfaceElement.h"
@@ -2849,6 +2850,25 @@ namespace OpenLoco::CargoDist
         return leg == nullptr ? std::nullopt : std::optional{ *leg };
     }
 
+    void recordVehicleDeparture(const Vehicles::VehicleHead& head, const StationId from, const StationId to)
+    {
+        const auto recordCargo = [&](const Vehicles::VehicleCargo& cargo) {
+            if (isEnabled(cargo.type))
+            {
+                FlowAnalytics::recordDeparture(cargo.type, from, to, cargo.qty, cargo.maxQty);
+            }
+        };
+        Vehicles::Vehicle vehicle(head.head);
+        for (const auto& car : vehicle.cars)
+        {
+            for (const auto& component : car)
+            {
+                recordCargo(component.front->secondaryCargo);
+                recordCargo(component.body->primaryCargo);
+            }
+        }
+    }
+
     StationId getNextStop(const Vehicles::VehicleHead& head)
     {
         for (const auto& order : head.getCurrentOrders())
@@ -3436,6 +3456,7 @@ namespace OpenLoco::CargoDist
     void updateDaily()
     {
         processHolidayReturns(true);
+        FlowAnalytics::updateDaily();
         if (getServiceCargoMask() == 0)
         {
             return;

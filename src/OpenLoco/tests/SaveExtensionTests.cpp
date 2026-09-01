@@ -373,6 +373,69 @@ TEST(SaveExtension, RoundTripsRailTraffic)
     EXPECT_EQ(readU16(encoded, 22), 1);
 }
 
+TEST(SaveExtension, RoundTripsOptionalCargoFlowHistory)
+{
+    CargoDist::FlowAnalytics::State history;
+    history.days = {
+        { 123, {
+                   { { 0, static_cast<StationId>(4), static_cast<StationId>(7) }, 12, 12, 34, 56, 78 },
+                   { { 1, static_cast<StationId>(7), static_cast<StationId>(4) }, 90, 90, 123, 456, 789 },
+               } },
+    };
+
+    const auto encoded = S5::SaveExtension::encode({ .cargoFlowHistoryState = &history });
+    const auto decoded = S5::SaveExtension::decode(encoded);
+
+    ASSERT_TRUE(decoded.cargoFlowHistoryState.has_value());
+    EXPECT_EQ(*decoded.cargoFlowHistoryState, history);
+    EXPECT_EQ(S5::SaveExtension::encode(decoded), encoded);
+    expectTag(encoded, 16, "CFHS");
+    EXPECT_EQ(readU16(encoded, 20), 2);
+    EXPECT_EQ(readU16(encoded, 22), 0);
+}
+
+TEST(SaveExtension, DecodesVersionOneCargoFlowHistoryWithoutObservedCapacity)
+{
+    CargoDist::FlowAnalytics::State history;
+    history.days = {
+        { 123, { { { 0, static_cast<StationId>(4), static_cast<StationId>(7) }, 12, 12, 34, 56, 78 } } },
+    };
+    auto encoded = S5::SaveExtension::encode({ .cargoFlowHistoryState = &history });
+    constexpr size_t kObservedThroughputOffset = 51;
+    encoded.erase(encoded.begin() + kObservedThroughputOffset, encoded.begin() + kObservedThroughputOffset + sizeof(uint64_t) * 2);
+    writeU16(encoded, 20, 1);
+    writeU32(encoded, 12, readU32(encoded, 12) - sizeof(uint64_t) * 2);
+    writeU32(encoded, 24, readU32(encoded, 24) - sizeof(uint64_t) * 2);
+
+    const auto decoded = S5::SaveExtension::decode(encoded);
+
+    ASSERT_TRUE(decoded.cargoFlowHistoryState.has_value());
+    ASSERT_EQ(decoded.cargoFlowHistoryState->days.size(), 1);
+    ASSERT_EQ(decoded.cargoFlowHistoryState->days[0].services.size(), 1);
+    const auto& metric = decoded.cargoFlowHistoryState->days[0].services[0];
+    EXPECT_EQ(metric.throughput, 12);
+    EXPECT_EQ(metric.observedThroughput, 0);
+    EXPECT_EQ(metric.offeredCapacity, 0);
+    EXPECT_EQ(metric.plannedDemand, 56);
+    EXPECT_EQ(metric.capacityQ16, 78);
+    const auto migrated = S5::SaveExtension::encode(decoded);
+    EXPECT_EQ(readU16(migrated, 20), 2);
+    const auto migratedDecoded = S5::SaveExtension::decode(migrated);
+    ASSERT_TRUE(migratedDecoded.cargoFlowHistoryState.has_value());
+    EXPECT_EQ(*migratedDecoded.cargoFlowHistoryState, *decoded.cargoFlowHistoryState);
+    EXPECT_EQ(S5::SaveExtension::encode(migratedDecoded), migrated);
+}
+
+TEST(SaveExtension, RejectsUnknownCargoFlowHistoryVersion)
+{
+    CargoDist::FlowAnalytics::State history;
+    history.days = { { 123, { { { 0, static_cast<StationId>(4), static_cast<StationId>(7) }, 12, 12, 34, 56, 78 } } } };
+    auto encoded = S5::SaveExtension::encode({ .cargoFlowHistoryState = &history });
+    writeU16(encoded, 20, 3);
+
+    EXPECT_THROW(S5::SaveExtension::decode(encoded), std::runtime_error);
+}
+
 TEST(SaveExtension, RoundTripsRequiredTimetable)
 {
     const auto timetable = timetableState();

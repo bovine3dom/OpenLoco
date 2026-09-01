@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 #include <OpenLoco/CargoDist/Simulation.h>
 
+#include "CargoDist/FlowAnalytics.h"
+
 #include <algorithm>
 #include <cassert>
 #include <limits>
@@ -602,6 +604,7 @@ namespace OpenLoco::CargoDist
     void reset()
     {
         cancelPendingRecalculation();
+        FlowAnalytics::reset();
         const auto routingRevision = _state.routingRevision + 1;
         const auto cargoRevision = _state.cargoRevision + 1;
         _state = {};

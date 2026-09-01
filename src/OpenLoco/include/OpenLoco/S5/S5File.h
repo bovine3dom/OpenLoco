@@ -37,5 +37,6 @@ namespace OpenLoco::S5
         std::optional<GameRules::State> gameRulesState;
         std::optional<SaveExtension::VehicleObjectState> vehicleObjectState;
         std::optional<Vehicles::TimetableManager::State> timetableState;
+        std::optional<CargoDist::FlowAnalytics::State> cargoFlowHistoryState;
     };
 }

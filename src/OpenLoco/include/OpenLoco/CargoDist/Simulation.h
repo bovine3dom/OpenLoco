@@ -106,6 +106,7 @@ namespace OpenLoco::CargoDist
     std::optional<int64_t> consumeVehicleRevenueAdjustment(EntityId vehicle);
 
     std::optional<VehicleServiceLeg> getCurrentServiceLeg(const Vehicles::VehicleHead& head);
+    void recordVehicleDeparture(const Vehicles::VehicleHead& head, StationId from, StationId to);
     StationId getNextStop(const Vehicles::VehicleHead& head);
     void update();
     bool isServiceRecalculationPending();

@@ -88,6 +88,19 @@ namespace OpenLoco::GameSaveCompare
         return matches;
     }
 
+    static bool compareCargoFlowHistory(const S5::S5File& lhs, const S5::S5File& rhs)
+    {
+        const CargoDist::FlowAnalytics::State defaultState;
+        const auto& lhsState = lhs.cargoFlowHistoryState.has_value() ? *lhs.cargoFlowHistoryState : defaultState;
+        const auto& rhsState = rhs.cargoFlowHistoryState.has_value() ? *rhs.cargoFlowHistoryState : defaultState;
+        const auto matches = lhsState == rhsState;
+        if (!matches)
+        {
+            Logging::info("Cargo flow history differs");
+        }
+        return matches;
+    }
+
     static bool compareTimetables(const S5::S5File& lhs, const S5::S5File& rhs)
     {
         Vehicles::TimetableManager::State lhsDefault;
@@ -801,6 +814,7 @@ namespace OpenLoco::GameSaveCompare
         matches &= comparePathReservations(*currentGameState, *referenceGameState);
         matches &= compareVehicleAutoRenewal(*currentGameState, *referenceGameState);
         matches &= compareRailTraffic(*currentGameState, *referenceGameState);
+        matches &= compareCargoFlowHistory(*currentGameState, *referenceGameState);
         matches &= compareTimetables(*currentGameState, *referenceGameState);
         matches &= compareGameRules(*currentGameState, *referenceGameState);
         matches &= compareVehicleObjects(*currentGameState, *referenceGameState);
@@ -824,6 +838,7 @@ namespace OpenLoco::GameSaveCompare
         match &= comparePathReservations(*state1, *state2);
         match &= compareVehicleAutoRenewal(*state1, *state2);
         match &= compareRailTraffic(*state1, *state2);
+        match &= compareCargoFlowHistory(*state1, *state2);
         match &= compareTimetables(*state1, *state2);
         match &= compareGameRules(*state1, *state2);
         match &= compareVehicleObjects(*state1, *state2);

@@ -1,4 +1,6 @@
 #include "Localisation/FormatArguments.hpp"
+#include "Localisation/Formatting.h"
+#include "Localisation/StringManager.h"
 #include "Speed.hpp"
 #include <OpenLoco/Core/Exception.hpp>
 #include <gtest/gtest.h>
@@ -34,6 +36,32 @@ TEST(FormatArgumentsTests, PreservesMapTooltipTransportMode)
 
     EXPECT_EQ(FormatArguments::mapToolTip().getTransportMode(), 3);
     EXPECT_EQ(FormatArguments::mapToolTip(uint16_t{ 1 }).getTransportMode(), 0xFF);
+}
+
+TEST(FormatArgumentsTests, StopsReadingAtBufferBoundary)
+{
+    FormatArgumentsBuffer buffer;
+    FormatArgumentsView view{ buffer };
+    for (size_t i = 0; i < buffer.capacity() / sizeof(uint16_t); ++i)
+    {
+        view.skip<uint16_t>();
+    }
+
+    EXPECT_EQ(view.pop<uint16_t>(), 0);
+    view.skip<uint32_t>();
+    EXPECT_EQ(view.pop<uint32_t>(), 0);
+}
+
+TEST(FormatArgumentsTests, RejectsInvalidGeneratedTown)
+{
+    FormatArgumentsBuffer buffer;
+    FormatArguments args{ buffer };
+    args.push(TownId::null);
+    char output[128]{};
+
+    StringManager::formatString(output, StringManager::kTownNamesStart, args);
+
+    EXPECT_STREQ(output, "(invalid town id: 65535)");
 }
 
 TEST(SpeedTests, ConvertsSpeedToTilesPerDay)

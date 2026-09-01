@@ -68,6 +68,15 @@ namespace OpenLoco::S5::SaveExtension
             std::byte{ 'S' },
             std::byte{ 'T' },
         };
+        constexpr std::array<std::byte, 4> kCargoFlowHistoryTag = {
+            std::byte{ 'C' },
+            std::byte{ 'F' },
+            std::byte{ 'H' },
+            std::byte{ 'S' },
+        };
+        constexpr uint16_t kCargoFlowHistorySectionVersion = 2;
+        constexpr size_t kCargoFlowMetricSize = sizeof(uint8_t) + sizeof(uint16_t) * 2 + sizeof(uint64_t) * 5;
+        static_assert(sizeof(uint16_t) + (CargoDist::FlowAnalytics::kMaximumHorizonDays + 1) * (sizeof(uint32_t) * 2 + CargoDist::FlowAnalytics::kMaxDailyRecords * kCargoFlowMetricSize) <= CargoDist::FlowAnalytics::kMaxSaveDataSize);
         constexpr std::array<std::byte, 4> kSharedOrdersTag = {
             std::byte{ 'S' },
             std::byte{ 'H' },
@@ -578,6 +587,74 @@ namespace OpenLoco::S5::SaveExtension
             return state;
         }
 
+        std::vector<std::byte> encodeCargoFlowHistory(CargoDist::FlowAnalytics::State state)
+        {
+            std::ranges::sort(state.days, {}, &CargoDist::FlowAnalytics::DailyRecord::day);
+            for (auto& day : state.days)
+            {
+                std::ranges::sort(day.services, {}, &CargoDist::FlowAnalytics::ServiceMetric::key);
+            }
+            require(CargoDist::FlowAnalytics::validateState(state), "Invalid cargo flow history state");
+
+            Writer payload;
+            payload.write(static_cast<uint16_t>(state.days.size()));
+            for (const auto& day : state.days)
+            {
+                payload.write(day.day);
+                payload.write(static_cast<uint32_t>(day.services.size()));
+                for (const auto& metric : day.services)
+                {
+                    payload.write(metric.key.cargo);
+                    payload.write(static_cast<uint16_t>(metric.key.from));
+                    payload.write(static_cast<uint16_t>(metric.key.to));
+                    payload.write(metric.throughput);
+                    payload.write(metric.observedThroughput);
+                    payload.write(metric.offeredCapacity);
+                    payload.write(metric.plannedDemand);
+                    payload.write(metric.capacityQ16);
+                }
+            }
+            auto data = payload.take();
+            require(data.size() <= CargoDist::FlowAnalytics::kMaxSaveDataSize, "Cargo flow history is too large");
+            return data;
+        }
+
+        CargoDist::FlowAnalytics::State decodeCargoFlowHistory(const std::span<const std::byte> data, const uint16_t version)
+        {
+            require(data.size() <= CargoDist::FlowAnalytics::kMaxSaveDataSize, "Cargo flow history is too large");
+            Reader input(data);
+            CargoDist::FlowAnalytics::State state;
+            const auto dayCount = input.read<uint16_t>();
+            require(dayCount <= CargoDist::FlowAnalytics::kMaximumHorizonDays + 1, "Too many cargo flow history days");
+            state.days.reserve(dayCount);
+            for (uint16_t dayIndex = 0; dayIndex < dayCount; ++dayIndex)
+            {
+                auto& day = state.days.emplace_back();
+                day.day = input.read<uint32_t>();
+                const auto serviceCount = input.read<uint32_t>();
+                require(serviceCount <= CargoDist::FlowAnalytics::kMaxDailyRecords, "Too many daily cargo flow records");
+                day.services.reserve(serviceCount);
+                for (uint32_t serviceIndex = 0; serviceIndex < serviceCount; ++serviceIndex)
+                {
+                    auto& metric = day.services.emplace_back();
+                    metric.key.cargo = input.read<uint8_t>();
+                    metric.key.from = static_cast<StationId>(input.read<uint16_t>());
+                    metric.key.to = static_cast<StationId>(input.read<uint16_t>());
+                    metric.throughput = input.read<uint64_t>();
+                    if (version >= kCargoFlowHistorySectionVersion)
+                    {
+                        metric.observedThroughput = input.read<uint64_t>();
+                        metric.offeredCapacity = input.read<uint64_t>();
+                    }
+                    metric.plannedDemand = input.read<uint64_t>();
+                    metric.capacityQ16 = input.read<uint64_t>();
+                }
+            }
+            require(input.empty(), "Trailing cargo flow history data");
+            require(CargoDist::FlowAnalytics::validateState(state), "Invalid cargo flow history state");
+            return state;
+        }
+
         constexpr uint8_t kTimetableEntryHasTravel = 1U << 0;
         constexpr uint8_t kTimetableEntryHasDwell = 1U << 1;
         constexpr uint8_t kTimetableEntryHasDispatch = 1U << 2;
@@ -1067,6 +1144,7 @@ namespace OpenLoco::S5::SaveExtension
             .gameRulesState = state.gameRulesState ? &*state.gameRulesState : nullptr,
             .vehicleObjectState = state.vehicleObjectState ? &*state.vehicleObjectState : nullptr,
             .timetableState = state.timetableState ? &*state.timetableState : nullptr,
+            .cargoFlowHistoryState = state.cargoFlowHistoryState ? &*state.cargoFlowHistoryState : nullptr,
         });
     }
 
@@ -1077,6 +1155,10 @@ namespace OpenLoco::S5::SaveExtension
         {
             const auto cargoDist = CargoDist::encodeState(*state.cargoDistState);
             appendSection(payload, kCargoDistTag, cargoDist);
+        }
+        if (state.cargoFlowHistoryState != nullptr)
+        {
+            appendSection(payload, kCargoFlowHistoryTag, encodeCargoFlowHistory(*state.cargoFlowHistoryState), 0, kCargoFlowHistorySectionVersion);
         }
         if (state.sharedOrderState != nullptr)
         {
@@ -1157,6 +1239,7 @@ namespace OpenLoco::S5::SaveExtension
 
         State state;
         bool hasCargoDist = false;
+        bool hasCargoFlowHistory = false;
         bool hasSharedOrders = false;
         bool hasPathReservations = false;
         bool hasVehicleAutoRenewal = false;
@@ -1180,6 +1263,14 @@ namespace OpenLoco::S5::SaveExtension
                 hasCargoDist = true;
                 require(version == kSectionVersion, "Unsupported CargoDist section version");
                 state.cargoDistState = CargoDist::decodeState(sectionData);
+            }
+            else if (std::ranges::equal(tag, kCargoFlowHistoryTag))
+            {
+                require((flags & ~kKnownSectionFlags) == 0, "Invalid cargo flow history section flags");
+                require(!hasCargoFlowHistory, "Duplicate cargo flow history save extension section");
+                hasCargoFlowHistory = true;
+                require(version == kSectionVersion || version == kCargoFlowHistorySectionVersion, "Unsupported cargo flow history section version");
+                state.cargoFlowHistoryState = decodeCargoFlowHistory(sectionData, version);
             }
             else if (std::ranges::equal(tag, kSharedOrdersTag))
             {

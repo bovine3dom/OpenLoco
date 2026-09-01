@@ -822,6 +822,12 @@ namespace OpenLoco::S5
                     throw Exception::RuntimeError("Invalid rail traffic state");
                 }
                 const auto hasRailTraffic = !Vehicles::RailTraffic::isDefault(railTrafficState);
+                const auto cargoFlowHistoryState = CargoDist::FlowAnalytics::captureState();
+                if (!CargoDist::FlowAnalytics::validateState(cargoFlowHistoryState))
+                {
+                    throw Exception::RuntimeError("Invalid cargo flow history state");
+                }
+                const auto hasCargoFlowHistory = !CargoDist::FlowAnalytics::isDefault(cargoFlowHistoryState);
                 const auto timetableState = Vehicles::TimetableManager::captureState();
                 if (!Vehicles::TimetableManager::validateState(timetableState, getGameState(), sharedOrderState))
                 {
@@ -843,7 +849,7 @@ namespace OpenLoco::S5
                 }
                 const auto hasStationTileOverflow = !stationTileOverflow.empty();
                 const auto hasModernState = !sharedOrderState.groups.empty() || hasPathReservations || hasVehicleAutoRenewal
-                    || hasVehicleReplacement || hasRailTraffic || hasTimetable || hasStationTileOverflow || gameRules != nullptr || vehicleObjects != nullptr;
+                    || hasVehicleReplacement || hasRailTraffic || hasCargoFlowHistory || hasTimetable || hasStationTileOverflow || gameRules != nullptr || vehicleObjects != nullptr;
                 extensionData = !hasModernState
                     ? CargoDist::encodeState(CargoDist::getStateConst())
                     : SaveExtension::encode({
@@ -857,6 +863,7 @@ namespace OpenLoco::S5
                           .gameRulesState = gameRules,
                           .vehicleObjectState = vehicleObjects,
                           .timetableState = hasTimetable ? &timetableState : nullptr,
+                          .cargoFlowHistoryState = hasCargoFlowHistory ? &cargoFlowHistoryState : nullptr,
                       });
             }
             else if (supportsRuleExtension && (gameRules != nullptr || vehicleObjects != nullptr))
@@ -1039,6 +1046,7 @@ namespace OpenLoco::S5
                 fs.read(extensionData.data(), extensionData.size());
                 auto extensionState = SaveExtension::decode(extensionData);
                 file->cargoDistState = std::move(extensionState.cargoDistState);
+                file->cargoFlowHistoryState = std::move(extensionState.cargoFlowHistoryState);
                 file->sharedOrderState = std::move(extensionState.sharedOrderState);
                 file->pathReservationState = std::move(extensionState.pathReservationState);
                 file->discardPathReservationsOnLoad = extensionState.discardPathReservationsOnLoad;
@@ -1291,6 +1299,11 @@ namespace OpenLoco::S5
             {
                 throw LoadException("Invalid rail traffic state", StringIds::error_file_contains_invalid_data);
             }
+            if (file->cargoFlowHistoryState.has_value() && !hasLoadFlags(flags, LoadFlags::titleSequence)
+                && !CargoDist::FlowAnalytics::validateState(*file->cargoFlowHistoryState))
+            {
+                throw LoadException("Invalid cargo flow history state", StringIds::error_file_contains_invalid_data);
+            }
             const Vehicles::SharedOrderManager::State emptySharedOrders;
             const auto& sharedOrders = file->sharedOrderState.value_or(emptySharedOrders);
             if (file->timetableState.has_value() && !hasLoadFlags(flags, LoadFlags::titleSequence)
@@ -1485,6 +1498,12 @@ namespace OpenLoco::S5
                     CargoDist::State legacyState;
                     legacyState.requiresStationMetadataRefresh = true;
                     CargoDist::restoreState(std::move(legacyState));
+                }
+                const CargoDist::FlowAnalytics::State emptyCargoFlowHistory;
+                const auto& cargoFlowHistory = file->cargoFlowHistoryState.has_value() ? *file->cargoFlowHistoryState : emptyCargoFlowHistory;
+                if (!CargoDist::FlowAnalytics::restoreState(cargoFlowHistory))
+                {
+                    throw Exception::RuntimeError("Invalid cargo flow history state");
                 }
                 if (file->vehicleAutoRenewalState.has_value()
                     && !Vehicles::VehicleAutoRenewal::restoreState(*file->vehicleAutoRenewalState))

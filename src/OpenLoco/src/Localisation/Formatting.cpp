@@ -654,6 +654,12 @@ namespace OpenLoco::StringManager
 
             const auto townId = TownId(args.pop<uint16_t>());
             auto town = TownManager::get(townId);
+            if (town == nullptr || town->empty())
+            {
+                buffer.format(std::locale(), "(invalid town id: {})", enumValue(townId));
+                Logging::warn("formatString: invalid town id: {}", enumValue(townId));
+                return;
+            }
 
             // TODO: Clean this up once we have only FormatArguments.
             FormatArgumentsBuffer buf;
@@ -667,6 +673,12 @@ namespace OpenLoco::StringManager
         {
             const auto townId = TownId(args.pop<uint16_t>());
             auto town = TownManager::get(townId);
+            if (town == nullptr || town->empty())
+            {
+                buffer.format(std::locale(), "(invalid town id: {})", enumValue(townId));
+                Logging::warn("formatString: invalid town id: {}", enumValue(townId));
+                return;
+            }
             formatString(buffer, town->name);
         }
         else

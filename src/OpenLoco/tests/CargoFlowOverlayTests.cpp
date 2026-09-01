@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include <OpenLoco/CargoDist/CargoDist.h>
+#include <OpenLoco/CargoDist/FlowAnalytics.h>
+#include <OpenLoco/Date.h>
 #include <OpenLoco/Graphics/RenderTarget.h>
 #include <OpenLoco/Graphics/SoftwareDrawingContext.h>
 #include <OpenLoco/Ui/Windows/CargoFlowOverlay.h>
@@ -105,6 +107,219 @@ TEST(CargoFlowOverlayTest, MapsDemandToJgrStyleSaturationBuckets)
     EXPECT_EQ(CargoFlowOverlay::getSaturationBucket(101, 100), 6);
     EXPECT_EQ(CargoFlowOverlay::getSaturationBucket(200, 100), 11);
     EXPECT_EQ(CargoFlowOverlay::getSaturationBucket(std::numeric_limits<uint64_t>::max(), 100), 11);
+}
+
+TEST(CargoFlowOverlayTest, ScalesAbsoluteValuesToMapMaximum)
+{
+    const std::array<uint64_t, 4> values = { 0, 10, 50, 100 };
+
+    const auto buckets = CargoFlowOverlay::calculateScaleBuckets(values, CargoFlowOverlay::ScaleMode::absolute);
+
+    EXPECT_EQ(buckets, (std::vector<uint8_t>{ 0, 2, 6, 11 }));
+}
+
+TEST(CargoFlowOverlayTest, ScalesActualLoadAgainstOneHundredPercent)
+{
+    const std::array<uint64_t, 4> values = { 0, 2500, 5000, 10'000 };
+
+    const auto buckets = CargoFlowOverlay::calculateScaleBuckets(values, CargoFlowOverlay::ScaleMode::absolute, 10'000);
+
+    EXPECT_EQ(buckets, (std::vector<uint8_t>{ 0, 3, 6, 11 }));
+}
+
+TEST(CargoFlowOverlayTest, ScalesValuesByPercentileRank)
+{
+    const std::array<uint64_t, 5> values = { 0, 10, 20, 30, 40 };
+
+    const auto buckets = CargoFlowOverlay::calculateScaleBuckets(values, CargoFlowOverlay::ScaleMode::percentiles);
+
+    EXPECT_EQ(buckets, (std::vector<uint8_t>{ 0, 3, 6, 9, 11 }));
+}
+
+TEST(CargoFlowOverlayTest, GivesEqualPercentileValuesTheSameBucket)
+{
+    const std::array<uint64_t, 3> values = { 10, 10, 10 };
+
+    const auto buckets = CargoFlowOverlay::calculateScaleBuckets(values, CargoFlowOverlay::ScaleMode::percentiles);
+
+    EXPECT_EQ(buckets, (std::vector<uint8_t>{ 11, 11, 11 }));
+}
+
+TEST(CargoFlowOverlayTest, SummarisesCompletedDaysWithinSelectedHorizon)
+{
+    FlowAnalytics::State state;
+    state.days = {
+        { 69, { { { 0, station(1), station(2) }, 100, 100, 200, 300, uint64_t{ 400 } << 16 } } },
+        { 70, { { { 0, station(1), station(2) }, 10, 10, 20, 20, uint64_t{ 30 } << 16 } } },
+        { 99, {
+                  { { 0, station(1), station(2) }, 1, 1, 2, 2, uint64_t{ 3 } << 16 },
+                  { { 0, station(2), station(1) }, 4, 4, 8, 5, uint64_t{ 6 } << 16 },
+                  { { 1, station(1), station(2) }, 7, 7, 9, 8, uint64_t{ 9 } << 16 },
+              } },
+        { 100, { { { 0, station(1), station(2) }, 1000, 1000, 2000, 2000, uint64_t{ 3000 } << 16 } } },
+    };
+
+    const auto summaries = FlowAnalytics::summarise(state, 0, 30, 100);
+
+    ASSERT_EQ(summaries.size(), 2);
+    EXPECT_EQ(summaries[0], (FlowAnalytics::ServiceSummary{ station(1), station(2), 11, 11, 22, 22, uint64_t{ 33 } << 16 }));
+    EXPECT_EQ(summaries[1], (FlowAnalytics::ServiceSummary{ station(2), station(1), 4, 4, 8, 5, uint64_t{ 6 } << 16 }));
+}
+
+TEST(CargoFlowOverlayTest, AllocatesLatentDemandByAttraction)
+{
+    std::vector<FlowAnalytics::Endpoint> endpoints{
+        { { FlowAnalytics::EndpointKind::town, 0 }, { 0, 0 }, {}, 100, 0, 0 },
+        { { FlowAnalytics::EndpointKind::town, 1 }, { 0, 0 }, {}, 0, 1, 0 },
+        { { FlowAnalytics::EndpointKind::town, 2 }, { 0, 0 }, {}, 0, 3, 0 },
+    };
+
+    const auto flows = FlowAnalytics::allocateLatentDemand(endpoints, 0);
+
+    ASSERT_EQ(flows.size(), 2);
+    EXPECT_EQ(flows[0].origin, endpoints[0].key);
+    EXPECT_EQ(flows[0].destination, endpoints[1].key);
+    EXPECT_EQ(flows[0].demand, 25);
+    EXPECT_EQ(flows[1].destination, endpoints[2].key);
+    EXPECT_EQ(flows[1].demand, 75);
+}
+
+TEST(CargoFlowOverlayTest, AllocatesLatentDemandByDistance)
+{
+    std::vector<FlowAnalytics::Endpoint> endpoints{
+        { { FlowAnalytics::EndpointKind::industry, 0 }, { 0, 0 }, {}, 100, 0, 0 },
+        { { FlowAnalytics::EndpointKind::industry, 1 }, { 1024, 0 }, {}, 0, 1, 0 },
+        { { FlowAnalytics::EndpointKind::industry, 2 }, { 2048, 0 }, {}, 0, 1, 0 },
+    };
+
+    const auto flows = FlowAnalytics::allocateLatentDemand(endpoints, 100);
+
+    ASSERT_EQ(flows.size(), 2);
+    EXPECT_EQ(flows[0].demand, 80);
+    EXPECT_EQ(flows[1].demand, 20);
+}
+
+TEST(CargoFlowOverlayTest, RecordsSameEndpointDemandLocally)
+{
+    std::vector<FlowAnalytics::Endpoint> endpoints{
+        { { FlowAnalytics::EndpointKind::town, 0 }, { 0, 0 }, {}, 5, 1, 0 },
+        { { FlowAnalytics::EndpointKind::town, 1 }, { 0, 0 }, {}, 0, 1, 0 },
+    };
+
+    const auto flows = FlowAnalytics::allocateLatentDemand(endpoints, 0);
+
+    ASSERT_EQ(flows.size(), 1);
+    EXPECT_EQ(endpoints[0].localDemand, 3);
+    EXPECT_EQ(flows[0].demand, 2);
+}
+
+TEST(CargoFlowOverlayTest, LatentDemandConservesMaximumSupply)
+{
+    constexpr auto kMaximum = std::numeric_limits<uint64_t>::max();
+    std::vector<FlowAnalytics::Endpoint> endpoints{
+        { { FlowAnalytics::EndpointKind::industry, 0 }, { 0, 0 }, {}, kMaximum, 0, 0 },
+        { { FlowAnalytics::EndpointKind::industry, 1 }, { 0, 0 }, {}, 0, kMaximum, 0 },
+        { { FlowAnalytics::EndpointKind::industry, 2 }, { 0, 0 }, {}, 0, kMaximum, 0 },
+    };
+
+    const auto flows = FlowAnalytics::allocateLatentDemand(endpoints, 0);
+
+    ASSERT_EQ(flows.size(), 2);
+    EXPECT_EQ(flows[0].demand + flows[1].demand, kMaximum);
+}
+
+TEST(CargoFlowOverlayTest, RestoringEmptyStateClearsHistory)
+{
+    const auto originalDay = getCurrentDay();
+    setCurrentDay(100);
+    FlowAnalytics::reset();
+    FlowAnalytics::recordDeparture(0, station(1), station(2), 10, 20);
+    ASSERT_FALSE(FlowAnalytics::isDefault(FlowAnalytics::captureState()));
+
+    EXPECT_TRUE(FlowAnalytics::restoreState({}));
+    EXPECT_TRUE(FlowAnalytics::isDefault(FlowAnalytics::captureState()));
+    setCurrentDay(originalDay);
+}
+
+TEST(CargoFlowOverlayTest, SamplesThroughputPlanAndDailyServiceCapacity)
+{
+    const auto originalDay = getCurrentDay();
+    reset();
+    auto& state = getState();
+    state.settings.modes[0] = DistributionMode::asymmetric;
+    state.serviceEdges[{ 0, station(1), station(2), servicePoint(1, 0), servicePoint(1, 1) }] = { 40, 10, 48, 96, 40 };
+    state.flows[{ 0, station(1), station(1), {}, station(2) }] = {
+        { station(2), 30, 0, servicePoint(1, 0), servicePoint(1, 1) },
+    };
+    setCurrentDay(99);
+    FlowAnalytics::recordDeparture(0, station(1), station(2), 10, 20);
+    setCurrentDay(100);
+    FlowAnalytics::updateDaily();
+
+    const auto summaries = FlowAnalytics::getServiceSummaries(0, 30);
+
+    ASSERT_EQ(summaries.size(), 1);
+    EXPECT_EQ(summaries[0].throughput, 10);
+    EXPECT_EQ(summaries[0].observedThroughput, 10);
+    EXPECT_EQ(summaries[0].offeredCapacity, 20);
+    EXPECT_EQ(summaries[0].plannedDemand, 30);
+    EXPECT_EQ(FlowAnalytics::roundCapacity(summaries[0].capacityQ16), 40);
+    setCurrentDay(originalDay);
+    reset();
+}
+
+TEST(CargoFlowOverlayTest, WeightsActualLoadByDepartureCapacity)
+{
+    const auto originalDay = getCurrentDay();
+    reset();
+    setCurrentDay(99);
+    FlowAnalytics::recordDeparture(0, station(1), station(2), 10, 10);
+    FlowAnalytics::recordDeparture(0, station(1), station(2), 5, 10);
+    FlowAnalytics::recordDeparture(0, station(1), station(2), 0, 10);
+    setCurrentDay(100);
+    FlowAnalytics::updateDaily();
+
+    const auto summaries = FlowAnalytics::getServiceSummaries(0, 30);
+
+    ASSERT_EQ(summaries.size(), 1);
+    EXPECT_EQ(summaries[0].throughput, 15);
+    EXPECT_EQ(summaries[0].observedThroughput, 15);
+    EXPECT_EQ(summaries[0].offeredCapacity, 30);
+    setCurrentDay(originalDay);
+    reset();
+}
+
+TEST(CargoFlowOverlayTest, KeepsNewObservationsSeparateFromLegacySameDayThroughput)
+{
+    const auto originalDay = getCurrentDay();
+    FlowAnalytics::State state;
+    state.days = {
+        { 99, { { { 0, station(1), station(2) }, 100, 0, 0, 0, 0 } } },
+    };
+    ASSERT_TRUE(FlowAnalytics::restoreState(state));
+    setCurrentDay(99);
+    FlowAnalytics::recordDeparture(0, station(1), station(2), 5, 10);
+    setCurrentDay(100);
+    FlowAnalytics::updateDaily();
+
+    const auto summaries = FlowAnalytics::getServiceSummaries(0, 30);
+
+    ASSERT_EQ(summaries.size(), 1);
+    EXPECT_EQ(summaries[0].throughput, 105);
+    EXPECT_EQ(summaries[0].observedThroughput, 5);
+    EXPECT_EQ(summaries[0].offeredCapacity, 10);
+    setCurrentDay(originalDay);
+    reset();
+}
+
+TEST(CargoFlowOverlayTest, RejectsObservedThroughputAboveCapacity)
+{
+    FlowAnalytics::State state;
+    state.days = {
+        { 99, { { { 0, station(1), station(2) }, 11, 11, 10, 0, 0 } } },
+    };
+
+    EXPECT_FALSE(FlowAnalytics::validateState(state));
 }
 
 TEST(CargoFlowOverlayTest, SeparatesStoppingAndLimitedStopLinks)
@@ -214,6 +429,25 @@ TEST(CargoFlowOverlayTest, DrawsCompleteLinesInEitherDirection)
     {
         EXPECT_EQ(pixels[y * 5 + 2], 3);
     }
+}
+
+TEST(CargoFlowOverlayTest, DrawsDestinationEndpointMarkers)
+{
+    std::array<uint8_t, 25> pixels{};
+    const Gfx::RenderTarget target{ pixels.data(), 0, 0, 5, 5, 0 };
+    Gfx::SoftwareDrawingContext drawingCtx;
+    drawingCtx.pushRenderTarget(target);
+
+    const std::array markers = {
+        CargoFlowOverlay::ProjectedMarker{ { 2, 2 }, PaletteIndex::yellowB },
+    };
+    CargoFlowOverlay::drawMarkers(drawingCtx, markers);
+
+    EXPECT_EQ(pixels[2], PaletteIndex::black3);
+    EXPECT_EQ(pixels[10], PaletteIndex::black3);
+    EXPECT_EQ(pixels[12], PaletteIndex::yellowB);
+    EXPECT_EQ(pixels[14], PaletteIndex::black3);
+    EXPECT_EQ(pixels[22], PaletteIndex::black3);
 }
 
 TEST(CargoFlowOverlayTest, ClipsLinksThatCrossTheViewport)

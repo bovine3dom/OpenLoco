@@ -156,8 +156,9 @@ namespace OpenLoco
         template<typename T>
         T pop()
         {
-            if (args == nullptr)
+            if (args == nullptr || end == nullptr || args > end || static_cast<size_t>(end - args) < sizeof(T))
             {
+                args = end;
                 return T{};
             }
 
@@ -171,8 +172,9 @@ namespace OpenLoco
         template<typename T>
         void skip()
         {
-            if (args == nullptr)
+            if (args == nullptr || end == nullptr || args > end || static_cast<size_t>(end - args) < sizeof(T))
             {
+                args = end;
                 return;
             }
             args += sizeof(T);

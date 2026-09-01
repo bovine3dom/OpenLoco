@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <OpenLoco/CargoDist/FlowAnalytics.h>
 #include <OpenLoco/CargoDist/Save.h>
 #include <OpenLoco/Core/BitSet.hpp>
 #include <OpenLoco/Engine/Limits.h>
@@ -31,7 +32,7 @@ namespace OpenLoco::S5::SaveExtension
                + sizeof(uint8_t) + sizeof(uint32_t) * 3 + sizeof(uint16_t) + sizeof(uint64_t) + Vehicles::TimetableManager::kMaxSlots * sizeof(uint32_t))
         + sizeof(uint32_t) + OpenLoco::S5::Limits::kMaxEntities * (sizeof(uint16_t) + sizeof(uint32_t))
         + sizeof(uint32_t) + OpenLoco::S5::Limits::kMaxEntities * (sizeof(uint16_t) + sizeof(uint32_t) * 3 + sizeof(uint64_t) * 4 + sizeof(uint8_t));
-    constexpr size_t kMaxDataSize = CargoDist::kMaxSaveDataSize + Vehicles::RailTraffic::kMaxSaveDataSize + Vehicles::RoutingManager::kMaxSaveDataSize + kMaxTimetableDataSize + 64 * 1024;
+    constexpr size_t kMaxDataSize = CargoDist::kMaxSaveDataSize + CargoDist::FlowAnalytics::kMaxSaveDataSize + Vehicles::RailTraffic::kMaxSaveDataSize + Vehicles::RoutingManager::kMaxSaveDataSize + kMaxTimetableDataSize + 64 * 1024;
     constexpr size_t kExtendedVehicleObjectStart = OpenLoco::S5::Limits::kMaxVehicleObjects;
     constexpr size_t kExtendedVehicleObjectCount = OpenLoco::Limits::kMaxVehicleObjects - kExtendedVehicleObjectStart;
 
@@ -71,6 +72,7 @@ namespace OpenLoco::S5::SaveExtension
         std::optional<GameRules::State> gameRulesState;
         std::optional<VehicleObjectState> vehicleObjectState;
         std::optional<Vehicles::TimetableManager::State> timetableState;
+        std::optional<CargoDist::FlowAnalytics::State> cargoFlowHistoryState;
     };
 
     struct StateView
@@ -86,6 +88,7 @@ namespace OpenLoco::S5::SaveExtension
         const GameRules::State* gameRulesState{};
         const VehicleObjectState* vehicleObjectState{};
         const Vehicles::TimetableManager::State* timetableState{};
+        const CargoDist::FlowAnalytics::State* cargoFlowHistoryState{};
     };
 
     std::vector<std::byte> encode(const State& state);

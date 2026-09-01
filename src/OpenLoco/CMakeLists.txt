@@ -5,6 +5,7 @@ set(OLOCO_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/Audio/VehicleAudio.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/CommandLine.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/CargoDist/CargoDist.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/CargoDist/FlowAnalytics.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/CargoDist/Routing.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/CargoDist/Save.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/CargoDist/Simulation.cpp"
