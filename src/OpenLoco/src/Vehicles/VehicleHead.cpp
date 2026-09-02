@@ -42,6 +42,7 @@
 #include "Vehicles/RailPathfinding.h"
 #include "Vehicles/RailTraffic.h"
 #include "Vehicles/RoutingManager.h"
+#include "Vehicles/TimetableManager.h"
 #include "Vehicles/Vehicle1.h"
 #include "Vehicles/Vehicle2.h"
 #include "Vehicles/VehicleAutoRenewal.h"
@@ -50,7 +51,6 @@
 #include "Vehicles/VehicleManager.h"
 #include "Vehicles/VehicleReplacement.h"
 #include "Vehicles/VehicleTail.h"
-#include "Vehicles/TimetableManager.h"
 #include "Vehicles/WaterPathfinding.h"
 #include "ViewportManager.h"
 #include "World/CompanyManager.h"
@@ -1493,13 +1493,16 @@ namespace OpenLoco::Vehicles
     // 0x004A8F22
     bool VehicleHead::tryReverse(bool allowCurrentLaneReversal)
     {
-        const auto canReverseInCurrentLane = allowCurrentLaneReversal && canReverseRoadVehicleInCurrentLane(trackAndDirection.road);
-        if (mode == TransportMode::road && var_52 != 1 && !canReverseInCurrentLane)
+        if (mode == TransportMode::road && var_52 != 1)
         {
             auto reverseTad = trackAndDirection.road;
             reverseTad.setReversed(!reverseTad.isReversed());
             const auto pos = World::Pos3(tileX, tileY, tileBaseZ * World::kSmallZStep);
-            if ((getRoadOccupation(pos, reverseTad) & RoadOccupationFlags::isLaneOccupied) != RoadOccupationFlags::none)
+            const auto reverseOccupation = getRoadOccupation(pos, reverseTad);
+            const auto canReverseInCurrentLane = allowCurrentLaneReversal
+                && canReverseRoadVehicleInCurrentLane(trackAndDirection.road)
+                && (reverseOccupation & RoadOccupationFlags::isOneWay) == RoadOccupationFlags::none;
+            if (!canReverseInCurrentLane && (reverseOccupation & RoadOccupationFlags::isLaneOccupied) != RoadOccupationFlags::none)
             {
                 return true;
             }
@@ -4404,6 +4407,29 @@ namespace OpenLoco::Vehicles
         return compatibleStations;
     }
 
+    static bool isAdjacentRoadLaneOccupied(const Vehicle& train)
+    {
+        auto pos = World::Pos3{ train.tail->tileX, train.tail->tileY, train.tail->tileBaseZ * World::kSmallZStep };
+        for (const auto handle : RoutingManager::RingView(train.tail->routingHandle))
+        {
+            TrackAndDirection::_RoadAndDirection tad{ 0, 0 };
+            tad._data = RoutingManager::getRouting(handle) & World::Track::AdditionalTaDFlags::basicTaDMask;
+
+            auto adjacentTad = tad;
+            adjacentTad._data ^= World::Track::AdditionalTaDFlags::isOvertaking;
+            if ((getRoadOccupation(pos, adjacentTad) & RoadOccupationFlags::isLaneOccupied) != RoadOccupationFlags::none)
+            {
+                return true;
+            }
+            if (handle == train.veh2->routingHandle)
+            {
+                break;
+            }
+            pos += World::TrackData::getUnkRoad(tad.basicRad()).pos;
+        }
+        return false;
+    }
+
     // 0x0047DA8D
     static Sub4ACEE7Result sub_47DA8D(VehicleHead& head, uint32_t unk1, uint32_t var_113612C)
     {
@@ -4494,7 +4520,19 @@ namespace OpenLoco::Vehicles
                 }
                 connection |= (1U << 14);
             }
-            if (head.trackAndDirection.road.isOvertaking() ^ head.trackAndDirection.road.isChangingLane())
+            bool stayInOvertakingLane = false;
+            if (head.trackAndDirection.road.isOvertaking() && !head.trackAndDirection.road.isChangingLane())
+            {
+                TrackAndDirection::_RoadAndDirection nextTad{ 0, 0 };
+                nextTad._data = connection & World::Track::AdditionalTaDFlags::basicRaDMask;
+                stayInOvertakingLane = isAdjacentRoadLaneOccupied(train)
+                    || (getRoadOccupation(nextPos, nextTad) & RoadOccupationFlags::isLaneOccupied) != RoadOccupationFlags::none;
+            }
+            if (stayInOvertakingLane)
+            {
+                connection |= World::Track::AdditionalTaDFlags::isOvertaking;
+            }
+            else if (head.trackAndDirection.road.isOvertaking() ^ head.trackAndDirection.road.isChangingLane())
             {
                 connection ^= World::Track::AdditionalTaDFlags::isOvertaking;
                 if (head.var_52 != 1)
@@ -5287,6 +5325,15 @@ namespace OpenLoco::Vehicles
     // return: dh
     RoadOccupationFlags getRoadOccupation(const World::Pos3 pos, const TrackAndDirection::_RoadAndDirection tad)
     {
+        if (tad.isChangingLane())
+        {
+            auto laneTad = tad;
+            laneTad._data &= ~World::Track::AdditionalTaDFlags::isChangingLane;
+            auto adjacentTad = laneTad;
+            adjacentTad._data ^= World::Track::AdditionalTaDFlags::isOvertaking;
+            return getRoadOccupation(pos, laneTad) | getRoadOccupation(pos, adjacentTad);
+        }
+
         if (World::TrackData::getRoadMiscData(tad.id()).reverseLane != 1)
         {
             // 0x0047D6F2
