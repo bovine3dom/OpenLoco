@@ -164,10 +164,10 @@ namespace OpenLoco::Vehicles
     };
     static_assert(sizeof(TrackAndDirection) == 2);
 
-    // Reversal swaps direction and lane state while keeping a stable vehicle on its current physical lane.
+    // Reversal stays in the physical lane for stable vehicles and overtake-to-normal transitions.
     constexpr bool canReverseRoadVehicleInCurrentLane(TrackAndDirection::_RoadAndDirection tad)
     {
-        return !tad.isChangingLane();
+        return !tad.isChangingLane() || tad.isOvertaking();
     }
 
     // TODO move to a different header
