@@ -7,6 +7,7 @@
 #include "GameCommands/Vehicles/VehicleOrderCommon.h"
 #include "GameCommands/Vehicles/VehicleRefit.h"
 #include "Localisation/StringIds.h"
+#include "Objects/VehicleObject.h"
 #include "Ui/WindowManager.h"
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/Orders.h"
@@ -34,9 +35,10 @@ namespace OpenLoco::GameCommands
             auto srcCarEnd = (*srcIter).end();
             for (; srcCarIter != srcCarEnd; srcCarIter++, tgtCarIter++)
             {
-                (*tgtCarIter).body->colourScheme = (*srcCarIter).body->colourScheme;
-                (*tgtCarIter).front->colourScheme = (*srcCarIter).front->colourScheme;
-                (*tgtCarIter).back->colourScheme = (*srcCarIter).back->colourScheme;
+                const auto objectId = (*tgtCarIter).body->objectId;
+                (*tgtCarIter).body->colourScheme = getEffectiveVehicleColourScheme(objectId, (*srcCarIter).body->colourScheme);
+                (*tgtCarIter).front->colourScheme = getEffectiveVehicleColourScheme(objectId, (*srcCarIter).front->colourScheme);
+                (*tgtCarIter).back->colourScheme = getEffectiveVehicleColourScheme(objectId, (*srcCarIter).back->colourScheme);
             }
         }
     }

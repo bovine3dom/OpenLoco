@@ -24,6 +24,7 @@
 #include "Objects/ObjectManager.h"
 #include "Objects/RoadObject.h"
 #include "Objects/TrackObject.h"
+#include "Objects/VehicleObject.h"
 #include "OpenLoco.h"
 #include "Ui.h"
 #include "Ui/ProgressBar.h"
@@ -615,6 +616,15 @@ namespace OpenLoco::ObjectManager
 
     std::optional<ObjectIndexEntry> findObjectInIndex(const ObjectHeader& objectHeader)
     {
+        if (isOfficialTgvPassengerCarriage(objectHeader) || isOfficialMailCargo(objectHeader))
+        {
+            const auto res = std::ranges::find_if(_installedObjectList, [&](const auto& entry) {
+                return isOfficialTgvPassengerCarriage(objectHeader)
+                    ? isOfficialTgvPassengerCarriage(entry._header)
+                    : isOfficialMailCargo(entry._header);
+            });
+            return res == std::end(_installedObjectList) ? std::nullopt : std::optional<ObjectIndexEntry>{ *res };
+        }
         auto res = internalFindObjectInIndex(objectHeader);
         if (!res.has_value())
         {
@@ -690,6 +700,41 @@ namespace OpenLoco::ObjectManager
     }
 
     // 0x00472C84
+    struct TgvLaPosteSelectionState
+    {
+        bool active{};
+        uint32_t numImages{};
+    };
+
+    static TgvLaPosteSelectionState getTgvLaPosteSelectionState(
+        const std::span<const SelectedObjectsFlags> objectFlags,
+        const std::optional<size_t> changedIndex = std::nullopt,
+        const bool changedSelected = false)
+    {
+        bool hasTgvPassengerCarriage = false;
+        bool hasMail = false;
+        uint32_t numImages = 0;
+        for (size_t i = 0; i < std::min(objectFlags.size(), _installedObjectList.size()); ++i)
+        {
+            const auto isSelected = changedIndex == i
+                ? changedSelected
+                : (objectFlags[i] & SelectedObjectsFlags::selected) != SelectedObjectsFlags::none;
+            if (!isSelected)
+            {
+                continue;
+            }
+
+            const auto& entry = _installedObjectList[i];
+            if (isOfficialTgvPassengerCarriage(entry._header))
+            {
+                hasTgvPassengerCarriage = true;
+                numImages = entry._displayData.numImages;
+            }
+            hasMail |= isOfficialMailCargo(entry._header);
+        }
+        return { hasTgvPassengerCarriage && hasMail, numImages };
+    }
+
     static void resetSelectedObjectCountsAndSize(ObjectIndexSelection& selection)
     {
         std::fill(std::begin(selection.selectionMetaData.numSelectedObjects), std::end(selection.selectionMetaData.numSelectedObjects), 0U);
@@ -705,6 +750,12 @@ namespace OpenLoco::ObjectManager
 
             selection.selectionMetaData.numSelectedObjects[enumValue(entry._header.getType())]++;
             totalNumImages += entry._displayData.numImages;
+        }
+
+        const auto tgvLaPoste = getTgvLaPosteSelectionState(selection.objectFlags);
+        if (tgvLaPoste.active)
+        {
+            totalNumImages += tgvLaPoste.numImages;
         }
 
         selection.selectionMetaData.numImages = totalNumImages;
@@ -765,8 +816,19 @@ namespace OpenLoco::ObjectManager
             return false;
         }
 
+        const auto currentTgvLaPoste = getTgvLaPosteSelectionState(selection.objectFlags);
+        const auto selectedTgvLaPoste = getTgvLaPosteSelectionState(selection.objectFlags, index, true);
+        const auto additionalTgvImages = selectedTgvLaPoste.active && !currentTgvLaPoste.active ? selectedTgvLaPoste.numImages : 0;
+        const auto selectedVehicleCount = static_cast<size_t>(selection.selectionMetaData.numSelectedObjects[enumValue(ObjectType::vehicle)])
+            + (objHeader.getType() == ObjectType::vehicle ? 1 : 0);
+        if (selectedTgvLaPoste.active && selectedVehicleCount >= getMaxObjects(ObjectType::vehicle))
+        {
+            GameCommands::setErrorText(StringIds::too_many_objects_of_this_type_selected);
+            return false;
+        }
+
         // If this object was selected too many images would be needed when loading
-        if (entry._displayData.numImages + selection.selectionMetaData.numImages > Gfx::G1ExpectedCount::kObjects)
+        if (entry._displayData.numImages + additionalTgvImages + selection.selectionMetaData.numImages > Gfx::G1ExpectedCount::kObjects)
         {
             GameCommands::setErrorText(StringIds::not_enough_space_for_graphics);
             return false;
@@ -779,7 +841,7 @@ namespace OpenLoco::ObjectManager
             return false;
         }
 
-        selection.selectionMetaData.numImages += entry._displayData.numImages;
+        selection.selectionMetaData.numImages += entry._displayData.numImages + additionalTgvImages;
         selection.selectionMetaData.numSelectedObjects[enumValue(objHeader.getType())]++;
         selection.objectFlags[index] |= SelectedObjectsFlags::selected;
         return true;
@@ -823,7 +885,10 @@ namespace OpenLoco::ObjectManager
             }
         }
 
-        selection.selectionMetaData.numImages -= entry._displayData.numImages;
+        const auto currentTgvLaPoste = getTgvLaPosteSelectionState(selection.objectFlags);
+        const auto deselectedTgvLaPoste = getTgvLaPosteSelectionState(selection.objectFlags, index, false);
+        const auto removedTgvImages = currentTgvLaPoste.active && !deselectedTgvLaPoste.active ? currentTgvLaPoste.numImages : 0;
+        selection.selectionMetaData.numImages -= entry._displayData.numImages + removedTgvImages;
         selection.selectionMetaData.numSelectedObjects[enumValue(objHeader.getType())]--;
         selection.objectFlags[index] &= ~SelectedObjectsFlags::selected;
         return true;
@@ -1087,6 +1152,16 @@ namespace OpenLoco::ObjectManager
 
     static void applyLoadedObjectMarkToIndex(std::span<SelectedObjectsFlags> objectFlags, const std::array<std::span<uint8_t>, kMaxObjectTypes>& loadedObjectFlags)
     {
+        bool isTgvLaPosteInUse = false;
+        for (LoadedObjectId id = 0; id < loadedObjectFlags[enumValue(ObjectType::vehicle)].size(); ++id)
+        {
+            if ((loadedObjectFlags[enumValue(ObjectType::vehicle)][id] & (1U << 0)) != 0 && isTgvLaPosteObject(id))
+            {
+                isTgvLaPosteInUse = true;
+                break;
+            }
+        }
+
         for (ObjectIndexId i = 0; i < static_cast<int16_t>(_installedObjectList.size()); i++)
         {
             objectFlags[i] &= ~(SelectedObjectsFlags::inUse | SelectedObjectsFlags::selected);
@@ -1106,6 +1181,10 @@ namespace OpenLoco::ObjectManager
             if (loadedFlags & (1 << 1))
             {
                 objectFlags[i] |= SelectedObjectsFlags::selected;
+            }
+            if (isTgvLaPosteInUse && (isOfficialTgvPassengerCarriage(entry._header) || isOfficialMailCargo(entry._header)))
+            {
+                objectFlags[i] |= SelectedObjectsFlags::selected | SelectedObjectsFlags::inUse;
             }
         }
     }
@@ -1225,6 +1304,8 @@ namespace OpenLoco::ObjectManager
     // 0x00474874
     void loadSelectionListObjects(std::span<SelectedObjectsFlags> objectFlags)
     {
+        synchroniseTgvLaPosteObject(false);
+        reloadAll();
         for (auto i = 0U; i < objectFlags.size(); i++)
         {
             if ((objectFlags[i] & SelectedObjectsFlags::selected) != SelectedObjectsFlags::none)

@@ -523,7 +523,7 @@ namespace OpenLoco
         }
     }
 
-    static ColourScheme getCompanyVehicleColourScheme(CompanyId companyId, const VehicleObject& vehObject)
+    static ColourScheme getCompanyVehicleColourScheme(const CompanyId companyId, const LoadedObjectId vehicleType, const VehicleObject& vehObject)
     {
         auto* company = CompanyManager::get(companyId);
 
@@ -532,7 +532,7 @@ namespace OpenLoco
         {
             colourScheme = company->vehicleColours[vehObject.colourType - 1];
         }
-        return colourScheme;
+        return getEffectiveVehicleColourScheme(vehicleType, colourScheme);
     }
 
     // 0x004B7741
@@ -540,7 +540,7 @@ namespace OpenLoco
     {
         auto* vehObject = ObjectManager::get<VehicleObject>(vehicleTypeIdx);
 
-        auto colourScheme = getCompanyVehicleColourScheme(companyId, *vehObject);
+        auto colourScheme = getCompanyVehicleColourScheme(companyId, vehicleTypeIdx, *vehObject);
 
         drawVehicleOverview(drawingCtx, offset, *vehObject, yaw, roll, colourScheme);
     }
@@ -577,7 +577,7 @@ namespace OpenLoco
 
         loc.y += getVehicleObjectYDisplayOffset(*vehObject);
 
-        auto colourScheme = getCompanyVehicleColourScheme(company, *vehObject);
+        auto colourScheme = getCompanyVehicleColourScheme(company, vehicleTypeIdx, *vehObject);
 
         const auto yaw = 40;
 

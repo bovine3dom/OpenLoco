@@ -303,8 +303,33 @@ namespace OpenLoco
 #pragma pack(pop)
     static_assert(sizeof(VehicleObject) == 0x15E);
 
+    constexpr ObjectHeader kTgvLaPosteObjectHeader{
+        static_cast<uint32_t>(ObjectType::vehicle) | (static_cast<uint32_t>(SourceGame::openLoco) << 6),
+        { 'T', 'G', 'V', 'P', 'O', 'S', 'T', ' ' },
+        0x54504731,
+    };
+    constexpr ObjectHeader kOfficialTgvPassengerCarriageHeader{
+        0x11828197,
+        { 'T', 'G', 'V', '2', ' ', ' ', ' ', ' ' },
+        0xF9A7C855,
+    };
+    constexpr ObjectHeader kOfficialMailCargoHeader{
+        0x11827C88,
+        { 'M', 'A', 'I', 'L', ' ', ' ', ' ', ' ' },
+        0xCAF05651,
+    };
+    // Match the 45 units / 166 length density of the highest-capacity vanilla mail carriage.
+    constexpr uint8_t kTgvLaPosteMailCapacity = 49;
+
     uint8_t getEffectiveVehicleCapacity(const ObjectHeader& header, uint8_t capacity);
     uint8_t getEffectiveVehicleCapacity(const ObjectHeader& header, uint8_t capacity, uint8_t primaryCargoUnitSize, uint8_t cargoUnitSize);
+    bool isOfficialTgvPassengerCarriage(const ObjectHeader& header);
+    bool isOfficialMailCargo(const ObjectHeader& header);
+    bool isTgvLaPosteObject(const ObjectHeader& header);
+    bool isTgvLaPosteObject(LoadedObjectId objectId);
+    void applyTgvLaPosteVehicleOverrides(VehicleObject& vehicle, uint32_t mailCargoMask);
+    ColourScheme getEffectiveVehicleColourScheme(const ObjectHeader& header, ColourScheme requested);
+    ColourScheme getEffectiveVehicleColourScheme(LoadedObjectId objectId, ColourScheme requested);
     bool isSrn4HovercraftObject(const ObjectHeader& header);
     bool isSrn4HovercraftObject(LoadedObjectId objectId);
 

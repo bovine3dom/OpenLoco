@@ -168,6 +168,13 @@ namespace OpenLoco::S5
         return state;
     }
 
+    static bool requiresExtendedVehicleObjectRule(const SaveExtension::VehicleObjectState* state)
+    {
+        return state != nullptr && std::ranges::any_of(state->objects, [](const auto& object) {
+            return !isTgvLaPosteObject(object.header);
+        });
+    }
+
     constexpr bool hasSaveFlags(SaveFlags flags, SaveFlags flagsToTest)
     {
         return (flags & flagsToTest) != SaveFlags::none;
@@ -728,7 +735,7 @@ namespace OpenLoco::S5
             if (shouldPackObjects(flags))
             {
                 std::copy_if(runtimeRequiredObjects.begin(), runtimeRequiredObjects.end(), std::back_inserter(packedObjects), [](const ObjectHeader& header) {
-                    return !header.isEmpty() && !header.isVanilla();
+                    return !header.isEmpty() && !header.isVanilla() && !isTgvLaPosteObject(header);
                 });
             }
 
@@ -787,7 +794,7 @@ namespace OpenLoco::S5
             const auto gameRulesState = GameRules::captureState();
             const auto* gameRules = gameRulesState == GameRules::kDefaultState ? nullptr : &gameRulesState;
             const auto* vehicleObjects = file.vehicleObjectState ? &*file.vehicleObjectState : nullptr;
-            if (vehicleObjects != nullptr && !gameRulesState.extendedVehicleObjects)
+            if (requiresExtendedVehicleObjectRule(vehicleObjects) && !gameRulesState.extendedVehicleObjects)
             {
                 throw Exception::RuntimeError("Extended vehicle objects require the extended-object game rule");
             }
@@ -1057,7 +1064,7 @@ namespace OpenLoco::S5
                 file->gameRulesState = std::move(extensionState.gameRulesState);
                 file->vehicleObjectState = std::move(extensionState.vehicleObjectState);
                 file->timetableState = std::move(extensionState.timetableState);
-                if (file->vehicleObjectState.has_value()
+                if (requiresExtendedVehicleObjectRule(file->vehicleObjectState ? &*file->vehicleObjectState : nullptr)
                     && (!file->gameRulesState.has_value() || !file->gameRulesState->extendedVehicleObjects))
                 {
                     throw Exception::RuntimeError("Extended vehicle objects require the extended-object game rule");
@@ -1351,6 +1358,7 @@ namespace OpenLoco::S5
             // Copy the S5 gamestate contents to the destination gamestate, field by field
             dst = std::move(*importedGameState);
             GameRules::restoreState(file->gameRulesState.value_or(GameRules::kDefaultState));
+            VehicleManager::synchroniseTgvLaPosteAvailability();
             auto* cargoDistState = file->cargoDistState.has_value() && !hasLoadFlags(flags, LoadFlags::titleSequence)
                 ? &*file->cargoDistState
                 : nullptr;

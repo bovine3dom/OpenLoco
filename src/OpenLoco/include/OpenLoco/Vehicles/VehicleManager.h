@@ -24,6 +24,7 @@ namespace OpenLoco::VehicleManager
     void updateDaily();
     bool isVehicleObjectAvailable(const VehicleObject& vehicleObject, uint16_t currentYear);
     void determineAvailableVehicles(Company& company);
+    void synchroniseTgvLaPosteAvailability();
     uint16_t determineAvailableVehicleTypes(const Company& company);
     void resetIfHeadingForStation(const StationId stationId);
     void deleteTrain(Vehicles::VehicleHead& head);

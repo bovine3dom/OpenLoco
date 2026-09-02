@@ -18,6 +18,7 @@
 #include "Objects/ObjectManager.h"
 #include "Objects/RoadObject.h"
 #include "Objects/TrackObject.h"
+#include "Objects/VehicleObject.h"
 #include "Random.h"
 #include "Scenario/ScenarioManager.h"
 #include "SceneManager.h"
@@ -801,6 +802,7 @@ namespace OpenLoco
                 {
                     colour = vehicleColours[vehObject->colourType - 1];
                 }
+                colour = getEffectiveVehicleColourScheme(car.body->objectId, colour);
                 car.applyToComponents([colour](auto& component) { component.colourScheme = colour; });
             }
         }

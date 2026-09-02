@@ -168,6 +168,8 @@ namespace OpenLoco::ObjectManager
     std::vector<ObjectHeader> getHeaders();
 
     LoadObjectsResult loadAll(std::span<ObjectHeader> objects);
+    std::optional<LoadedObjectId> injectTgvLaPosteObject(std::span<ObjectHeader> objects);
+    void synchroniseTgvLaPosteObject(bool loadIfMissing = true);
     void writePackedObjects(SawyerStreamWriter& fs, const std::vector<ObjectHeader>& packedObjects);
 
     void unloadAll();

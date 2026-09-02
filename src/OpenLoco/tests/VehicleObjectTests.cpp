@@ -1,7 +1,11 @@
+#include "Graphics/Colour.h"
+#include "Objects/ObjectManager.h"
 #include "Objects/VehicleObject.h"
+#include "S5/Limits.h"
 #include <algorithm>
 #include <gtest/gtest.h>
 #include <string_view>
+#include <vector>
 
 using namespace OpenLoco;
 
@@ -14,6 +18,17 @@ namespace
         std::copy(name.begin(), name.end(), header.name);
         return header;
     }
+
+    size_t objectTypeOffset(const ObjectType target)
+    {
+        size_t offset = 0;
+        for (uint8_t type = 0; type < enumValue(target); ++type)
+        {
+            offset += ObjectManager::getMaxObjects(static_cast<ObjectType>(type));
+        }
+        return offset;
+    }
+
 }
 
 TEST(VehicleObjectTest, AppliesCapacityOverrides)
@@ -78,6 +93,103 @@ TEST(VehicleObjectTest, IdentifiesOfficialSrn4Hovercraft)
 TEST(VehicleObjectTest, DoesNotOverrideCompactedSecondaryCargo)
 {
     EXPECT_EQ(getEffectiveVehicleCapacity(makeHeader("2EPB    "), 5), 5);
+}
+
+TEST(VehicleObjectTest, IdentifiesTgvLaPosteObjects)
+{
+    EXPECT_TRUE(isOfficialTgvPassengerCarriage(kOfficialTgvPassengerCarriageHeader));
+    EXPECT_FALSE(isOfficialTgvPassengerCarriage(makeHeader("TGV2    ")));
+    EXPECT_FALSE(isOfficialTgvPassengerCarriage(makeHeader("TGV2    ", SourceGame::custom)));
+    EXPECT_TRUE(isOfficialMailCargo(kOfficialMailCargoHeader));
+    EXPECT_FALSE(isOfficialMailCargo(makeHeader("MAIL    ", SourceGame::vanilla, ObjectType::cargo)));
+    EXPECT_TRUE(isTgvLaPosteObject(kTgvLaPosteObjectHeader));
+
+    auto wrongSource = kTgvLaPosteObjectHeader;
+    wrongSource.flags = static_cast<uint32_t>(ObjectType::vehicle) | (static_cast<uint32_t>(SourceGame::custom) << 6);
+    EXPECT_FALSE(isTgvLaPosteObject(wrongSource));
+    auto wrongChecksum = kTgvLaPosteObjectHeader;
+    wrongChecksum.checksum++;
+    EXPECT_FALSE(isTgvLaPosteObject(wrongChecksum));
+}
+
+TEST(VehicleObjectTest, AppliesTgvLaPosteOverrides)
+{
+    VehicleObject vehicle{};
+    vehicle.flags = VehicleObjectFlags::refittable;
+
+    applyTgvLaPosteVehicleOverrides(vehicle, 1U << 5);
+
+    EXPECT_EQ(vehicle.name, StringIds::tgv_la_poste_mail_carriage);
+    EXPECT_EQ(vehicle.maxCargo[0], kTgvLaPosteMailCapacity);
+    EXPECT_EQ(vehicle.maxCargo[1], 0);
+    EXPECT_EQ(vehicle.compatibleCargoCategories[0], 1U << 5);
+    EXPECT_EQ(vehicle.compatibleCargoCategories[1], 0);
+    EXPECT_EQ(vehicle.numSimultaneousCargoTypes, 1);
+    EXPECT_FALSE(vehicle.hasFlags(VehicleObjectFlags::refittable));
+    EXPECT_TRUE(vehicle.hasFlags(VehicleObjectFlags::quietInvention));
+}
+
+TEST(VehicleObjectTest, UsesFixedTgvLaPosteColours)
+{
+    const ColourScheme requested{ Colour::red, Colour::white };
+    const auto fixed = getEffectiveVehicleColourScheme(kTgvLaPosteObjectHeader, requested);
+
+    EXPECT_EQ(fixed.primary, Colour::yellow);
+    EXPECT_EQ(fixed.secondary, Colour::darkBlue);
+    const auto ordinary = getEffectiveVehicleColourScheme(kOfficialTgvPassengerCarriageHeader, requested);
+    EXPECT_EQ(ordinary.primary, requested.primary);
+    EXPECT_EQ(ordinary.secondary, requested.secondary);
+}
+
+TEST(VehicleObjectTest, InjectsTgvLaPosteIntoFirstExtendedVehicleSlot)
+{
+    std::vector<ObjectHeader> objects(ObjectManager::kMaxObjects, kEmptyObjectHeader);
+    const auto vehicleOffset = objectTypeOffset(ObjectType::vehicle);
+    const auto cargoOffset = objectTypeOffset(ObjectType::cargo);
+    objects[vehicleOffset + 7] = kOfficialTgvPassengerCarriageHeader;
+    objects[cargoOffset] = kOfficialMailCargoHeader;
+
+    const auto slot = ObjectManager::injectTgvLaPosteObject(objects);
+
+    ASSERT_TRUE(slot.has_value());
+    EXPECT_EQ(*slot, S5::Limits::kMaxVehicleObjects);
+    EXPECT_TRUE(isTgvLaPosteObject(objects[vehicleOffset + *slot]));
+    EXPECT_EQ(ObjectManager::injectTgvLaPosteObject(objects), slot);
+}
+
+TEST(VehicleObjectTest, InjectsTgvLaPosteWithoutConsumingLegacySlots)
+{
+    std::vector<ObjectHeader> objects(ObjectManager::kMaxObjects, kEmptyObjectHeader);
+    const auto vehicleOffset = objectTypeOffset(ObjectType::vehicle);
+    const auto cargoOffset = objectTypeOffset(ObjectType::cargo);
+    std::fill_n(objects.begin() + vehicleOffset, S5::Limits::kMaxVehicleObjects, kOfficialTgvPassengerCarriageHeader);
+    objects[cargoOffset] = kOfficialMailCargoHeader;
+
+    const auto slot = ObjectManager::injectTgvLaPosteObject(objects);
+
+    ASSERT_TRUE(slot.has_value());
+    EXPECT_EQ(*slot, S5::Limits::kMaxVehicleObjects);
+    EXPECT_TRUE(isTgvLaPosteObject(objects[vehicleOffset + *slot]));
+}
+
+TEST(VehicleObjectTest, DoesNotInjectTgvLaPosteWithoutAFreeVehicleSlot)
+{
+    std::vector<ObjectHeader> objects(ObjectManager::kMaxObjects, kEmptyObjectHeader);
+    const auto vehicleOffset = objectTypeOffset(ObjectType::vehicle);
+    const auto cargoOffset = objectTypeOffset(ObjectType::cargo);
+    std::fill_n(objects.begin() + vehicleOffset, ObjectManager::getMaxObjects(ObjectType::vehicle), makeHeader("OTHER   "));
+    objects[vehicleOffset] = kOfficialTgvPassengerCarriageHeader;
+    objects[cargoOffset] = kOfficialMailCargoHeader;
+
+    EXPECT_FALSE(ObjectManager::injectTgvLaPosteObject(objects).has_value());
+}
+
+TEST(VehicleObjectTest, DoesNotInjectTgvLaPosteWithoutMail)
+{
+    std::vector<ObjectHeader> objects(ObjectManager::kMaxObjects, kEmptyObjectHeader);
+    objects[objectTypeOffset(ObjectType::vehicle)] = kOfficialTgvPassengerCarriageHeader;
+
+    EXPECT_FALSE(ObjectManager::injectTgvLaPosteObject(objects).has_value());
 }
 
 TEST(VehicleObjectTest, ConvertsRefittedCapacity)

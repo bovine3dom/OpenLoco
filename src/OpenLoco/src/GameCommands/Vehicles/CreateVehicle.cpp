@@ -328,6 +328,7 @@ namespace OpenLoco::GameCommands
         {
             colourScheme = company->vehicleColours[vehObject->colourType - 1];
         }
+        colourScheme = getEffectiveVehicleColourScheme(vehicleTypeId, colourScheme);
 
         VehicleBogie* newCarStart = nullptr;
         for (auto bodyNumber = 0; bodyNumber < vehObject->numCarComponents; ++bodyNumber)

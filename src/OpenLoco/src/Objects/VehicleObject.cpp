@@ -68,6 +68,61 @@ namespace OpenLoco
         return nullptr;
     }
 
+    bool isOfficialTgvPassengerCarriage(const ObjectHeader& header)
+    {
+        return header.flags == kOfficialTgvPassengerCarriageHeader.flags
+            && header.getName() == kOfficialTgvPassengerCarriageHeader.getName()
+            && header.checksum == kOfficialTgvPassengerCarriageHeader.checksum;
+    }
+
+    bool isOfficialMailCargo(const ObjectHeader& header)
+    {
+        return header.flags == kOfficialMailCargoHeader.flags
+            && header.getName() == kOfficialMailCargoHeader.getName()
+            && header.checksum == kOfficialMailCargoHeader.checksum;
+    }
+
+    bool isTgvLaPosteObject(const ObjectHeader& header)
+    {
+        return header.flags == kTgvLaPosteObjectHeader.flags
+            && header.getName() == kTgvLaPosteObjectHeader.getName()
+            && header.checksum == kTgvLaPosteObjectHeader.checksum;
+    }
+
+    bool isTgvLaPosteObject(const LoadedObjectId objectId)
+    {
+        return objectId < ObjectManager::getMaxObjects(ObjectType::vehicle)
+            && ObjectManager::get<VehicleObject>(objectId) != nullptr
+            && isTgvLaPosteObject(ObjectManager::getHeader({ ObjectType::vehicle, objectId }));
+    }
+
+    void applyTgvLaPosteVehicleOverrides(VehicleObject& vehicle, const uint32_t mailCargoMask)
+    {
+        vehicle.name = StringIds::tgv_la_poste_mail_carriage;
+        vehicle.maxCargo[0] = mailCargoMask == 0 ? 0 : kTgvLaPosteMailCapacity;
+        vehicle.maxCargo[1] = 0;
+        vehicle.compatibleCargoCategories[0] = mailCargoMask;
+        vehicle.compatibleCargoCategories[1] = 0;
+        vehicle.numSimultaneousCargoTypes = mailCargoMask == 0 ? 0 : 1;
+        std::fill(std::begin(vehicle.cargoTypeSpriteOffsets), std::end(vehicle.cargoTypeSpriteOffsets), 0);
+        vehicle.flags &= ~VehicleObjectFlags::refittable;
+        vehicle.flags |= VehicleObjectFlags::quietInvention;
+    }
+
+    ColourScheme getEffectiveVehicleColourScheme(const ObjectHeader& header, const ColourScheme requested)
+    {
+        return isTgvLaPosteObject(header)
+            ? ColourScheme{ Colour::yellow, Colour::darkBlue }
+            : requested;
+    }
+
+    ColourScheme getEffectiveVehicleColourScheme(const LoadedObjectId objectId, const ColourScheme requested)
+    {
+        return isTgvLaPosteObject(objectId)
+            ? getEffectiveVehicleColourScheme(ObjectManager::getHeader({ ObjectType::vehicle, objectId }), requested)
+            : requested;
+    }
+
     bool isSrn4HovercraftObject(const ObjectHeader& header)
     {
         return header.getType() == ObjectType::vehicle
@@ -91,7 +146,9 @@ namespace OpenLoco
         uint8_t yaw = Ui::WindowManager::getVehiclePreviewRotationFrameYaw();
         uint8_t roll = Ui::WindowManager::getVehiclePreviewRotationFrameRoll();
 
-        ColourScheme colour{ Colour::mutedSeaGreen, Colour::white };
+        const auto colour = name == StringIds::tgv_la_poste_mail_carriage
+            ? ColourScheme{ Colour::yellow, Colour::darkBlue }
+            : ColourScheme{ Colour::mutedSeaGreen, Colour::white };
         drawVehicleOverview(drawingCtx, Ui::Point{ x, y } + Ui::Point{ 0, 19 }, *this, yaw, roll, colour);
     }
 
@@ -512,6 +569,7 @@ namespace OpenLoco
             }
         }
 
+        std::fill(std::begin(compatibleVehicles), std::end(compatibleVehicles), kNullObjectId);
         for (auto i = 0U, index = 0U; i < numCompatibleVehicles; ++i)
         {
             ObjectHeader vehHeader = *reinterpret_cast<const ObjectHeader*>(remainingData.data());

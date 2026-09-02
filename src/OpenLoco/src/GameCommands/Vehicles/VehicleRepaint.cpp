@@ -1,6 +1,7 @@
 #include "GameCommands/Vehicles/VehicleRepaint.h"
 #include "Entities/EntityManager.h"
 #include "GameCommands/GameCommands.h"
+#include "Objects/VehicleObject.h"
 #include "Types.hpp"
 #include "Vehicles/Vehicle.h"
 #include "Vehicles/VehicleBody.h"
@@ -12,17 +13,17 @@ namespace OpenLoco::GameCommands
     {
         if (args.hasRepaintFlags(VehicleRepaintFlags::bodyColour) && component.body != nullptr)
         {
-            component.body->colourScheme = args.colours[kBodyColour];
+            component.body->colourScheme = getEffectiveVehicleColourScheme(component.body->objectId, args.colours[kBodyColour]);
             component.body->invalidateSprite();
         }
         if (args.hasRepaintFlags(VehicleRepaintFlags::frontBogieColour) && component.front != nullptr)
         {
-            component.front->colourScheme = args.colours[kFrontBogieColour];
+            component.front->colourScheme = getEffectiveVehicleColourScheme(component.front->objectId, args.colours[kFrontBogieColour]);
             component.front->invalidateSprite();
         }
         if (args.hasRepaintFlags(VehicleRepaintFlags::backBogieColour) && component.back != nullptr)
         {
-            component.back->colourScheme = args.colours[kBackBogieColour];
+            component.back->colourScheme = getEffectiveVehicleColourScheme(component.back->objectId, args.colours[kBackBogieColour]);
             component.back->invalidateSprite();
         }
     }

@@ -134,11 +134,61 @@ namespace OpenLoco::VehicleManager
         return unlockedVehicles;
     }
 
+    static void synchroniseTgvLaPosteAvailability(Company& company)
+    {
+        std::optional<LoadedObjectId> source;
+        std::optional<LoadedObjectId> variant;
+        for (LoadedObjectId id = 0; id < ObjectManager::getMaxObjects(ObjectType::vehicle); ++id)
+        {
+            if (ObjectManager::get<VehicleObject>(id) == nullptr)
+            {
+                continue;
+            }
+            const LoadedObjectHandle handle{ ObjectType::vehicle, id };
+            const auto& header = ObjectManager::getHeader(handle);
+            if (isOfficialTgvPassengerCarriage(header))
+            {
+                source = id;
+            }
+            else if (isTgvLaPosteObject(header))
+            {
+                variant = id;
+            }
+        }
+        if (variant.has_value())
+        {
+            company.unlockedVehicles.set(*variant, source.has_value() && company.unlockedVehicles[*source]);
+        }
+    }
+
     // 0x004C3A0C
     void determineAvailableVehicles(Company& company)
     {
         company.unlockedVehicles = determineUnlockedVehicles(company);
+        synchroniseTgvLaPosteAvailability(company);
         company.availableVehicles = determineAvailableVehicleTypes(company);
+    }
+
+    void synchroniseTgvLaPosteAvailability()
+    {
+        for (auto& company : CompanyManager::companies())
+        {
+            synchroniseTgvLaPosteAvailability(company);
+            company.availableVehicles = determineAvailableVehicleTypes(company);
+        }
+        for (auto* head : VehicleList())
+        {
+            Vehicles::Vehicle train(*head);
+            for (auto& car : train.cars)
+            {
+                if (!isTgvLaPosteObject(car.body->objectId))
+                {
+                    continue;
+                }
+                const auto colours = getEffectiveVehicleColourScheme(car.body->objectId, car.body->colourScheme);
+                car.applyToComponents([colours](auto& component) { component.colourScheme = colours; });
+            }
+        }
     }
 
     template<typename T>

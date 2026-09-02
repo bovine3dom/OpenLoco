@@ -2377,6 +2377,7 @@ namespace OpenLoco::StringIds
     constexpr StringId cargo_flow_zero_percent = 2665;
     constexpr StringId cargo_flow_fifty_percent = 2666;
     constexpr StringId cargo_flow_hundred_percent = 2667;
+    constexpr StringId tgv_la_poste_mail_carriage = 2668;
 
     constexpr StringId temporary_object_load_str_0 = 8192;
     constexpr StringId temporary_object_load_str_1 = 8193;

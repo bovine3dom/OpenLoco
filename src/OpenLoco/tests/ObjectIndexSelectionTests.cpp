@@ -207,3 +207,35 @@ TEST_F(ObjectIndexSelectionTest, ExtendedRuleAllowsVehicleObject225)
     EXPECT_EQ(ObjectManager::getMaxSelectableObjects(ObjectType::vehicle), Limits::kMaxVehicleObjects);
     EXPECT_TRUE(selection.hasExtendedVehicleObjectsSelected());
 }
+
+TEST_F(ObjectIndexSelectionTest, TgvLaPosteReservesAndReleasesDuplicateImages)
+{
+    ObjectManager::_installedObjectList = {
+        makeVehicleEntry(kOfficialTgvPassengerCarriageHeader, VehicleType::train, 10),
+        makeEntry(kOfficialMailCargoHeader, 3),
+    };
+    auto selection = makeSelection();
+
+    ASSERT_TRUE(selection.selectObject(ObjectManager::SelectObjectModes::defaultSelect, kOfficialTgvPassengerCarriageHeader));
+    EXPECT_EQ(selection.selectionMetaData.numImages, 10);
+    ASSERT_TRUE(selection.selectObject(ObjectManager::SelectObjectModes::defaultSelect, kOfficialMailCargoHeader));
+    EXPECT_EQ(selection.selectionMetaData.numImages, 23);
+
+    ASSERT_TRUE(selection.selectObject(ObjectManager::SelectObjectModes::defaultDeselect, kOfficialMailCargoHeader));
+    EXPECT_EQ(selection.selectionMetaData.numImages, 10);
+}
+
+TEST_F(ObjectIndexSelectionTest, TgvLaPosteRejectsInsufficientDuplicateImageCapacity)
+{
+    constexpr auto kTgvImages = Gfx::G1ExpectedCount::kObjects / 2 + 1;
+    ObjectManager::_installedObjectList = {
+        makeVehicleEntry(kOfficialTgvPassengerCarriageHeader, VehicleType::train, kTgvImages),
+        makeEntry(kOfficialMailCargoHeader),
+    };
+    auto selection = makeSelection();
+
+    ASSERT_TRUE(selection.selectObject(ObjectManager::SelectObjectModes::defaultSelect, kOfficialTgvPassengerCarriageHeader));
+    EXPECT_FALSE(selection.selectObject(ObjectManager::SelectObjectModes::defaultSelect, kOfficialMailCargoHeader));
+    EXPECT_FALSE(isSelected(selection, 1));
+    EXPECT_EQ(selection.selectionMetaData.numImages, kTgvImages);
+}

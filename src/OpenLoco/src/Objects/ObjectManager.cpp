@@ -50,6 +50,7 @@
 #include "Objects/VehicleObject.h"
 #include "Objects/WallObject.h"
 #include "Objects/WaterObject.h"
+#include "S5/Limits.h"
 #include "S5/SawyerStream.h"
 #include "Ui.h"
 #include "Ui/ProgressBar.h"
@@ -191,7 +192,14 @@ namespace OpenLoco::ObjectManager
                 {
                     const auto& objHeader = typedObjectList.objectEntryExtendeds[i];
 
-                    if (header == objHeader) // PERHAPS WRONG WAY ROUND
+                    const auto isBuiltInVariant = isTgvLaPosteObject(header);
+                    const auto isLoadedBuiltInVariant = isTgvLaPosteObject(objHeader);
+                    if (isBuiltInVariant != isLoadedBuiltInVariant)
+                    {
+                        continue;
+                    }
+
+                    if (isBuiltInVariant || header == objHeader) // PERHAPS WRONG WAY ROUND
                     {
                         return { LoadedObjectHandle{ objectType, i } };
                     }
@@ -358,6 +366,19 @@ namespace OpenLoco::ObjectManager
         {
             auto* vehicle = reinterpret_cast<VehicleObject*>(&obj);
             vehicle->maxCargo[0] = getEffectiveVehicleCapacity(header, vehicle->maxCargo[0]);
+            if (isTgvLaPosteObject(header))
+            {
+                uint32_t mailCargoMask = 0;
+                for (uint8_t cargo = 0; cargo < getMaxObjects(ObjectType::cargo); ++cargo)
+                {
+                    const auto* cargoObject = get<CargoObject>(cargo);
+                    if (cargoObject != nullptr && cargoObject->cargoCategory == CargoCategory::mail)
+                    {
+                        mailCargoMask |= 1U << cargo;
+                    }
+                }
+                applyTgvLaPosteVehicleOverrides(*vehicle, mailCargoMask);
+            }
         }
     }
 
@@ -375,6 +396,7 @@ namespace OpenLoco::ObjectManager
             callObjectLoad(handle, extHdr, *obj, std::span<const std::byte>(reinterpret_cast<std::byte*>(obj), extHdr.dataSize));
             loadedObjects++;
         });
+        synchroniseTgvLaPosteObject();
 
         Logging::verbose("Loaded {} objects in {} milliseconds.", loadedObjects, reloadTimer.elapsed());
     }
@@ -426,7 +448,7 @@ namespace OpenLoco::ObjectManager
         ObjectHeader header;
     };
 
-    static std::optional<PreLoadedObject> findAndPreLoadObject(const ObjectHeader& header)
+    static std::optional<PreLoadedObject> findAndPreLoadInstalledObject(const ObjectHeader& header)
     {
         auto installedObject = findObjectInIndex(header);
         if (!installedObject.has_value())
@@ -486,6 +508,26 @@ namespace OpenLoco::ObjectManager
         }
 
         return preLoadObj;
+    }
+
+    static std::optional<PreLoadedObject> findAndPreLoadObject(const ObjectHeader& header)
+    {
+        if (!isTgvLaPosteObject(header))
+        {
+            return findAndPreLoadInstalledObject(header);
+        }
+
+        const auto installedSource = findObjectInIndex(kOfficialTgvPassengerCarriageHeader);
+        if (!installedSource.has_value() || !isOfficialTgvPassengerCarriage(installedSource->_header))
+        {
+            return std::nullopt;
+        }
+        auto source = findAndPreLoadInstalledObject(installedSource->_header);
+        if (source.has_value())
+        {
+            source->header = kTgvLaPosteObjectHeader;
+        }
+        return source;
     }
 
     // 0x0047176D
@@ -574,7 +616,19 @@ namespace OpenLoco::ObjectManager
             preLoadObj->header, static_cast<uint32_t>(preLoadObj->objectData.size())
         };
 
-        callObjectLoad({ preLoadObj->header.getType(), id }, preLoadObj->header, *preLoadObj->object, preLoadObj->objectData);
+        const auto oldNumImages = getTotalNumImages();
+        try
+        {
+            callObjectLoad({ preLoadObj->header.getType(), id }, preLoadObj->header, *preLoadObj->object, preLoadObj->objectData);
+        }
+        catch (const Exception::OutOfRange&)
+        {
+            setTotalNumImages(oldNumImages);
+            _objectRepository[enumValue(preLoadObj->header.getType())].objects[id] = nullptr;
+            extendedHeader = {};
+            free(preLoadObj->object);
+            return false;
+        }
 
         return true;
     }
@@ -631,11 +685,28 @@ namespace OpenLoco::ObjectManager
         return kNullObjectId;
     }
 
+    static bool hasTgvLaPosteImageCapacity(std::span<const ObjectHeader> objects);
+
     LoadObjectsResult loadAll(std::span<ObjectHeader> objects)
     {
         LoadObjectsResult result;
         result.success = true;
 
+        if (hasTgvLaPosteImageCapacity(objects))
+        {
+            injectTgvLaPosteObject(objects);
+        }
+        else
+        {
+            Logging::warn("Unable to add TGV La Poste carriage: not enough space for graphics");
+            const auto variant = std::ranges::find_if(objects, [](const auto& header) { return isTgvLaPosteObject(header); });
+            if (variant != objects.end())
+            {
+                result.success = false;
+                result.problemObjects.push_back(*variant);
+                return result;
+            }
+        }
         unloadAll();
 
         LoadedObjectIndex index = 0;
@@ -656,6 +727,133 @@ namespace OpenLoco::ObjectManager
             unloadAll();
         }
         return result;
+    }
+
+    static bool hasTgvLaPosteImageCapacity(const std::span<const ObjectHeader> objects)
+    {
+        uint64_t numImages = 0;
+        uint32_t tgvImages = 0;
+        bool hasMail = false;
+        for (const auto& header : objects)
+        {
+            if (header.isEmpty() || isTgvLaPosteObject(header))
+            {
+                continue;
+            }
+            const auto entry = findObjectInIndex(header);
+            if (!entry.has_value())
+            {
+                continue;
+            }
+            numImages += entry->_displayData.numImages;
+            if (isOfficialTgvPassengerCarriage(header))
+            {
+                tgvImages = entry->_displayData.numImages;
+            }
+            hasMail |= isOfficialMailCargo(header);
+        }
+        return tgvImages == 0 || !hasMail || numImages + tgvImages <= Gfx::G1ExpectedCount::kObjects;
+    }
+
+    std::optional<LoadedObjectId> injectTgvLaPosteObject(const std::span<ObjectHeader> objects)
+    {
+        size_t objectOffset = 0;
+        for (uint8_t type = 0; type < enumValue(ObjectType::vehicle); ++type)
+        {
+            objectOffset += getMaxObjects(static_cast<ObjectType>(type));
+        }
+        if (objects.size() < objectOffset + getMaxObjects(ObjectType::vehicle))
+        {
+            return std::nullopt;
+        }
+        auto vehicleHeaders = objects.subspan(objectOffset, getMaxObjects(ObjectType::vehicle));
+
+        bool hasTgvPassengerCarriage = false;
+        std::optional<LoadedObjectId> existingVariant;
+        for (LoadedObjectId slot = 0; slot < vehicleHeaders.size(); ++slot)
+        {
+            const auto& header = vehicleHeaders[slot];
+            if (isTgvLaPosteObject(header))
+            {
+                existingVariant = slot;
+            }
+            hasTgvPassengerCarriage |= isOfficialTgvPassengerCarriage(header);
+        }
+
+        size_t cargoOffset = 0;
+        for (uint8_t type = 0; type < enumValue(ObjectType::cargo); ++type)
+        {
+            cargoOffset += getMaxObjects(static_cast<ObjectType>(type));
+        }
+        bool hasMail = false;
+        if (objects.size() >= cargoOffset + getMaxObjects(ObjectType::cargo))
+        {
+            for (const auto& header : objects.subspan(cargoOffset, getMaxObjects(ObjectType::cargo)))
+            {
+                hasMail |= isOfficialMailCargo(header);
+            }
+        }
+        if (!hasTgvPassengerCarriage || !hasMail)
+        {
+            if (existingVariant.has_value())
+            {
+                vehicleHeaders[*existingVariant] = kEmptyObjectHeader;
+            }
+            return std::nullopt;
+        }
+        if (existingVariant.has_value())
+        {
+            return existingVariant;
+        }
+        const auto injectIntoRange = [&](const LoadedObjectId begin, const LoadedObjectId end) -> std::optional<LoadedObjectId> {
+            for (auto slot = begin; slot < end; ++slot)
+            {
+                if (vehicleHeaders[slot].isEmpty())
+                {
+                    vehicleHeaders[slot] = kTgvLaPosteObjectHeader;
+                    return slot;
+                }
+            }
+            return std::nullopt;
+        };
+        if (const auto slot = injectIntoRange(S5::Limits::kMaxVehicleObjects, vehicleHeaders.size()))
+        {
+            return slot;
+        }
+        if (const auto slot = injectIntoRange(0, S5::Limits::kMaxVehicleObjects))
+        {
+            return slot;
+        }
+        Logging::warn("Unable to add TGV La Poste carriage: no free vehicle object slot");
+        return std::nullopt;
+    }
+
+    void synchroniseTgvLaPosteObject(const bool loadIfMissing)
+    {
+        auto headers = getHeaders();
+        const auto variant = findObjectHandle(kTgvLaPosteObjectHeader);
+        const auto slot = injectTgvLaPosteObject(headers);
+        if (!slot.has_value())
+        {
+            if (variant.has_value())
+            {
+                unload(kTgvLaPosteObjectHeader);
+            }
+            return;
+        }
+        if (variant.has_value() || !loadIfMissing)
+        {
+            return;
+        }
+        if (!hasTgvLaPosteImageCapacity(headers))
+        {
+            Logging::warn("Unable to add TGV La Poste carriage: not enough space for graphics");
+            return;
+        }
+        if (!load(kTgvLaPosteObjectHeader, *slot))
+        {
+            Logging::warn("Unable to add TGV La Poste carriage: no free vehicle object slot");
+        }
     }
 
     static bool partialLoad(const ObjectHeader& header, std::span<std::byte> objectData)
@@ -838,6 +1036,10 @@ namespace OpenLoco::ObjectManager
         //      to unload the object temporarily to save the S5.
         for (const auto& header : packedObjects)
         {
+            if (isTgvLaPosteObject(header))
+            {
+                throw Exception::InvalidArgument("Built-in vehicle variants cannot be packed");
+            }
             auto handle = ObjectManager::findObjectHandle(header);
             if (handle)
             {
@@ -1083,6 +1285,7 @@ namespace OpenLoco::ObjectManager
                 }
             }
         }
+        VehicleManager::synchroniseTgvLaPosteAvailability();
         Ui::Windows::Construction::updateAvailableRoadAndRailOptions();
         Ui::Windows::Construction::updateAvailableAirportAndDockOptions();
     }
