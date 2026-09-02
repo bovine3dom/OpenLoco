@@ -80,8 +80,6 @@ namespace OpenLoco::Vehicles
     static constexpr uint16_t kTramSignalTimeout = 2880;              // Time to wait before turning around at barriers
     static constexpr uint8_t kAiSellCrashedVehicleTimeout = 14;       // Number of days after a crash before selling
     static constexpr uint8_t kRestartStoppedRoadVehiclesTimeout = 20; // Number of days before stopped road vehicle (bus and tram) is restarted
-    static constexpr uint16_t kReliabilityLossPerDay = 4;
-    static constexpr uint16_t kReliabilityLossPerDayObsolete = 10;
     static constexpr uint16_t kUnbunchingAtStop = 1U << 15;
     static constexpr uint16_t kUnbunchingWaiting = 1U << 14;
     static constexpr uint16_t kUnbunchingReleased = 1U << 13;
@@ -430,7 +428,7 @@ namespace OpenLoco::Vehicles
             }
             auto newReliability = front.reliability;
             auto* vehObj = ObjectManager::get<VehicleObject>(front.objectId);
-            newReliability -= vehObj->obsolete <= getCurrentYear() ? kReliabilityLossPerDayObsolete : kReliabilityLossPerDay;
+            newReliability -= calculateReliabilityLossPerDay(*vehObj, getCurrentYear());
             newReliability = std::max<uint16_t>(newReliability, 100);
             front.reliability = newReliability;
         }

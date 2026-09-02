@@ -2383,6 +2383,15 @@ namespace OpenLoco::StringIds
     constexpr StringId anti_aliasing_fxaa = 2671;
     constexpr StringId anti_aliasing_smaa = 2672;
     constexpr StringId anti_aliasing_tooltip = 2673;
+    constexpr StringId stats_reliability = 2674;
+    constexpr StringId stats_no_breakdowns = 2675;
+    constexpr StringId stats_reliability_loss = 2676;
+    constexpr StringId stats_power_to_weight = 2677;
+    constexpr StringId stats_capacity_per_tile = 2678;
+    constexpr StringId sortByReliability = 2679;
+    constexpr StringId sortByReliabilityLoss = 2680;
+    constexpr StringId sortByPowerToWeight = 2681;
+    constexpr StringId sortByCapacityPerTile = 2682;
 
     constexpr StringId temporary_object_load_str_0 = 8192;
     constexpr StringId temporary_object_load_str_1 = 8193;

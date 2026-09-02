@@ -23,6 +23,9 @@ using namespace OpenLoco::Literals;
 
 namespace OpenLoco::Vehicles
 {
+    static constexpr uint16_t kReliabilityLossPerDay = 4;
+    static constexpr uint16_t kReliabilityLossPerDayObsolete = 10;
+
     uint16_t calculateInitialReliability(const VehicleObject& vehicleObject)
     {
         int32_t reliability = vehicleObject.reliability * 256;
@@ -37,6 +40,15 @@ namespace OpenLoco::Vehicles
             reliability += 255;
         }
         return reliability;
+    }
+
+    uint16_t calculateReliabilityLossPerDay(const VehicleObject& vehicleObject, uint16_t currentYear)
+    {
+        if (vehicleObject.reliability == 0)
+        {
+            return 0;
+        }
+        return vehicleObject.obsolete <= currentYear ? kReliabilityLossPerDayObsolete : kReliabilityLossPerDay;
     }
 
     template<typename T>

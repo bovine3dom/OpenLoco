@@ -41,6 +41,7 @@
 #include "Vehicles/Vehicle.h"
 #include "Vehicles/VehicleDraw.h"
 #include "Vehicles/VehicleHead.h"
+#include "Vehicles/VehiclePurchaseStats.h"
 #include "World/CompanyManager.h"
 #include <OpenLoco/Core/EnumFlags.hpp>
 #include <OpenLoco/Core/Numerics.hpp>
@@ -48,6 +49,7 @@
 #include <OpenLoco/Math/Trigonometry.hpp>
 #include <algorithm>
 #include <limits>
+#include <optional>
 #include <type_traits>
 
 namespace OpenLoco::Ui::Windows::BuildVehicle
@@ -322,6 +324,26 @@ namespace OpenLoco::Ui::Windows::BuildVehicle
         obsolete = 6,
         weight = 7,
         length = 8,
+        reliability = 9,
+        reliabilityLoss = 10,
+        powerToWeight = 11,
+        capacityPerTile = 12,
+    };
+
+    static constexpr std::array<StringId, 13> kVehicleSortLabels = {
+        StringIds::sortByDesignYear,
+        StringIds::sortByName,
+        StringIds::sortByCost,
+        StringIds::sortByCapacity,
+        StringIds::sortByPower,
+        StringIds::sortByMaxSpeed,
+        StringIds::sortByObsolete,
+        StringIds::sortByWeight,
+        StringIds::sortByLength,
+        StringIds::sortByReliability,
+        StringIds::sortByReliabilityLoss,
+        StringIds::sortByPowerToWeight,
+        StringIds::sortByCapacityPerTile,
     };
 
     static bool _lastDisplayLockedVehiclesState;
@@ -330,6 +352,11 @@ namespace OpenLoco::Ui::Windows::BuildVehicle
     static VehicleSortBy _vehicleSortBy = VehicleSortBy::designYear;
     static uint8_t _cargoSupportedFilter = 0xFF;
     static bool _vehicleSortAscending = true;
+
+    static std::optional<uint8_t> getSelectedCargoType()
+    {
+        return _cargoSupportedFilter < 32 ? std::optional<uint8_t>{ _cargoSupportedFilter } : std::nullopt;
+    }
 
     static uint32_t _numTrackTypeTabs;    // 0x011364EC
     static int16_t _numAvailableVehicles; // 0x01136268
@@ -561,7 +588,7 @@ namespace OpenLoco::Ui::Windows::BuildVehicle
             Speed16 maxSpeed;
             uint16_t weight;
             uint32_t length;
-            uint8_t capacity;
+            Vehicles::VehiclePurchaseStats purchaseStats;
         };
 
         _numAvailableVehicles = 0;
@@ -648,7 +675,7 @@ namespace OpenLoco::Ui::Windows::BuildVehicle
             if (_cargoSupportedFilter != 0xFF && _cargoSupportedFilter != 0xFE)
             {
                 auto usableCargoTypes = vehicleObj->compatibleCargoCategories[0] | vehicleObj->compatibleCargoCategories[1];
-                if ((usableCargoTypes & (1 << _cargoSupportedFilter)) == 0)
+                if ((usableCargoTypes & (1U << _cargoSupportedFilter)) == 0)
                 {
                     continue;
                 }
@@ -679,11 +706,11 @@ namespace OpenLoco::Ui::Windows::BuildVehicle
                 vehicleObj->speed,
                 vehicleObj->weight,
                 vehicleObj->getLength(),
-                vehicleObj->maxCargo[0],
+                Vehicles::calculateVehiclePurchaseStats(*vehicleObj, getSelectedCargoType()),
             });
         }
 
-        std::sort(buildableVehicles.begin(), buildableVehicles.end(), [](const BuildableVehicle& item1, const BuildableVehicle& item2) {
+        std::stable_sort(buildableVehicles.begin(), buildableVehicles.end(), [](const BuildableVehicle& item1, const BuildableVehicle& item2) {
             const auto& itemA = _vehicleSortAscending ? item1 : item2;
             const auto& itemB = _vehicleSortAscending ? item2 : item1;
 
@@ -709,9 +736,25 @@ namespace OpenLoco::Ui::Windows::BuildVehicle
                 case VehicleSortBy::length:
                     return itemA.length < itemB.length;
                 case VehicleSortBy::capacity:
-                    return itemA.capacity < itemB.capacity;
+                    return itemA.purchaseStats.cargoCapacity < itemB.purchaseStats.cargoCapacity;
                 case VehicleSortBy::obsolete:
                     return itemA.obsolete < itemB.obsolete;
+                case VehicleSortBy::reliability:
+                {
+                    const auto reliabilityA = itemA.purchaseStats.reliability;
+                    const auto reliabilityB = itemB.purchaseStats.reliability;
+                    if (reliabilityA == 0 || reliabilityB == 0)
+                    {
+                        return reliabilityA != 0 && reliabilityB == 0;
+                    }
+                    return reliabilityA < reliabilityB;
+                }
+                case VehicleSortBy::reliabilityLoss:
+                    return itemA.purchaseStats.reliabilityLossPerDay < itemB.purchaseStats.reliabilityLossPerDay;
+                case VehicleSortBy::powerToWeight:
+                    return itemA.purchaseStats.powerToWeightQ16 < itemB.purchaseStats.powerToWeightQ16;
+                case VehicleSortBy::capacityPerTile:
+                    return itemA.purchaseStats.capacityPerTileQ16 < itemB.purchaseStats.capacityPerTileQ16;
             }
         });
 
@@ -953,32 +996,30 @@ namespace OpenLoco::Ui::Windows::BuildVehicle
         else if (id == Widx::kSortDropdown)
         {
             auto& dropdown = self.widgets[widx::sortLabel];
-            auto numItems = 12;
-            Dropdown::show(self.x + dropdown.left, self.y + dropdown.top, dropdown.width() - 3, dropdown.height(), self.getColour(WindowColour::secondary), numItems, 0x80);
+            constexpr auto separatorIndex = static_cast<uint8_t>(kVehicleSortLabels.size());
+            constexpr auto ascendingIndex = separatorIndex + 1;
+            constexpr auto descendingIndex = separatorIndex + 2;
+            constexpr auto numItems = descendingIndex + 1;
+            Dropdown::show(self.x + dropdown.left, self.y + dropdown.top, 127, dropdown.height(), self.getColour(WindowColour::secondary), numItems, 0x80);
 
-            Dropdown::add(0, StringIds::dropdown_stringid, StringIds::sortByDesignYear);
-            Dropdown::add(1, StringIds::dropdown_stringid, StringIds::sortByName);
-            Dropdown::add(2, StringIds::dropdown_stringid, StringIds::sortByCost);
-            Dropdown::add(3, StringIds::dropdown_stringid, StringIds::sortByCapacity);
-            Dropdown::add(4, StringIds::dropdown_stringid, StringIds::sortByPower);
-            Dropdown::add(5, StringIds::dropdown_stringid, StringIds::sortByMaxSpeed);
-            Dropdown::add(6, StringIds::dropdown_stringid, StringIds::sortByObsolete);
-            Dropdown::add(7, StringIds::dropdown_stringid, StringIds::sortByWeight);
-            Dropdown::add(8, StringIds::dropdown_stringid, StringIds::sortByLength);
-            Dropdown::add(9, 0);
-            Dropdown::add(10, StringIds::dropdown_stringid, StringIds::sortAscendingOrder);
-            Dropdown::add(11, StringIds::dropdown_stringid, StringIds::sortDescendingOrder);
+            for (uint8_t i = 0; i < kVehicleSortLabels.size(); ++i)
+            {
+                Dropdown::add(i, StringIds::dropdown_stringid, kVehicleSortLabels[i]);
+            }
+            Dropdown::add(separatorIndex, 0);
+            Dropdown::add(ascendingIndex, StringIds::dropdown_stringid, StringIds::sortAscendingOrder);
+            Dropdown::add(descendingIndex, StringIds::dropdown_stringid, StringIds::sortDescendingOrder);
 
             // Mark current sort order
             Dropdown::setItemSelected(enumValue(_vehicleSortBy));
 
             if (_vehicleSortAscending)
             {
-                Dropdown::setItemSelected(10);
+                Dropdown::setItemSelected(ascendingIndex);
             }
             else
             {
-                Dropdown::setItemSelected(11);
+                Dropdown::setItemSelected(descendingIndex);
             }
         }
         else if (id == Widx::kCargoDropdown)
@@ -1067,47 +1108,15 @@ namespace OpenLoco::Ui::Windows::BuildVehicle
         }
         else if (id == Widx::kSortDropdown)
         {
-            if (itemIndex == 0)
+            if (itemIndex < static_cast<int16_t>(kVehicleSortLabels.size()))
             {
-                _vehicleSortBy = VehicleSortBy::designYear;
+                _vehicleSortBy = static_cast<VehicleSortBy>(itemIndex);
             }
-            else if (itemIndex == 1)
-            {
-                _vehicleSortBy = VehicleSortBy::name;
-            }
-            else if (itemIndex == 2)
-            {
-                _vehicleSortBy = VehicleSortBy::cost;
-            }
-            else if (itemIndex == 3)
-            {
-                _vehicleSortBy = VehicleSortBy::capacity;
-            }
-            else if (itemIndex == 4)
-            {
-                _vehicleSortBy = VehicleSortBy::power;
-            }
-            else if (itemIndex == 5)
-            {
-                _vehicleSortBy = VehicleSortBy::maxSpeed;
-            }
-            else if (itemIndex == 6)
-            {
-                _vehicleSortBy = VehicleSortBy::obsolete;
-            }
-            else if (itemIndex == 7)
-            {
-                _vehicleSortBy = VehicleSortBy::weight;
-            }
-            else if (itemIndex == 8)
-            {
-                _vehicleSortBy = VehicleSortBy::length;
-            }
-            else if (itemIndex == 10)
+            else if (itemIndex == static_cast<int16_t>(kVehicleSortLabels.size()) + 1)
             {
                 _vehicleSortAscending = true;
             }
-            else if (itemIndex == 11)
+            else if (itemIndex == static_cast<int16_t>(kVehicleSortLabels.size()) + 2)
             {
                 _vehicleSortAscending = false;
             }
@@ -1138,7 +1147,7 @@ namespace OpenLoco::Ui::Windows::BuildVehicle
         window.flags |= WindowFlags::resizable;
 
         auto minWidth = std::max<uint16_t>(_numTrackTypeTabs * 31 + 195, 380);
-        window.setSizeBounds({ minWidth, 233 }, kMaxWindowSize);
+        window.setSizeBounds({ minWidth, 270 }, kMaxWindowSize);
 
         auto& scrollArea = window.scrollAreas[scrollIdx::vehicle_selection];
         auto& scrollWidget = window.widgets[widx::scrollview_vehicle_selection];
@@ -1486,6 +1495,7 @@ namespace OpenLoco::Ui::Windows::BuildVehicle
         }
 
         auto vehicleObj = ObjectManager::get<VehicleObject>(self.rowHover);
+        const auto purchaseStats = Vehicles::calculateVehiclePurchaseStats(*vehicleObj, getSelectedCargoType());
         auto buffer = const_cast<char*>(StringManager::getString(StringIds::buffer_1250));
 
         {
@@ -1520,6 +1530,24 @@ namespace OpenLoco::Ui::Windows::BuildVehicle
             FormatArguments args{};
             args.push(vehicleObj->obsolete);
             buffer = StringManager::formatString(buffer, StringIds::stats_obsolete, args);
+        }
+
+        if (purchaseStats.reliability == 0)
+        {
+            buffer = StringManager::formatString(buffer, StringIds::stats_no_breakdowns);
+        }
+        else
+        {
+            FormatArguments args{};
+            args.push<uint16_t>(purchaseStats.reliability / 256);
+            buffer = StringManager::formatString(buffer, StringIds::stats_reliability, args);
+        }
+        {
+            FormatArguments args{};
+            const auto lossPerYear = Vehicles::reliabilityLossPerYearTenths(purchaseStats.reliabilityLossPerDay);
+            args.push<int32_t>(lossPerYear / 10);
+            args.push<uint16_t>(lossPerYear % 10);
+            buffer = StringManager::formatString(buffer, StringIds::stats_reliability_loss, args);
         }
 
         if (vehicleObj->mode == TransportMode::rail || vehicleObj->mode == TransportMode::road)
@@ -1574,6 +1602,14 @@ namespace OpenLoco::Ui::Windows::BuildVehicle
                 buffer = StringManager::formatString(buffer, StringIds::stats_power, args);
             }
         }
+        if ((vehicleObj->mode == TransportMode::rail || vehicleObj->mode == TransportMode::road) && vehicleObj->weight != 0)
+        {
+            FormatArguments args{};
+            const auto powerToWeight = Vehicles::purchaseStatToTenths(purchaseStats.powerToWeightQ16);
+            args.push<int32_t>(powerToWeight / 10);
+            args.push<uint16_t>(powerToWeight % 10);
+            buffer = StringManager::formatString(buffer, StringIds::stats_power_to_weight, args);
+        }
 
         {
             FormatArguments args{};
@@ -1599,6 +1635,20 @@ namespace OpenLoco::Ui::Windows::BuildVehicle
             args.push(vehicleObj->rackSpeed);
             args.push(trackExtraObj->name);
             buffer = StringManager::formatString(buffer, StringIds::stats_velocity_on_string, args);
+        }
+
+        if (purchaseStats.capacityPerTileQ16 != 0 && purchaseStats.cargoType != 0xFF)
+        {
+            const auto cargoObj = ObjectManager::get<CargoObject>(purchaseStats.cargoType);
+            if (cargoObj != nullptr)
+            {
+                FormatArguments args{};
+                const auto capacityPerTile = Vehicles::purchaseStatToTenths(purchaseStats.capacityPerTileQ16);
+                args.push<int32_t>(capacityPerTile / 10);
+                args.push<uint16_t>(capacityPerTile % 10);
+                args.push(cargoObj->unitNamePlural);
+                buffer = StringManager::formatString(buffer, StringIds::stats_capacity_per_tile, args);
+            }
         }
 
         vehicleObj->getCargoString(buffer);
@@ -1727,7 +1777,7 @@ namespace OpenLoco::Ui::Windows::BuildVehicle
 
                 for (auto cargoTypes = Numerics::bitScanForward(usableCargoTypes); cargoTypes != -1; cargoTypes = Numerics::bitScanForward(usableCargoTypes))
                 {
-                    usableCargoTypes &= ~(1 << cargoTypes);
+                    usableCargoTypes &= ~(1U << cargoTypes);
                     auto cargoObj = ObjectManager::get<CargoObject>(cargoTypes);
                     *buffer++ = ' ';
                     *buffer++ = ControlCodes::inlineSpriteStr;

@@ -135,3 +135,30 @@ TEST_F(VehicleAutoRenewalTest, InitialReliabilityMatchesVehicleCreationRules)
     EXPECT_EQ(calculateInitialReliability(vehicleObject), 0);
     setCurrentYear(oldYear);
 }
+
+TEST_F(VehicleAutoRenewalTest, ReliabilityLossPerDayUsesNormalRateBeforeObsolescence)
+{
+    VehicleObject vehicleObject{};
+    vehicleObject.reliability = 80;
+    vehicleObject.obsolete = 2001;
+
+    EXPECT_EQ(calculateReliabilityLossPerDay(vehicleObject, 2000), 4);
+}
+
+TEST_F(VehicleAutoRenewalTest, ReliabilityLossPerDayUsesObsoleteRateAtBoundary)
+{
+    VehicleObject vehicleObject{};
+    vehicleObject.reliability = 80;
+    vehicleObject.obsolete = 2000;
+
+    EXPECT_EQ(calculateReliabilityLossPerDay(vehicleObject, 2000), 10);
+}
+
+TEST_F(VehicleAutoRenewalTest, ReliabilityLossPerDayIsZeroWhenBreakdownsAreDisabled)
+{
+    VehicleObject vehicleObject{};
+    vehicleObject.reliability = 0;
+    vehicleObject.obsolete = 2000;
+
+    EXPECT_EQ(calculateReliabilityLossPerDay(vehicleObject, 2000), 0);
+}

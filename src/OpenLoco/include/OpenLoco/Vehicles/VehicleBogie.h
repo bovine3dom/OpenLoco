@@ -9,6 +9,7 @@ namespace OpenLoco
 namespace OpenLoco::Vehicles
 {
     uint16_t calculateInitialReliability(const VehicleObject& vehicleObject);
+    uint16_t calculateReliabilityLossPerDay(const VehicleObject& vehicleObject, uint16_t currentYear);
 
     struct VehicleBogie : VehicleBase
     {
