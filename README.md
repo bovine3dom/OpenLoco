@@ -34,6 +34,14 @@ so far:
 - cargo production visualisation overlay
 - realised rail speed overlay
 - stations can 'seed' town growth rather than it always starting at the centre
+- ski resort demand depends on ski slopes (and thus is seasonal)
+- hovercraft can travel on land
+- gpu acceleration of various bits and bobs
+- fxaa/smaa postprocessing (really not sure how i feel about them)
+- towns can remove roads if it helps them build stuff
+- scheduled dispatch / rudimentary timetable
+- tiles per day / days per tile speed units added
+- add La Poste TGV
 
 
 
