@@ -3,6 +3,7 @@
 
 #include "Entities/EntityManager.h"
 #include "GameState.h"
+#include "Objects/CargoObject.h"
 #include "Vehicles/OrderManager.h"
 #include "Vehicles/Orders.h"
 #include "Vehicles/Vehicle.h"
@@ -262,6 +263,15 @@ TEST(CargoDistSimulation, PassengerIndustryUsesRecordedAttraction)
     EXPECT_EQ(getRoutingAttraction(false, true, 96), 8U);
     EXPECT_EQ(getRoutingAttraction(true, true, 0), 8U);
     EXPECT_EQ(getRoutingAttraction(false, false, 24), 24U);
+}
+
+TEST(CargoDistSimulation, ClassifiesPassengerAndMailAsTownCargo)
+{
+    EXPECT_TRUE(isTownCargoCategory(CargoCategory::passengers));
+    EXPECT_TRUE(isTownCargoCategory(CargoCategory::mail));
+    EXPECT_FALSE(isTownCargoCategory(CargoCategory::goods));
+    EXPECT_FALSE(isTownCargoCategory(CargoCategory::null));
+    EXPECT_FALSE(isTownCargoCategory(static_cast<CargoCategory>(0x1234)));
 }
 
 TEST(CargoDistSimulation, PassengerIndustryAttractionUsesBoundedPatronageBonus)

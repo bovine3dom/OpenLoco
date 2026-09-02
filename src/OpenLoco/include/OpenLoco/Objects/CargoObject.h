@@ -41,6 +41,11 @@ namespace OpenLoco
         null = 0xFFFFU
     };
 
+    constexpr bool isTownCargoCategory(const CargoCategory category)
+    {
+        return category == CargoCategory::passengers || category == CargoCategory::mail;
+    }
+
 #pragma pack(push, 1)
     struct CargoObject
     {

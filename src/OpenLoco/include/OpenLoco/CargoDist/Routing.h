@@ -70,9 +70,11 @@ namespace OpenLoco::CargoDist
     {
         std::vector<RoutingNode> nodes;
         std::vector<RoutingEdge> edges;
-        bool timeSensitive;
+        bool timeSensitive = false;
         std::vector<RoutingDemand> demands;
         bool passengerRouting = false;
+        bool localDestinationRouting = false;
+        bool forbidSourceStationReentry = false;
     };
 
     struct RoutingSettings

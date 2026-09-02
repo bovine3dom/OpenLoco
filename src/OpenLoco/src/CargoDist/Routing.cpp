@@ -1177,6 +1177,8 @@ namespace OpenLoco::CargoDist
         auto planned = makePlannedGraph(graph, nodes);
         auto& edges = planned.edges;
         const auto adjacency = makeAdjacency(planned.nodeStations.size(), edges);
+        const auto localDestinationRouting = graph.passengerRouting || graph.localDestinationRouting;
+        const auto forbidSourceStationReentry = graph.passengerRouting || graph.forbidSourceStationReentry;
         ShortestPathScratch shortestPathScratch;
         using ShareKey = std::tuple<StationId, StationId, StationId, ServicePoint, ServicePoint, ServicePoint, StationId>;
         std::map<ShareKey, uint64_t> shares;
@@ -1236,10 +1238,10 @@ namespace OpenLoco::CargoDist
                     visitedNode = predecessors.front();
                 }
             }
-            auto reachable = graph.passengerRouting
+            auto reachable = forbidSourceStationReentry
                 ? std::vector<bool>(planned.nodeStations.size())
                 : reachableNodes(sourceNode, edges, adjacency, visitedNode);
-            if (graph.passengerRouting)
+            if (forbidSourceStationReentry)
             {
                 shortestPath(sourceNode, kNoIndex, nodes, planned.nodeStations, edges, adjacency, graph.timeSensitive, settings.saturation, visitedNode, planned.nodeStations[sourceNode], shortestPathScratch);
                 for (size_t node = 0; node < reachable.size(); ++node)
@@ -1290,7 +1292,7 @@ namespace OpenLoco::CargoDist
             }
 
             const auto chunkSize = demand.amount / accuracy + (demand.amount % accuracy != 0);
-            const auto forbiddenReturnStation = graph.passengerRouting ? planned.nodeStations[demand.sourceNode] : kNoIndex;
+            const auto forbiddenReturnStation = forbidSourceStationReentry ? planned.nodeStations[demand.sourceNode] : kNoIndex;
             uint32_t iterations = 0;
             for (uint32_t remaining = amount; remaining != 0;)
             {
@@ -1337,7 +1339,7 @@ namespace OpenLoco::CargoDist
             routeAmount(demand, demand.sinks.front(), demand.amount);
         }
 
-        if (graph.passengerRouting)
+        if (localDestinationRouting)
         {
             for (const auto& demand : flexibleDemands)
             {
@@ -1345,7 +1347,8 @@ namespace OpenLoco::CargoDist
                 const auto chunkSize = demand.amount / accuracy + (demand.amount % accuracy != 0);
                 for (uint32_t remaining = demand.amount; remaining != 0;)
                 {
-                    shortestPath(demand.sourceNode, kNoIndex, nodes, planned.nodeStations, edges, adjacency, graph.timeSensitive, settings.saturation, demand.visitedNode, planned.nodeStations[demand.sourceNode], shortestPathScratch);
+                    const auto forbiddenReturnStation = forbidSourceStationReentry ? planned.nodeStations[demand.sourceNode] : kNoIndex;
+                    shortestPath(demand.sourceNode, kNoIndex, nodes, planned.nodeStations, edges, adjacency, graph.timeSensitive, settings.saturation, demand.visitedNode, forbiddenReturnStation, shortestPathScratch);
                     const auto weights = destinationWeights(demand.sinks, nodes, shortestPathScratch.distance, settings.distanceEffect);
                     uint64_t totalWeight = 0;
                     size_t chosen = 0;
@@ -1520,7 +1523,8 @@ namespace OpenLoco::CargoDist
                     {
                         continue;
                     }
-                    shortestPath(passengerDemands[demand].sourceNode, kNoIndex, nodes, planned.nodeStations, edges, adjacency, graph.timeSensitive, settings.saturation, passengerDemands[demand].visitedNode, planned.nodeStations[passengerDemands[demand].sourceNode], shortestPathScratch);
+                    const auto forbiddenReturnStation = forbidSourceStationReentry ? planned.nodeStations[passengerDemands[demand].sourceNode] : kNoIndex;
+                    shortestPath(passengerDemands[demand].sourceNode, kNoIndex, nodes, planned.nodeStations, edges, adjacency, graph.timeSensitive, settings.saturation, passengerDemands[demand].visitedNode, forbiddenReturnStation, shortestPathScratch);
                     journeyCosts[demand].assign(shortestPathScratch.distance.begin(), shortestPathScratch.distance.begin() + nodes.size());
                 }
                 updatePassengerPairWeights(pairs, passengerDemands, nodes, journeyCosts, budgets, componentOf, settings.distanceEffect);
@@ -1691,7 +1695,8 @@ namespace OpenLoco::CargoDist
         {
             for (auto& demand : flexibleDemands)
             {
-                shortestPath(demand.sourceNode, kNoIndex, nodes, planned.nodeStations, edges, adjacency, graph.timeSensitive, settings.saturation, demand.visitedNode, kNoIndex, shortestPathScratch);
+                const auto forbiddenReturnStation = forbidSourceStationReentry ? planned.nodeStations[demand.sourceNode] : kNoIndex;
+                shortestPath(demand.sourceNode, kNoIndex, nodes, planned.nodeStations, edges, adjacency, graph.timeSensitive, settings.saturation, demand.visitedNode, forbiddenReturnStation, shortestPathScratch);
                 demand.costs.reserve(demand.sinks.size());
                 for (const auto sink : demand.sinks)
                 {
@@ -1783,7 +1788,7 @@ namespace OpenLoco::CargoDist
 
         const auto adjacency = makeAdjacency(planned.nodeStations.size(), planned.edges);
         ShortestPathScratch scratch;
-        const auto forbiddenReturnStation = graph.passengerRouting ? sourceStation : kNoIndex;
+        const auto forbiddenReturnStation = (graph.passengerRouting || graph.forbidSourceStationReentry) ? sourceStation : kNoIndex;
         shortestPath(sourceNode, kNoIndex, nodes, planned.nodeStations, planned.edges, adjacency, graph.timeSensitive, 100, visitedNode, forbiddenReturnStation, scratch);
         std::vector<StationJourneyCost> result;
         result.reserve(nodes.size());

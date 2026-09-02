@@ -327,7 +327,7 @@ TEST(CargoDistPackets, RepresentativeOriginUsesLargestQuantityThenLowestId)
     EXPECT_EQ(packets.representativeOrigin(), station(2));
 }
 
-TEST(CargoDistPackets, AgesOnlyTransferredCargoAtStation)
+TEST(CargoDistPackets, AgesAndExpiresOnlyTransferredCargoAtStation)
 {
     PacketList packets;
     packets.append({ 10, station(1), station(2), 0 });
@@ -336,6 +336,9 @@ TEST(CargoDistPackets, AgesOnlyTransferredCargoAtStation)
 
     EXPECT_EQ(packets.packets()[0].age, 0);
     EXPECT_EQ(packets.packets()[1].age, 255);
+    EXPECT_EQ(packets.removeExpired(), 10);
+    ASSERT_EQ(packets.size(), 1);
+    EXPECT_EQ(packets.packets().front().origin, station(1));
 }
 
 TEST(CargoDistPackets, SmoothFlowSelectionIsDeterministicAndWeighted)

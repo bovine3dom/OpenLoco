@@ -341,6 +341,33 @@ TEST(CargoDistRouting, JourneyCostDoesNotChangeDestinationTargets)
     EXPECT_EQ(amountAt(distanceFlows, 3, 1, 3), 909U);
 }
 
+TEST(CargoDistRouting, LocalDestinationRoutingDoesNotRequireReciprocalDemand)
+{
+    RoutingGraph graph{
+        {
+            node(1, 0, 0, 100),
+            node(2, 10, 0, 100),
+            node(3, 20, 0, 0, true),
+            node(4, 30, 0, 0, true),
+        },
+        { edge(1, 3, 1000), edge(1, 4, 1000), edge(2, 3, 1000) },
+        false,
+        {},
+    };
+    graph.localDestinationRouting = true;
+    RoutingSettings settings{};
+    settings.distanceEffect = 0;
+    settings.accuracy = 100;
+
+    const auto flows = calculateAsymmetricFlows(graph, settings);
+
+    EXPECT_EQ(amountToDestination(flows, 1, 3), 50U);
+    EXPECT_EQ(amountToDestination(flows, 1, 4), 50U);
+    EXPECT_EQ(amountToDestination(flows, 2, 3), 100U);
+    EXPECT_EQ(amountToDestination(flows, 1, 1), 0U);
+    EXPECT_EQ(amountToDestination(flows, 2, 2), 0U);
+}
+
 TEST(CargoDistRouting, SymmetricPassengerDemandCapsLargerOrigin)
 {
     RoutingGraph graph{
@@ -984,17 +1011,22 @@ TEST(CargoDistRouting, LocalRoutingDoesNotLoopBackThroughDepartureStation)
         true,
         { { station(1), station(1), 20, {}, station(4) } },
     };
-    graph.passengerRouting = true;
+    for (const auto passengerRouting : { false, true })
+    {
+        graph.passengerRouting = passengerRouting;
+        graph.forbidSourceStationReentry = !passengerRouting;
+        SCOPED_TRACE(passengerRouting ? "passenger routing" : "explicit source reentry policy");
 
-    const auto flows = calculateAsymmetricFlows(graph);
+        const auto flows = calculateAsymmetricFlows(graph);
 
-    EXPECT_EQ(amountAt(flows, 1, 1, 2, {}, servicePoint(1, 0), servicePoint(1, 1)), 0U);
-    EXPECT_EQ(
-        amountAt(flows, 1, 1, 4, {}, servicePoint(1, 3), servicePoint(1, 0))
-            + amountAt(flows, 1, 1, 4, {}, servicePoint(2, 0), servicePoint(2, 1)),
-        20U);
-    EXPECT_EQ(calculateJourneyCost(graph, station(1), station(4), servicePoint(1, 0)), kUnreachableJourneyCost);
-    EXPECT_NE(calculateJourneyCost(graph, station(1), station(4), servicePoint(2, 0)), kUnreachableJourneyCost);
+        EXPECT_EQ(amountAt(flows, 1, 1, 2, {}, servicePoint(1, 0), servicePoint(1, 1)), 0U);
+        EXPECT_EQ(
+            amountAt(flows, 1, 1, 4, {}, servicePoint(1, 3), servicePoint(1, 0))
+                + amountAt(flows, 1, 1, 4, {}, servicePoint(2, 0), servicePoint(2, 1)),
+            20U);
+        EXPECT_EQ(calculateJourneyCost(graph, station(1), station(4), servicePoint(1, 0)), kUnreachableJourneyCost);
+        EXPECT_NE(calculateJourneyCost(graph, station(1), station(4), servicePoint(2, 0)), kUnreachableJourneyCost);
+    }
 }
 
 TEST(CargoDistRouting, WaitMakesFastInfrequentServiceLoseToSlowerFrequentService)

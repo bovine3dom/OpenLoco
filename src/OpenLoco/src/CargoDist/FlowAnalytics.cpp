@@ -324,7 +324,7 @@ namespace OpenLoco::CargoDist::FlowAnalytics
         {
             return {};
         }
-        const auto townCargo = cargoObject->cargoCategory == CargoCategory::passengers || cargoObject->cargoCategory == CargoCategory::mail;
+        const auto townCargo = isTownCargoCategory(cargoObject->cargoCategory);
         std::map<EndpointKey, EndpointData> endpoints;
         const auto getTownEndpoint = [&](const TownId townId) -> EndpointData* {
             auto* town = TownManager::get(townId);

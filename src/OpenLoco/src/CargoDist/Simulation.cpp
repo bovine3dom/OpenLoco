@@ -200,6 +200,12 @@ namespace OpenLoco::CargoDist
             return cargoObject != nullptr && cargoObject->cargoCategory == CargoCategory::passengers;
         }
 
+        bool isTownCargo(uint8_t cargo)
+        {
+            const auto* cargoObject = ObjectManager::get<CargoObject>(cargo);
+            return cargoObject != nullptr && isTownCargoCategory(cargoObject->cargoCategory);
+        }
+
         int64_t totalTransferCredit(const PacketList& packets)
         {
             return std::accumulate(packets.packets().begin(), packets.packets().end(), int64_t{}, [](const auto total, const auto& packet) {
@@ -975,7 +981,7 @@ namespace OpenLoco::CargoDist
             using DemandKey = std::tuple<StationId, StationId, ServicePoint, StationId>;
             std::map<DemandKey, uint32_t> demands;
             std::map<DemandKey, uint32_t> outstanding;
-            const auto addPackets = [&outstanding, releaseDestinations = isPassengerCargo(cargo)](StationId source, const PacketList* packets) {
+            const auto addPackets = [&outstanding, releaseDestinations = isTownCargo(cargo)](StationId source, const PacketList* packets) {
                 if (packets == nullptr)
                 {
                     return;
@@ -1223,6 +1229,8 @@ namespace OpenLoco::CargoDist
             RoutingGraph graph;
             graph.timeSensitive = true;
             graph.passengerRouting = isPassengerCargo(cargo);
+            graph.localDestinationRouting = isTownCargo(cargo);
+            graph.forbidSourceStationReentry = graph.localDestinationRouting;
             std::array<PassengerIndustryGroup, Limits::kMaxIndustries> passengerIndustries{};
             const auto& state = getStateConst();
             for (const auto& station : StationManager::stations())
@@ -1741,7 +1749,7 @@ namespace OpenLoco::CargoDist
                 for (auto packet : packets.packets())
                 {
                     const auto requested = packet.quantity;
-                    const auto releaseDestination = isPassengerCargo(cargo) && packet.origin == key.station && packet.tripKind == PassengerTripKind::ordinary;
+                    const auto releaseDestination = isTownCargo(cargo) && packet.origin == key.station && packet.tripKind == PassengerTripKind::ordinary;
                     const auto destination = releaseDestination ? StationId::null : packet.destination;
                     packet.destination = destination;
                     const auto shares = allocatePacketVia(cargo, key.station, packet, ServicePoint{}, key.station);
@@ -2491,7 +2499,7 @@ namespace OpenLoco::CargoDist
         }
         const auto transferCreditBeforeUpdate = totalTransferCredit(*packets);
         packets->ageAtStation(station);
-        bool changed = isPassengerCargo(cargo) && packets->removeExpired() != 0;
+        bool changed = isTownCargo(cargo) && packets->removeExpired() != 0;
         if (nativeCargo.quantity < quantityBeforeUpdate)
         {
             changed |= packets->removeForRating(quantityBeforeUpdate - nativeCargo.quantity) != 0;
