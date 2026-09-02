@@ -20,7 +20,7 @@ namespace OpenLoco::Gfx
         static bool isSupported(SDL_Renderer* renderer);
 
         bool configure(SDL_Renderer* renderer, int32_t width, int32_t height, Config::AntiAliasing mode);
-        bool render(SDL_Texture* source);
+        SDL_Texture* process(SDL_Texture* source, const SDL_FRect* sourceRect);
         void reset();
 
         Config::AntiAliasing getMode() const { return _mode; }
@@ -33,13 +33,14 @@ namespace OpenLoco::Gfx
         SDL_Texture* createLookupTexture(std::string_view filename, int32_t width, int32_t height, int32_t channels);
         bool createFxaaResources(int32_t width, int32_t height);
         bool createSmaaResources(int32_t width, int32_t height);
-        bool renderFxaa(SDL_Texture* source);
-        bool renderSmaa(SDL_Texture* source);
+        bool processFxaa(SDL_Texture* source, const SDL_FRect* sourceRect);
+        bool processSmaa(SDL_Texture* source, const SDL_FRect* sourceRect);
 
         SDL_Renderer* _renderer{};
         SDL_GPUDevice* _device{};
         Config::AntiAliasing _mode = Config::AntiAliasing::none;
         SDL_Texture* _colourTexture{};
+        SDL_Texture* _outputTexture{};
         SDL_Texture* _edgesTexture{};
         SDL_Texture* _weightsTexture{};
         SDL_Texture* _areaTexture{};

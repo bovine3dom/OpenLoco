@@ -113,6 +113,8 @@ namespace OpenLoco::Gfx
         void destroyScaledScreenResources();
         void destroySeparateWorldResources();
         void destroyScreenResources();
+        void updateWorldRenderTarget();
+        void updateUiToWorldMap();
         void renderSeparateWorld(const Ui::Rect& rect);
         void renderDirtyWorldRegions();
         void renderSeparateUi();
@@ -154,8 +156,12 @@ namespace OpenLoco::Gfx
         bool _uiTextureUploadPending = false;
         bool _screenTextureIndexed = false;
         bool _worldTextureIndexed = false;
+        bool _worldTransformValid = false;
         bool _frameStatsEnabled = false;
         bool _presentationReadbackEnabled = false;
+        int32_t _worldPresentationScale = 1;
+        Ui::Point _worldPresentationPhase{};
+        Ui::Point _worldRenderOrigin{};
         uint64_t _pendingPaletteChangeBytes{};
         uint64_t _lastPresentationHash{};
         RenderFrameStats _frameStats{};

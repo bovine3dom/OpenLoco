@@ -87,7 +87,9 @@ namespace OpenLoco::Gfx
         }
 
         _colourTexture = createTarget(width, height);
-        if (_colourTexture == nullptr)
+        _outputTexture = createTarget(width, height);
+        if (_colourTexture == nullptr || _outputTexture == nullptr
+            || !SDL_SetTextureScaleMode(_outputTexture, SDL_SCALEMODE_NEAREST))
         {
             reset();
             return false;
@@ -302,31 +304,38 @@ namespace OpenLoco::Gfx
             && SDL_SetGPURenderStateFragmentUniforms(_smaaBlendState, 0, metrics.data(), sizeof(metrics));
     }
 
-    bool PostProcessor::render(SDL_Texture* source)
+    SDL_Texture* PostProcessor::process(SDL_Texture* source, const SDL_FRect* sourceRect)
     {
+        if (source == nullptr)
+        {
+            return nullptr;
+        }
+
         switch (_mode)
         {
             case Config::AntiAliasing::fxaa:
-                return renderFxaa(source);
+                return processFxaa(source, sourceRect) ? _outputTexture : nullptr;
 
             case Config::AntiAliasing::smaa:
-                return renderSmaa(source);
+                return processSmaa(source, sourceRect) ? _outputTexture : nullptr;
 
             case Config::AntiAliasing::none:
-                return SDL_RenderTexture(_renderer, source, nullptr, nullptr);
+                break;
         }
-        return false;
+
+        return nullptr;
     }
 
-    bool PostProcessor::renderFxaa(SDL_Texture* source)
+    bool PostProcessor::processFxaa(SDL_Texture* source, const SDL_FRect* sourceRect)
     {
         if (!SDL_SetRenderTarget(_renderer, _colourTexture)
             || !SDL_SetGPURenderState(_renderer, nullptr)
-            || !SDL_RenderTexture(_renderer, source, nullptr, nullptr)
-            || !SDL_SetRenderTarget(_renderer, nullptr)
+            || !SDL_RenderTexture(_renderer, source, sourceRect, nullptr)
+            || !SDL_SetRenderTarget(_renderer, _outputTexture)
             || !SDL_SetGPURenderState(_renderer, _fxaaState)
             || !SDL_RenderTexture(_renderer, _colourTexture, nullptr, nullptr)
-            || !SDL_SetGPURenderState(_renderer, nullptr))
+            || !SDL_SetGPURenderState(_renderer, nullptr)
+            || !SDL_SetRenderTarget(_renderer, nullptr))
         {
             SDL_SetGPURenderState(_renderer, nullptr);
             SDL_SetRenderTarget(_renderer, nullptr);
@@ -335,7 +344,7 @@ namespace OpenLoco::Gfx
         return true;
     }
 
-    bool PostProcessor::renderSmaa(SDL_Texture* source)
+    bool PostProcessor::processSmaa(SDL_Texture* source, const SDL_FRect* sourceRect)
     {
         float previousR{};
         float previousG{};
@@ -345,7 +354,7 @@ namespace OpenLoco::Gfx
 
         bool success = SDL_SetRenderTarget(_renderer, _colourTexture)
             && SDL_SetGPURenderState(_renderer, nullptr)
-            && SDL_RenderTexture(_renderer, source, nullptr, nullptr)
+            && SDL_RenderTexture(_renderer, source, sourceRect, nullptr)
             && SDL_SetRenderDrawColor(_renderer, 0, 0, 0, 0)
             && SDL_SetRenderTarget(_renderer, _edgesTexture)
             && SDL_RenderClear(_renderer)
@@ -359,13 +368,15 @@ namespace OpenLoco::Gfx
             && SDL_SetGPURenderState(_renderer, _smaaWeightsState)
             && SDL_RenderTexture(_renderer, _edgesTexture, nullptr, nullptr)
             && SDL_SetGPURenderState(_renderer, nullptr)
-            && SDL_SetRenderTarget(_renderer, nullptr)
+            && SDL_SetRenderTarget(_renderer, _outputTexture)
             && SDL_SetGPURenderState(_renderer, _smaaBlendState)
             && SDL_RenderTexture(_renderer, _colourTexture, nullptr, nullptr)
-            && SDL_SetGPURenderState(_renderer, nullptr);
+            && SDL_SetGPURenderState(_renderer, nullptr)
+            && SDL_SetRenderTarget(_renderer, nullptr);
 
         SDL_SetGPURenderState(_renderer, nullptr);
         SDL_SetRenderTarget(_renderer, nullptr);
+        SDL_SetTextureScaleMode(_colourTexture, SDL_SCALEMODE_LINEAR);
         SDL_SetRenderDrawColorFloat(_renderer, previousR, previousG, previousB, previousA);
         return success;
     }
@@ -382,6 +393,7 @@ namespace OpenLoco::Gfx
         SDL_DestroyGPURenderState(_smaaWeightsState);
         SDL_DestroyGPURenderState(_smaaBlendState);
         SDL_DestroyTexture(_colourTexture);
+        SDL_DestroyTexture(_outputTexture);
         SDL_DestroyTexture(_edgesTexture);
         SDL_DestroyTexture(_weightsTexture);
         SDL_DestroyTexture(_areaTexture);
@@ -389,6 +401,7 @@ namespace OpenLoco::Gfx
 
         _mode = Config::AntiAliasing::none;
         _colourTexture = nullptr;
+        _outputTexture = nullptr;
         _edgesTexture = nullptr;
         _weightsTexture = nullptr;
         _areaTexture = nullptr;

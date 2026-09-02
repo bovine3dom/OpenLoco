@@ -43,6 +43,25 @@ namespace OpenLoco::Gfx
         return static_cast<int32_t>((static_cast<int64_t>(position) * 2 + 1) * sourceSize / (static_cast<int64_t>(destinationSize) * 2));
     }
 
+    static std::pair<int32_t, int32_t> divideWithPositiveRemainder(int32_t value, int32_t divisor)
+    {
+        auto quotient = value / divisor;
+        auto remainder = value % divisor;
+        if (remainder < 0)
+        {
+            --quotient;
+            remainder += divisor;
+        }
+        return { quotient, remainder };
+    }
+
+    static int32_t getNativeRenderDimension(int32_t outputDimension, int32_t scale)
+    {
+        // Keep a border texel for AA sampling and phase shifts at the far edge.
+        const auto scaledDimension = (static_cast<int64_t>(outputDimension) + scale - 1) / scale + 1;
+        return static_cast<int32_t>(std::min<int64_t>(outputDimension, scaledDimension));
+    }
+
     template<typename F>
     static void measure(bool enabled, uint64_t& elapsedNanoseconds, F&& func)
     {
@@ -170,6 +189,10 @@ namespace OpenLoco::Gfx
         _uiToWorldX.clear();
         _uiToWorldY.clear();
         _worldRT = {};
+        _worldPresentationScale = 1;
+        _worldPresentationPhase = {};
+        _worldRenderOrigin = {};
+        _worldTransformValid = false;
     }
 
     void SoftwareDrawingEngine::destroyScreenResources()
@@ -305,7 +328,7 @@ namespace OpenLoco::Gfx
                 configured &= SDL_SetSurfacePalette(_worldSurface, _palette);
                 configured &= _worldTextureIndexed || SDL_SetSurfaceBlendMode(_worldRGBASurface, SDL_BLENDMODE_NONE);
                 configured &= SDL_SetSurfaceBlendMode(_uiRGBASurface, SDL_BLENDMODE_NONE);
-                configured &= SDL_SetTextureScaleMode(_worldTexture, SDL_SCALEMODE_LINEAR);
+                configured &= SDL_SetTextureScaleMode(_worldTexture, SDL_SCALEMODE_NEAREST);
                 configured &= SDL_SetTextureScaleMode(_uiTexture, SDL_SCALEMODE_NEAREST);
                 configured &= SDL_SetTextureBlendMode(_uiTexture, SDL_BLENDMODE_BLEND);
                 if (!configured)
@@ -371,16 +394,7 @@ namespace OpenLoco::Gfx
         {
             _uiBase.resize(static_cast<size_t>(pitch) * scaledHeight);
             _uiCoverage.resize(static_cast<size_t>(pitch) * scaledHeight);
-            _uiToWorldX.resize(scaledWidth);
-            _uiToWorldY.resize(scaledHeight);
-            for (int32_t x = 0; x < scaledWidth; ++x)
-            {
-                _uiToWorldX[x] = sampleNearest(x, width, scaledWidth);
-            }
-            for (int32_t y = 0; y < scaledHeight; ++y)
-            {
-                _uiToWorldY[y] = sampleNearest(y, height, scaledHeight);
-            }
+            updateUiToWorldMap();
         }
         else
         {
@@ -518,6 +532,7 @@ namespace OpenLoco::Gfx
             {
                 measure(_frameStatsEnabled, _frameStats.dirtyRenderNs, [&] {
                     WindowManager::updateViewports();
+                    updateWorldRenderTarget();
                     renderDirtyWorldRegions();
                 });
             }
@@ -568,15 +583,115 @@ namespace OpenLoco::Gfx
             && SceneManager::getCurrentScene() != SceneManager::SceneId::intro;
     }
 
+    void SoftwareDrawingEngine::updateWorldRenderTarget()
+    {
+        auto* mainWindow = WindowManager::getMainWindow();
+        if (!hasSeparateWorldResources() || mainWindow == nullptr || mainWindow->viewports[0] == nullptr)
+        {
+            return;
+        }
+
+        const auto& viewport = *mainWindow->viewports[0];
+        auto scale = 1;
+        Point phase{};
+        Point origin{ viewport.viewX, viewport.viewY };
+        auto renderWidth = _outputWidth;
+        auto renderHeight = _outputHeight;
+        const auto antiAliasing = _postProcessor->getMode();
+
+        if (antiAliasing != Config::AntiAliasing::none && viewport.zoom < ZoomLevel::full)
+        {
+            // Render at zoom 0, retaining the magnified viewport's subpixel camera phase for presentation.
+            scale = viewport.zoom.applyInversedTo(1);
+            const auto [originOffsetX, remainderX] = divideWithPositiveRemainder(viewport.viewRasterOffset.x, scale);
+            const auto [originOffsetY, remainderY] = divideWithPositiveRemainder(viewport.viewRasterOffset.y, scale);
+            origin += Point{ originOffsetX, originOffsetY };
+            phase = Point{ remainderX, remainderY };
+            renderWidth = getNativeRenderDimension(_outputWidth, scale);
+            renderHeight = getNativeRenderDimension(_outputHeight, scale);
+        }
+
+        if ((renderWidth != _worldRT.width || renderHeight != _worldRT.height)
+            && antiAliasing != Config::AntiAliasing::none
+            && !_postProcessor->configure(_renderer, renderWidth, renderHeight, antiAliasing))
+        {
+            Logging::warn("Unable to resize anti-aliasing resources; using the magnified unfiltered world raster.");
+            scale = 1;
+            phase = {};
+            origin = { viewport.viewX, viewport.viewY };
+            renderWidth = _outputWidth;
+            renderHeight = _outputHeight;
+        }
+
+        const auto dimensionsChanged = renderWidth != _worldRT.width || renderHeight != _worldRT.height;
+        const auto scaleChanged = scale != _worldPresentationScale;
+        const auto phaseChanged = phase != _worldPresentationPhase;
+        const auto originChanged = origin != _worldRenderOrigin;
+
+        if (dimensionsChanged)
+        {
+            _worldRT.width = renderWidth;
+            _worldRT.height = renderHeight;
+            _worldRT.pitch = _worldSurface->pitch - renderWidth;
+            _worldUploadGrid.reset(renderWidth, renderHeight, 64, 8);
+            _worldTextureDirty = true;
+        }
+
+        if (!_worldTransformValid || dimensionsChanged || scaleChanged || originChanged)
+        {
+            _invalidationGrid.invalidate(0, 0, _screenRT.width, _screenRT.height);
+            _uiTextureDirty = true;
+        }
+
+        _worldPresentationScale = scale;
+        _worldPresentationPhase = phase;
+        _worldRenderOrigin = origin;
+        _worldTransformValid = true;
+
+        if (dimensionsChanged || scaleChanged || phaseChanged)
+        {
+            updateUiToWorldMap();
+            _uiTextureDirty = true;
+        }
+    }
+
+    void SoftwareDrawingEngine::updateUiToWorldMap()
+    {
+        if (_worldRT.width <= 0 || _worldRT.height <= 0 || _screenRT.width <= 0 || _screenRT.height <= 0)
+        {
+            _uiToWorldX.clear();
+            _uiToWorldY.clear();
+            return;
+        }
+
+        _uiToWorldX.resize(_screenRT.width);
+        _uiToWorldY.resize(_screenRT.height);
+        for (int32_t x = 0; x < _screenRT.width; ++x)
+        {
+            const auto outputX = sampleNearest(x, _outputWidth, _screenRT.width);
+            _uiToWorldX[x] = std::min((outputX + _worldPresentationPhase.x) / _worldPresentationScale, _worldRT.width - 1);
+        }
+        for (int32_t y = 0; y < _screenRT.height; ++y)
+        {
+            const auto outputY = sampleNearest(y, _outputHeight, _screenRT.height);
+            _uiToWorldY[y] = std::min((outputY + _worldPresentationPhase.y) / _worldPresentationScale, _worldRT.height - 1);
+        }
+    }
+
     void SoftwareDrawingEngine::renderDirtyWorldRegions()
     {
         const auto uiWidth = _screenRT.width;
         const auto uiHeight = _screenRT.height;
         _invalidationGrid.traverseDirtyCells([&](int32_t left, int32_t top, int32_t right, int32_t bottom) {
-            const auto worldLeft = static_cast<int32_t>(static_cast<int64_t>(left) * _worldRT.width / uiWidth);
-            const auto worldTop = static_cast<int32_t>(static_cast<int64_t>(top) * _worldRT.height / uiHeight);
-            const auto worldRight = static_cast<int32_t>((static_cast<int64_t>(right) * _worldRT.width + uiWidth - 1) / uiWidth);
-            const auto worldBottom = static_cast<int32_t>((static_cast<int64_t>(bottom) * _worldRT.height + uiHeight - 1) / uiHeight);
+            const auto outputLeft = static_cast<int32_t>(static_cast<int64_t>(left) * _outputWidth / uiWidth);
+            const auto outputTop = static_cast<int32_t>(static_cast<int64_t>(top) * _outputHeight / uiHeight);
+            const auto outputRight = static_cast<int32_t>((static_cast<int64_t>(right) * _outputWidth + uiWidth - 1) / uiWidth);
+            const auto outputBottom = static_cast<int32_t>((static_cast<int64_t>(bottom) * _outputHeight + uiHeight - 1) / uiHeight);
+            // Refresh neighbouring source pixels read by the post-process passes.
+            const auto worldLeft = std::max(0, (outputLeft + _worldPresentationPhase.x) / _worldPresentationScale - 1);
+            const auto worldTop = std::max(0, (outputTop + _worldPresentationPhase.y) / _worldPresentationScale - 1);
+            const auto worldRight = std::min(_worldRT.width, (outputRight + _worldPresentationPhase.x + _worldPresentationScale - 1) / _worldPresentationScale + 1);
+            const auto worldBottom = std::min(_worldRT.height, (outputBottom + _worldPresentationPhase.y + _worldPresentationScale - 1) / _worldPresentationScale + 1);
             renderSeparateWorld(Rect::fromLTRB(worldLeft, worldTop, worldRight, worldBottom));
             _worldUploadGrid.invalidate(worldLeft, worldTop, worldRight, worldBottom);
         });
@@ -604,6 +719,13 @@ namespace OpenLoco::Gfx
         auto viewport = *mainWindow->viewports[0];
         viewport.x = 0;
         viewport.y = 0;
+        if (_worldPresentationScale > 1)
+        {
+            viewport.zoom = ZoomLevel::full;
+            viewport.viewX = _worldRenderOrigin.x;
+            viewport.viewY = _worldRenderOrigin.y;
+            viewport.viewRasterOffset = {};
+        }
         viewport.setDimensions({ _worldRT.width, _worldRT.height }, { _worldRT.width, _worldRT.height });
         viewport.render(worldContext, false, true);
     }
@@ -981,12 +1103,37 @@ namespace OpenLoco::Gfx
         }
 
         const auto presented = measureResult(_frameStatsEnabled, _frameStats.composePresentNs, [&] {
-            auto worldPresented = _postProcessor->render(_worldTexture);
-            if (!worldPresented && _postProcessor->getMode() != Config::AntiAliasing::none)
+            const SDL_FRect sourceRect{ 0, 0, static_cast<float>(_worldRT.width), static_cast<float>(_worldRT.height) };
+            const SDL_FRect destinationRect{
+                static_cast<float>(-_worldPresentationPhase.x),
+                static_cast<float>(-_worldPresentationPhase.y),
+                static_cast<float>(_worldRT.width) * _worldPresentationScale,
+                static_cast<float>(_worldRT.height) * _worldPresentationScale,
+            };
+
+            auto* worldTexture = _worldTexture;
+            const SDL_FRect* worldSourceRect = &sourceRect;
+            if (_postProcessor->getMode() != Config::AntiAliasing::none)
             {
-                Logging::error("Anti-aliasing failed during presentation: {}. Disabling it.", SDL_GetError());
+                worldTexture = _postProcessor->process(_worldTexture, &sourceRect);
+                if (worldTexture != nullptr)
+                {
+                    worldSourceRect = nullptr;
+                }
+                else
+                {
+                    Logging::error("Anti-aliasing failed during presentation: {}. Disabling it.", SDL_GetError());
+                    _postProcessor->reset();
+                    worldTexture = _worldTexture;
+                }
+            }
+
+            auto worldPresented = SDL_RenderTexture(_renderer, worldTexture, worldSourceRect, &destinationRect);
+            if (!worldPresented && worldTexture != _worldTexture)
+            {
+                Logging::error("Unable to draw the anti-aliased world: {}. Disabling it.", SDL_GetError());
                 _postProcessor->reset();
-                worldPresented = SDL_RenderTexture(_renderer, _worldTexture, nullptr, nullptr);
+                worldPresented = SDL_RenderTexture(_renderer, _worldTexture, &sourceRect, &destinationRect);
             }
             return worldPresented
                 && SDL_RenderTexture(_renderer, _uiTexture, nullptr, nullptr)
@@ -1022,21 +1169,23 @@ namespace OpenLoco::Gfx
 
         const auto worldStride = _worldRT.width + _worldRT.pitch;
         const auto uiStride = _screenRT.width + _screenRT.pitch;
-        _screenshotBuffer.resize(static_cast<size_t>(_worldRT.width) * _worldRT.height);
-        for (int32_t y = 0; y < _worldRT.height; ++y)
+        _screenshotBuffer.resize(static_cast<size_t>(_outputWidth) * _outputHeight);
+        for (int32_t y = 0; y < _outputHeight; ++y)
         {
-            const auto uiY = sampleNearest(y, _screenRT.height, _worldRT.height);
-            for (int32_t x = 0; x < _worldRT.width; ++x)
+            const auto uiY = sampleNearest(y, _screenRT.height, _outputHeight);
+            const auto worldY = std::min((y + _worldPresentationPhase.y) / _worldPresentationScale, _worldRT.height - 1);
+            for (int32_t x = 0; x < _outputWidth; ++x)
             {
-                const auto uiX = sampleNearest(x, _screenRT.width, _worldRT.width);
+                const auto uiX = sampleNearest(x, _screenRT.width, _outputWidth);
+                const auto worldX = std::min((x + _worldPresentationPhase.x) / _worldPresentationScale, _worldRT.width - 1);
                 const auto uiOffset = static_cast<size_t>(uiY) * uiStride + uiX;
-                _screenshotBuffer[static_cast<size_t>(y) * _worldRT.width + x] = _uiCoverage[uiOffset] != 0
+                _screenshotBuffer[static_cast<size_t>(y) * _outputWidth + x] = _uiCoverage[uiOffset] != 0
                     ? _screenRT.bits[uiOffset]
-                    : _worldRT.bits[static_cast<size_t>(y) * worldStride + x];
+                    : _worldRT.bits[static_cast<size_t>(worldY) * worldStride + worldX];
             }
         }
 
-        _screenshotRT = RenderTarget{ _screenshotBuffer.data(), 0, 0, _worldRT.width, _worldRT.height, 0 };
+        _screenshotRT = RenderTarget{ _screenshotBuffer.data(), 0, 0, _outputWidth, _outputHeight, 0 };
         return _screenshotRT;
     }
 
