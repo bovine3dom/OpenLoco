@@ -104,3 +104,18 @@ TEST(VehicleMovement, OccupiedContinuationCreatesAnotherRoadStationStoppingPosit
     EXPECT_TRUE(isRoadStationStoppingPosition(currentStation, StationId(2), RoadOccupationFlags::none));
     EXPECT_FALSE(isRoadStationStoppingPosition(StationId::null, StationId::null, RoadOccupationFlags::isLaneOccupied));
 }
+
+TEST(VehicleMovement, StableOvertakingRoadVehicleCanReverseInCurrentLane)
+{
+    TrackAndDirection::_RoadAndDirection tad{ 0, 0 };
+    EXPECT_FALSE(canReverseRoadVehicleInCurrentLane(tad));
+
+    tad._data = (1U << 7);
+    EXPECT_TRUE(canReverseRoadVehicleInCurrentLane(tad));
+
+    tad._data = (1U << 8);
+    EXPECT_FALSE(canReverseRoadVehicleInCurrentLane(tad));
+
+    tad._data = (1U << 7) | (1U << 8);
+    EXPECT_FALSE(canReverseRoadVehicleInCurrentLane(tad));
+}

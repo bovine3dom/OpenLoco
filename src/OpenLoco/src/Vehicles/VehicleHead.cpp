@@ -1491,9 +1491,10 @@ namespace OpenLoco::Vehicles
     }
 
     // 0x004A8F22
-    bool VehicleHead::tryReverse()
+    bool VehicleHead::tryReverse(bool allowCurrentLaneReversal)
     {
-        if (mode == TransportMode::road && var_52 != 1)
+        const auto canReverseInCurrentLane = allowCurrentLaneReversal && canReverseRoadVehicleInCurrentLane(trackAndDirection.road);
+        if (mode == TransportMode::road && var_52 != 1 && !canReverseInCurrentLane)
         {
             auto reverseTad = trackAndDirection.road;
             reverseTad.setReversed(!reverseTad.isReversed());
@@ -1691,7 +1692,7 @@ namespace OpenLoco::Vehicles
             {
                 return true;
             }
-            return tryReverse();
+            return tryReverse(trackAndDirection.road == train.veh2->trackAndDirection.road);
         }
         else
         {

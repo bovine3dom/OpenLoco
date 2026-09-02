@@ -164,6 +164,12 @@ namespace OpenLoco::Vehicles
     };
     static_assert(sizeof(TrackAndDirection) == 2);
 
+    // Reversal turns a stable overtaking vehicle into normal traffic on its current physical lane.
+    constexpr bool canReverseRoadVehicleInCurrentLane(TrackAndDirection::_RoadAndDirection tad)
+    {
+        return tad.isOvertaking() && !tad.isChangingLane();
+    }
+
     // TODO move to a different header
     enum class SignalStateFlags : uint8_t
     {

@@ -139,7 +139,7 @@ namespace OpenLoco::Vehicles
         void updateGearboxMotorSound(VehicleSound& sound, const bool isVeh2, const VehicleGearboxMotorSound* snd);
         bool updateLand();
         bool sub_4A8DB7();
-        bool tryReverse();
+        bool tryReverse(bool allowCurrentLaneReversal = false);
         void resetToVehicle1(bool preservePathReservation);
         bool stoppingUpdate();
         bool sub_4A8C81();
