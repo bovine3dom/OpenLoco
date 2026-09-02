@@ -802,6 +802,10 @@ namespace OpenLoco::CargoDist
                                 continue;
                             }
                             const auto& leg = member.legs[i];
+                            if (leg.from == leg.to)
+                            {
+                                continue;
+                            }
                             const ServiceEdgeKey key{ cargo, leg.from, leg.to, leg.departure, leg.arrival };
                             auto& edge = memberEdges[key];
                             ++edge.departures;

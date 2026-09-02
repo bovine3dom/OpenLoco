@@ -58,8 +58,17 @@ namespace OpenLoco::CargoDist::FlowAnalytics
                 : lhs * rhs;
         }
 
+        bool isValidServiceKey(const ServiceKey key)
+        {
+            return key.cargo < 32 && key.from != StationId::null && key.to != StationId::null && key.from != key.to;
+        }
+
         ServiceMetric* getMetric(DailyMetrics& metrics, const ServiceKey key)
         {
+            if (!isValidServiceKey(key))
+            {
+                return nullptr;
+            }
             if (const auto found = metrics.find(key); found != metrics.end())
             {
                 return &found->second;
@@ -87,6 +96,7 @@ namespace OpenLoco::CargoDist::FlowAnalytics
             }
             return state;
         }
+
     }
 
     void reset()
@@ -97,7 +107,7 @@ namespace OpenLoco::CargoDist::FlowAnalytics
 
     void recordDeparture(const uint8_t cargo, const StationId from, const StationId to, const uint32_t quantity, const uint32_t capacity)
     {
-        if (capacity == 0 || cargo >= 32 || from == StationId::null || to == StationId::null || from == to)
+        if (capacity == 0 || !isValidServiceKey({ cargo, from, to }))
         {
             return;
         }
@@ -638,7 +648,7 @@ namespace OpenLoco::CargoDist::FlowAnalytics
             for (const auto& metric : day.services)
             {
                 const auto key = metric.key;
-                if (key.cargo >= 32 || key.from == StationId::null || key.to == StationId::null || key.from == key.to
+                if (!isValidServiceKey(key)
                     || metric.observedThroughput > metric.throughput || metric.observedThroughput > metric.offeredCapacity
                     || (hasPreviousKey && key == previousKey))
                 {

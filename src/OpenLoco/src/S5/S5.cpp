@@ -829,10 +829,11 @@ namespace OpenLoco::S5
                     throw Exception::RuntimeError("Invalid rail traffic state");
                 }
                 const auto hasRailTraffic = !Vehicles::RailTraffic::isDefault(railTrafficState);
-                const auto cargoFlowHistoryState = CargoDist::FlowAnalytics::captureState();
+                auto cargoFlowHistoryState = CargoDist::FlowAnalytics::captureState();
                 if (!CargoDist::FlowAnalytics::validateState(cargoFlowHistoryState))
                 {
-                    throw Exception::RuntimeError("Invalid cargo flow history state");
+                    Logging::warn("Omitting invalid cargo flow history state from save");
+                    cargoFlowHistoryState = {};
                 }
                 const auto hasCargoFlowHistory = !CargoDist::FlowAnalytics::isDefault(cargoFlowHistoryState);
                 const auto timetableState = Vehicles::TimetableManager::captureState();

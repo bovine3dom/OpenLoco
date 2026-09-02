@@ -279,6 +279,25 @@ TEST(CargoFlowOverlayTest, SamplesThroughputPlanAndDailyServiceCapacity)
     reset();
 }
 
+TEST(CargoFlowOverlayTest, DailyUpdateIgnoresSelfEdges)
+{
+    const auto originalDay = getCurrentDay();
+    reset();
+    auto& state = getState();
+    state.settings.modes[0] = DistributionMode::asymmetric;
+    state.serviceEdges[{ 0, station(1), station(1), servicePoint(1, 0), servicePoint(1, 1) }] = { 40, 10, 48, 96, 40 };
+    setCurrentDay(100);
+
+    FlowAnalytics::updateDaily();
+
+    const auto history = FlowAnalytics::captureState();
+    ASSERT_TRUE(FlowAnalytics::validateState(history));
+    ASSERT_EQ(history.days.size(), 1);
+    EXPECT_TRUE(history.days[0].services.empty());
+    setCurrentDay(originalDay);
+    reset();
+}
+
 TEST(CargoFlowOverlayTest, WeightsActualLoadByDepartureCapacity)
 {
     const auto originalDay = getCurrentDay();

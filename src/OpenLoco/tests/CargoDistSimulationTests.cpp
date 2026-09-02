@@ -234,6 +234,16 @@ TEST_F(CargoDistServiceSimulationTest, MixedVehicleCapacityUsesAverageDeparture)
     EXPECT_EQ(getStateConst().serviceEdges.begin()->second.fleetCapacity, 30);
 }
 
+TEST_F(CargoDistServiceSimulationTest, RepeatedStopDoesNotCreateSelfEdge)
+{
+    createVehicleWithStops({ station(1), station(1), station(2) });
+
+    recalculateNow();
+
+    ASSERT_EQ(getStateConst().serviceEdges.size(), 2);
+    EXPECT_TRUE(std::ranges::none_of(getStateConst().serviceEdges, [](const auto& entry) { return entry.first.from == entry.first.to; }));
+}
+
 TEST_F(CargoDistServiceSimulationTest, IndustryAndBuildingSinksUseSemanticTargetWeights)
 {
     auto& industrySink = getGameState().stations[2].cargoStats[0];
