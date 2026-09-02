@@ -2708,7 +2708,7 @@ strings:
   2653: "Collecting completed-day history"
   2654: "{COLOUR WINDOW_2}Latent demand:"
   2655: "{COLOUR WINDOW_2}Latent demand:"
-  2656: "{SMALLFONT}{COLOUR BLACK}{STRINGID}: {STRINGID} to {STRINGID}{NEWLINE}Next {INT32} days: modelled latent demand {INT32}; route capacity {INT32}{NEWLINE}Status: {STRINGID}; local demand at origin: {INT32}"
+  2656: "{SMALLFONT}{COLOUR BLACK}{STRINGID}: {STRINGID} to {STRINGID}{NEWLINE}Next {INT32} days: modelled latent demand {INT32}; route capacity {INT32}{NEWLINE}Status: {STRINGID}; local demand at origin: {INT32}{NEWLINE}Distance: {INT32_2DP} tiles (diagonals allowed)"
   2657: "served"
   2658: "capacity shortfall"
   2659: "no network route"

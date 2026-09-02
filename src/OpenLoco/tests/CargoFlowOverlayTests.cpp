@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <gtest/gtest.h>
 #include <limits>
 
@@ -134,6 +135,16 @@ TEST(CargoFlowOverlayTest, ScalesValuesByPercentileRank)
     const auto buckets = CargoFlowOverlay::calculateScaleBuckets(values, CargoFlowOverlay::ScaleMode::percentiles);
 
     EXPECT_EQ(buckets, (std::vector<uint8_t>{ 0, 3, 6, 9, 11 }));
+}
+
+TEST(CargoFlowOverlayTest, CalculatesOctileTileDistance)
+{
+    constexpr auto kTile = World::kTileSize;
+
+    EXPECT_DOUBLE_EQ(CargoFlowOverlay::calculateOctileTileDistance({ 0, 0 }, { 0, 0 }), 0.0);
+    EXPECT_DOUBLE_EQ(CargoFlowOverlay::calculateOctileTileDistance({ 0, 0 }, { kTile * 3, 0 }), 3.0);
+    EXPECT_NEAR(CargoFlowOverlay::calculateOctileTileDistance({ 0, 0 }, { kTile, kTile }), std::sqrt(2.0), 1e-9);
+    EXPECT_NEAR(CargoFlowOverlay::calculateOctileTileDistance({ 0, 0 }, { kTile * 3, kTile * 2 }), 1.0 + 2.0 * std::sqrt(2.0), 1e-9);
 }
 
 TEST(CargoFlowOverlayTest, GivesEqualPercentileValuesTheSameBucket)

@@ -789,6 +789,17 @@ namespace OpenLoco::Ui::Windows::CargoFlowOverlay
         }
     }
 
+    double calculateOctileTileDistance(const World::Pos2 from, const World::Pos2 to)
+    {
+        const auto fromTile = World::toTileSpace(from);
+        const auto toTile = World::toTileSpace(to);
+        const auto dx = std::abs(static_cast<int32_t>(fromTile.x) - toTile.x);
+        const auto dy = std::abs(static_cast<int32_t>(fromTile.y) - toTile.y);
+        const auto diagonal = std::min(dx, dy);
+        const auto straight = std::max(dx, dy) - diagonal;
+        return straight + diagonal * std::sqrt(2.0);
+    }
+
     uint8_t getSaturationBucket(const uint64_t demand, const std::optional<uint64_t> capacity)
     {
         if (demand == 0)
@@ -1084,6 +1095,7 @@ namespace OpenLoco::Ui::Windows::CargoFlowOverlay
             args.push(toDisplayValue(hit->capacity.value_or(0)));
             args.push(getGapString(hit->gap));
             args.push(toDisplayValue(hit->originEndpoint->localDemand));
+            args.push(static_cast<int32_t>(std::lround(calculateOctileTileDistance(hit->originEndpoint->position, hit->destinationEndpoint->position) * 100)));
             return true;
         }
         if (hitFrom == nullptr || hitTo == nullptr)

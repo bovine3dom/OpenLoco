@@ -3,6 +3,7 @@
 
 #include "Graphics/Colour.h"
 #include <OpenLoco/Engine/Ui/Point.hpp>
+#include <OpenLoco/Engine/World.hpp>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -54,6 +55,7 @@ namespace OpenLoco::Ui
         uint8_t getSaturationBucket(uint64_t demand, std::optional<uint64_t> capacity);
         PaletteIndex_t getSaturationColour(uint8_t bucket);
         std::vector<uint8_t> calculateScaleBuckets(std::span<const uint64_t> values, ScaleMode mode, std::optional<uint64_t> absoluteMaximum = std::nullopt);
+        double calculateOctileTileDistance(World::Pos2 from, World::Pos2 to);
         Projection project(const Viewport& viewport, bool windowCoordinates);
         void drawLinks(Gfx::DrawingContext& drawingCtx, std::span<const ProjectedLink> links);
         void drawMarkers(Gfx::DrawingContext& drawingCtx, std::span<const ProjectedMarker> markers);
