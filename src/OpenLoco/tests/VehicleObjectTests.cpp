@@ -135,7 +135,7 @@ TEST(VehicleObjectTest, UsesFixedTgvLaPosteColours)
     const auto fixed = getEffectiveVehicleColourScheme(kTgvLaPosteObjectHeader, requested);
 
     EXPECT_EQ(fixed.primary, Colour::yellow);
-    EXPECT_EQ(fixed.secondary, Colour::darkBlue);
+    EXPECT_EQ(fixed.secondary, Colour::yellow);
     const auto ordinary = getEffectiveVehicleColourScheme(kOfficialTgvPassengerCarriageHeader, requested);
     EXPECT_EQ(ordinary.primary, requested.primary);
     EXPECT_EQ(ordinary.secondary, requested.secondary);

@@ -112,7 +112,7 @@ namespace OpenLoco
     ColourScheme getEffectiveVehicleColourScheme(const ObjectHeader& header, const ColourScheme requested)
     {
         return isTgvLaPosteObject(header)
-            ? ColourScheme{ Colour::yellow, Colour::darkBlue }
+            ? ColourScheme{ Colour::yellow, Colour::yellow }
             : requested;
     }
 
@@ -147,7 +147,7 @@ namespace OpenLoco
         uint8_t roll = Ui::WindowManager::getVehiclePreviewRotationFrameRoll();
 
         const auto colour = name == StringIds::tgv_la_poste_mail_carriage
-            ? ColourScheme{ Colour::yellow, Colour::darkBlue }
+            ? ColourScheme{ Colour::yellow, Colour::yellow }
             : ColourScheme{ Colour::mutedSeaGreen, Colour::white };
         drawVehicleOverview(drawingCtx, Ui::Point{ x, y } + Ui::Point{ 0, 19 }, *this, yaw, roll, colour);
     }
