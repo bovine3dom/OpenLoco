@@ -1363,7 +1363,7 @@ namespace OpenLoco::Vehicles
                 }
                 else if (timeoutStatus == SignalTimeoutStatus::turnaroundAtSignalTimeout)
                 {
-                    return tryReverse();
+                    return tryReverse(trackAndDirection.road == train.veh2->trackAndDirection.road);
                 }
             }
 
@@ -1466,19 +1466,12 @@ namespace OpenLoco::Vehicles
             }
         }
 
-        train.veh1->timeAtSignal++;
-        if (train.veh1->timeAtSignal == param1)
-        {
-            return SignalTimeoutStatus::firstTimeout;
-        }
-
-        if (train.veh1->timeAtSignal == turnaroundAtSignalTimeout)
+        const auto timeoutStatus = advanceRoadSignalTimeout(train.veh1->timeAtSignal, param1, turnaroundAtSignalTimeout);
+        if (timeoutStatus == SignalTimeoutStatus::turnaroundAtSignalTimeout)
         {
             var_5C = 40;
-            return SignalTimeoutStatus::turnaroundAtSignalTimeout;
         }
-
-        return SignalTimeoutStatus::ok;
+        return timeoutStatus;
     }
 
     // 0x004A8DB7
@@ -1671,6 +1664,7 @@ namespace OpenLoco::Vehicles
     // 0x004A8D8F
     bool VehicleHead::roadNormalMovementUpdate(uint8_t al, StationId nextStation)
     {
+        Vehicle train(head);
         auto timeoutStatus = categoriseTimeElapsed(); // bl
         if (timeoutStatus == SignalTimeoutStatus::firstTimeout)
         {
@@ -1678,7 +1672,7 @@ namespace OpenLoco::Vehicles
         }
         else if (timeoutStatus == SignalTimeoutStatus::turnaroundAtSignalTimeout)
         {
-            return tryReverse();
+            return tryReverse(trackAndDirection.road == train.veh2->trackAndDirection.road);
         }
         else if (al == 4)
         {
@@ -1688,7 +1682,6 @@ namespace OpenLoco::Vehicles
         }
         else if (al == 2)
         {
-            Vehicle train(head);
             if (routingHandle != train.veh2->routingHandle || train.veh2->subPosition != subPosition)
             {
                 return true;
@@ -5490,6 +5483,8 @@ namespace OpenLoco::Vehicles
         uint16_t reverseTad; // 0x01136468
     };
 
+    static bool isRoadRoutingResultBetter(const RoutingResult& base, const RoutingResult& newResult);
+
     // 0x004AC9FD & 0x0047E5E8
     // Returns true if this is the best route so far and we should stop processing this route.
     // Unsure why we continue processing the route if it is not the best route
@@ -5617,10 +5612,7 @@ namespace OpenLoco::Vehicles
                 auto recurseState = state;
                 recurseState.recursionDepth++;
                 roadTargetedPathingRecurse(curPos, connectTad, companyId, roadObjectId, requiredMods, queryMods, allowedStationTypes, target, recurseState);
-                // TODO: May need to copy over results
-                state.result.signalState = std::min(state.result.signalState, recurseState.result.signalState);
-                state.result.bestDistToTarget = recurseState.result.bestDistToTarget;
-                state.result.bestTrackWeighting = recurseState.result.bestTrackWeighting;
+                mergeRoadRoutingResult(state.result, recurseState.result);
             }
             break;
         }
@@ -5735,6 +5727,14 @@ namespace OpenLoco::Vehicles
         //     return newResult.bestTrackWeighting < base.bestTrackWeighting;
         // }
         // return false;
+    }
+
+    void mergeRoadRoutingResult(RoutingResult& base, const RoutingResult& candidate)
+    {
+        if (isRoadRoutingResultBetter(base, candidate))
+        {
+            base = candidate;
+        }
     }
 
     // 0x0047DFD0
@@ -5888,7 +5888,7 @@ namespace OpenLoco::Vehicles
                 auto recurseState = state;
                 recurseState.recursionDepth++;
                 roadLongestPathingCalculateRecurse(curPos, connectTad, companyId, roadObjectId, requiredMods, queryMods, recurseState);
-                state.bestTrackWeighting = recurseState.bestTrackWeighting;
+                state.bestTrackWeighting = std::max(state.bestTrackWeighting, recurseState.bestTrackWeighting);
             }
             break;
         }

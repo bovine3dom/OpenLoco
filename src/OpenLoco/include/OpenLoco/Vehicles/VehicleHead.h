@@ -9,6 +9,11 @@ namespace OpenLoco
 
 namespace OpenLoco::Vehicles
 {
+    namespace RailPathfinding
+    {
+        struct RouteResult;
+    }
+
     using CargoTotalArray = std::array<uint32_t, Limits::kMaxCargoObjects>;
 
     enum class Status : uint8_t
@@ -46,6 +51,23 @@ namespace OpenLoco::Vehicles
         firstTimeout = 1U,
         turnaroundAtSignalTimeout = 2U,
     };
+
+    constexpr SignalTimeoutStatus advanceRoadSignalTimeout(uint16_t& elapsed, const uint16_t firstTimeout, const uint16_t turnaroundTimeout)
+    {
+        elapsed++;
+        if (elapsed >= turnaroundTimeout || elapsed == 0)
+        {
+            elapsed = 0;
+            return SignalTimeoutStatus::turnaroundAtSignalTimeout;
+        }
+        if (elapsed == firstTimeout)
+        {
+            return SignalTimeoutStatus::firstTimeout;
+        }
+        return SignalTimeoutStatus::ok;
+    }
+
+    void mergeRoadRoutingResult(RailPathfinding::RouteResult& base, const RailPathfinding::RouteResult& candidate);
 
     struct VehicleStatus
     {

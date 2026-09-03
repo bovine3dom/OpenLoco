@@ -1,4 +1,5 @@
 #include "Entities/EntityManager.h"
+#include "Vehicles/RailPathfinding.h"
 #include "Vehicles/Vehicle1.h"
 #include "Vehicles/Vehicle2.h"
 #include "Vehicles/VehicleBody.h"
@@ -7,6 +8,7 @@
 #include "Vehicles/VehicleTail.h"
 #include <array>
 #include <gtest/gtest.h>
+#include <limits>
 
 using namespace OpenLoco;
 using namespace OpenLoco::Literals;
@@ -118,4 +120,45 @@ TEST(VehicleMovement, RoadVehicleCanReverseInCurrentLane)
 
     tad._data = (1U << 7) | (1U << 8);
     EXPECT_TRUE(canReverseRoadVehicleInCurrentLane(tad));
+}
+
+TEST(VehicleMovement, RoadVehicleResetsTurnaroundTimeoutForRetry)
+{
+    constexpr uint16_t kFirstTimeout = 160;
+    constexpr uint16_t kTurnaroundTimeout = 960;
+
+    auto elapsed = static_cast<uint16_t>(kFirstTimeout - 1);
+    EXPECT_EQ(advanceRoadSignalTimeout(elapsed, kFirstTimeout, kTurnaroundTimeout), SignalTimeoutStatus::firstTimeout);
+    EXPECT_EQ(elapsed, kFirstTimeout);
+
+    elapsed = kTurnaroundTimeout - 1;
+    EXPECT_EQ(advanceRoadSignalTimeout(elapsed, kFirstTimeout, kTurnaroundTimeout), SignalTimeoutStatus::turnaroundAtSignalTimeout);
+    EXPECT_EQ(elapsed, 0);
+    EXPECT_EQ(advanceRoadSignalTimeout(elapsed, kFirstTimeout, kTurnaroundTimeout), SignalTimeoutStatus::ok);
+    EXPECT_EQ(elapsed, 1);
+
+    elapsed = 10792;
+    EXPECT_EQ(advanceRoadSignalTimeout(elapsed, kFirstTimeout, kTurnaroundTimeout), SignalTimeoutStatus::turnaroundAtSignalTimeout);
+    EXPECT_EQ(elapsed, 0);
+
+    elapsed = std::numeric_limits<uint16_t>::max();
+    EXPECT_EQ(advanceRoadSignalTimeout(elapsed, kFirstTimeout, kTurnaroundTimeout), SignalTimeoutStatus::turnaroundAtSignalTimeout);
+    EXPECT_EQ(elapsed, 0);
+}
+
+TEST(VehicleMovement, RoadPathingRetainsBestRecursiveResult)
+{
+    using RailPathfinding::RouteResult;
+    using RailPathfinding::SignalState;
+
+    RouteResult result{ 64, 64, SignalState::null };
+    const RouteResult routeToTarget{ 0, 128, SignalState::noSignals };
+    const RouteResult laterDeadEnd{ 32, 32, SignalState::null };
+
+    mergeRoadRoutingResult(result, routeToTarget);
+    mergeRoadRoutingResult(result, laterDeadEnd);
+
+    EXPECT_EQ(result.bestDistToTarget, 0);
+    EXPECT_EQ(result.bestTrackWeighting, 128);
+    EXPECT_EQ(result.signalState, SignalState::noSignals);
 }
