@@ -5483,6 +5483,8 @@ namespace OpenLoco::Vehicles
         uint16_t reverseTad; // 0x01136468
     };
 
+    static constexpr uint16_t kRoadPathingMaxJunctionDepth = 16;
+
     static bool isRoadRoutingResultBetter(const RoutingResult& base, const RoutingResult& newResult);
 
     // 0x004AC9FD & 0x0047E5E8
@@ -5523,7 +5525,7 @@ namespace OpenLoco::Vehicles
         // 0x01135FAE (copy in from the tc)
         StationId curStationId = StationId::null;
         uint8_t curStationObjId = 0;
-        if (state.recursionDepth >= 5)
+        if (state.recursionDepth >= kRoadPathingMaxJunctionDepth)
         {
             return;
         }
