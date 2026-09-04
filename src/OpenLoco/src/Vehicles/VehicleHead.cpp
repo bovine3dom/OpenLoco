@@ -1355,6 +1355,12 @@ namespace OpenLoco::Vehicles
         return false;
     }
 
+    static bool isOrdinaryRoadVehicle(const VehicleHead& head)
+    {
+        return head.trackType == 0xFF
+            || ObjectManager::get<RoadObject>(head.trackType)->hasFlags(RoadObjectFlags::isRoad);
+    }
+
     // 0x004A8C11
     bool VehicleHead::updateLand()
     {
@@ -1385,7 +1391,10 @@ namespace OpenLoco::Vehicles
                 }
                 else if (timeoutStatus == SignalTimeoutStatus::turnaroundAtSignalTimeout)
                 {
-                    return tryReverse(trackAndDirection.road == train.veh2->trackAndDirection.road);
+                    return tryReverse(canYieldByReversingInCurrentLane(
+                        trackAndDirection.road,
+                        train.veh2->trackAndDirection.road,
+                        isOrdinaryRoadVehicle(*this)));
                 }
             }
 
@@ -1469,7 +1478,7 @@ namespace OpenLoco::Vehicles
         auto param1 = 160;
         auto turnaroundAtSignalTimeout = kBusSignalTimeout;
 
-        if (trackType == 0xFF || ObjectManager::get<RoadObject>(trackType)->hasFlags(RoadObjectFlags::isRoad))
+        if (isOrdinaryRoadVehicle(*this))
         {
             if (train.veh1->trackAndDirection.road.isOvertaking())
             {
@@ -1695,7 +1704,10 @@ namespace OpenLoco::Vehicles
         }
         else if (timeoutStatus == SignalTimeoutStatus::turnaroundAtSignalTimeout)
         {
-            return tryReverse(trackAndDirection.road == train.veh2->trackAndDirection.road);
+            return tryReverse(canYieldByReversingInCurrentLane(
+                trackAndDirection.road,
+                train.veh2->trackAndDirection.road,
+                isOrdinaryRoadVehicle(*this)));
         }
         else if (al == 4)
         {

@@ -67,6 +67,16 @@ namespace OpenLoco::Vehicles
         return SignalTimeoutStatus::ok;
     }
 
+    constexpr bool canYieldByReversingInCurrentLane(
+        TrackAndDirection::_RoadAndDirection headTad,
+        TrackAndDirection::_RoadAndDirection vehicleTad,
+        bool isOrdinaryRoadVehicle)
+    {
+        return canReverseRoadVehicleInCurrentLane(headTad)
+            && canReverseRoadVehicleInCurrentLane(vehicleTad)
+            && (isOrdinaryRoadVehicle || headTad == vehicleTad);
+    }
+
     void mergeRoadRoutingResult(RailPathfinding::RouteResult& base, const RailPathfinding::RouteResult& candidate);
 
     struct VehicleStatus

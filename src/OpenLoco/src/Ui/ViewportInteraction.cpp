@@ -522,6 +522,38 @@ namespace OpenLoco::Ui::ViewportInteraction
         return InteractionArg{};
     }
 
+    static bool isSignalToolActive()
+    {
+        return Windows::Construction::isSignalTabOpen()
+            && ToolManager::isToolActive(WindowType::construction, 0);
+    }
+
+    static uint16_t getRealSignalSides(const World::TileElementEntry& trackEntry)
+    {
+        const auto* track = trackEntry.as<TrackElement>();
+        if (track == nullptr || track->isGhost() || !track->hasSignal())
+        {
+            return 0;
+        }
+
+        const auto* signal = trackEntry.next()->as<SignalElement>();
+        if (signal == nullptr)
+        {
+            return 0;
+        }
+
+        uint16_t sides = 0;
+        if (signal->getLeft().hasSignal() && !signal->isLeftGhost())
+        {
+            sides |= 1U << 15;
+        }
+        if (signal->getRight().hasSignal() && !signal->isRightGhost())
+        {
+            sides |= 1U << 14;
+        }
+        return sides;
+    }
+
     // 0x004CE1D4
     static bool rightOverTrack(InteractionArg& interaction)
     {
@@ -536,6 +568,17 @@ namespace OpenLoco::Ui::ViewportInteraction
         if (track->isGhost())
         {
             return false;
+        }
+
+        if (isSignalToolActive())
+        {
+            if (track->owner() != CompanyManager::getControllingId()
+                || getRealSignalSides(*tileElement) == 0)
+            {
+                return false;
+            }
+            FormatArguments::mapToolTip(StringIds::stringid_right_click_to_remove, StringIds::capt_signal);
+            return true;
         }
 
         if (Ui::Windows::MapToolTip::getTooltipTimeout() < 45)
@@ -1125,19 +1168,18 @@ namespace OpenLoco::Ui::ViewportInteraction
             return;
         }
 
-        uint16_t unkFlags = 1 << 15; // right
-        if (isLeftSignal)
+        uint16_t signalSides;
+        if (isSignalToolActive())
         {
-            unkFlags = 1 << 14; // left
+            signalSides = getRealSignalSides(*signalEntry->prev());
         }
-
-        // If in construction mode with both directions selection (actually does not single direction but this is what is implied)
-        if (!ToolManager::isToolActive(WindowType::construction, 0, 11 /* Ui::Windows::Construction::Signal::widx::signal_direction */))
+        else if (signal->getLeft().hasSignal() && signal->getRight().hasSignal())
         {
-            if (signal->getLeft().hasSignal() && signal->getRight().hasSignal())
-            {
-                unkFlags = (1 << 15) | (1 << 14); // both
-            }
+            signalSides = (1 << 15) | (1 << 14);
+        }
+        else
+        {
+            signalSides = isLeftSignal ? 1 << 14 : 1 << 15;
         }
 
         GameCommands::SignalRemovalArgs args;
@@ -1146,7 +1188,7 @@ namespace OpenLoco::Ui::ViewportInteraction
         args.trackId = track->trackId();
         args.index = track->sequenceIndex();
         args.trackObjType = track->trackObjectId();
-        args.flags = unkFlags;
+        args.flags = signalSides;
 
         auto* window = WindowManager::find(WindowType::construction);
         if (window != nullptr)
@@ -1405,6 +1447,12 @@ namespace OpenLoco::Ui::ViewportInteraction
 
             case InteractionItem::track:
             {
+                if (isSignalToolActive())
+                {
+                    rightReleasedSignal(tileElement->next(), false, interaction.pos);
+                    break;
+                }
+
                 auto* track = tileElement->as<TrackElement>();
                 if (track != nullptr)
                 {
@@ -1458,7 +1506,14 @@ namespace OpenLoco::Ui::ViewportInteraction
             }
             case InteractionItem::signal:
             {
-                rightReleasedSignal(tileElement, interaction.modId != 0, interaction.pos);
+                if (isSignalToolActive())
+                {
+                    rightReleasedSignal(tileElement, false, interaction.pos);
+                }
+                else
+                {
+                    rightReleasedSignal(tileElement, interaction.modId != 0, interaction.pos);
+                }
                 break;
             }
             case InteractionItem::trainStation:

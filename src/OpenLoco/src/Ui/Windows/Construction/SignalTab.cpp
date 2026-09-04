@@ -2,11 +2,13 @@
 #include "GameCommands/GameCommands.h"
 #include "GameCommands/Track/CreateSignal.h"
 #include "GameCommands/Track/RemoveSignal.h"
+#include "GameCommands/Undo.h"
 #include "Graphics/ImageIds.h"
 #include "Graphics/TextRenderer.h"
 #include "Input.h"
 #include "Localisation/FormatArguments.hpp"
 #include "Localisation/StringIds.h"
+#include "Map/MapSelection.h"
 #include "Map/SignalElement.h"
 #include "Map/TileElementEntry.h"
 #include "Map/TileManager.h"
@@ -24,12 +26,18 @@
 #include "Ui/Widgets/DropdownWidget.h"
 #include "Ui/Widgets/ImageButtonWidget.h"
 #include "Ui/Windows/Construction/Construction.h"
+#include <vector>
 
 using namespace OpenLoco::World;
 using namespace OpenLoco::World::TileManager;
 
 namespace OpenLoco::Ui::Windows::Construction::Signal
 {
+    static bool _isDragging = false;
+    static bool _isDragStartValid = false;
+    static World::TilePos2 _toolPosDrag;
+    static World::TilePos2 _toolPosInitial;
+    static uint16_t _dragSignalSides;
     static World::SignalMode _signalGhostMode = World::SignalMode::block;
 
     static World::SignalMode getLastSignalMode()
@@ -278,6 +286,13 @@ namespace OpenLoco::Ui::Windows::Construction::Signal
 
         const bool isBothDirections = widgetIndex == widx::both_directions;
 
+        if (_isDragging)
+        {
+            mapInvalidateMapSelectionFreeFormTiles();
+            removeConstructionGhosts();
+            return;
+        }
+
         auto& cState = getConstructionState();
 
         auto placementArgs = getSignalPlacementArgsFromCursor(x, y, isBothDirections);
@@ -316,6 +331,115 @@ namespace OpenLoco::Ui::Windows::Construction::Signal
         }
     }
 
+    static void onToolDown([[maybe_unused]] Window& self, const WidgetIndex_t widgetIndex, [[maybe_unused]] const WidgetId id, const int16_t x, const int16_t y)
+    {
+        if (widgetIndex != widx::single_direction && widgetIndex != widx::both_directions)
+        {
+            return;
+        }
+
+        _isDragging = false;
+        _isDragStartValid = false;
+        const auto args = getSignalPlacementArgsFromCursor(x, y, widgetIndex == widx::both_directions);
+        if (!args)
+        {
+            return;
+        }
+
+        _toolPosInitial = World::toTileSpace(args->pos);
+        _dragSignalSides = args->sides;
+        _isDragStartValid = true;
+    }
+
+    static void onToolDrag([[maybe_unused]] Window& self, const WidgetIndex_t widgetIndex, [[maybe_unused]] const WidgetId id, const int16_t x, const int16_t y)
+    {
+        if (widgetIndex != widx::single_direction && widgetIndex != widx::both_directions)
+        {
+            return;
+        }
+        if (!_isDragStartValid)
+        {
+            return;
+        }
+
+        mapInvalidateSelectionRect();
+        removeConstructionGhosts();
+
+        const auto [interaction, _] = ViewportInteraction::getMapCoordinatesFromPos(x, y, ~(ViewportInteraction::InteractionItemFlags::surface | ViewportInteraction::InteractionItemFlags::water));
+        if (interaction.type == ViewportInteraction::InteractionItem::noInteraction)
+        {
+            return;
+        }
+
+        _toolPosDrag = World::toTileSpace(interaction.pos);
+        _isDragging = _toolPosInitial != _toolPosDrag;
+        if (!_isDragging)
+        {
+            World::resetMapSelectionFlag(MapSelectionFlags::enable);
+            return;
+        }
+
+        setMapSelectionFlags(MapSelectionFlags::enable);
+        setMapSelectionCorner(MapSelectionType::full);
+        setMapSelectionArea(toWorldSpace(_toolPosInitial), toWorldSpace(_toolPosDrag));
+        mapInvalidateSelectionRect();
+    }
+
+    static void onToolUpMultiple(const bool isBothDirections)
+    {
+        mapInvalidateSelectionRect();
+        removeConstructionGhosts();
+        World::resetMapSelectionFlags();
+
+        auto& cState = getConstructionState();
+        const auto dirX = _toolPosDrag.x - _toolPosInitial.x > 0 ? 1 : -1;
+        const auto dirY = _toolPosDrag.y - _toolPosInitial.y > 0 ? 1 : -1;
+        std::vector<GameCommands::SignalPlacementArgs> placements;
+        for (auto y = _toolPosInitial.y; y != _toolPosDrag.y + dirY; y += dirY)
+        {
+            for (auto x = _toolPosInitial.x; x != _toolPosDrag.x + dirX; x += dirX)
+            {
+                const auto pos = World::toWorldSpace(World::TilePos2{ x, y });
+                for (const auto& entry : TileManager::get(pos))
+                {
+                    const auto* track = entry.as<TrackElement>();
+                    if (track == nullptr || track->isGhost() || track->trackObjectId() != cState.trackType)
+                    {
+                        continue;
+                    }
+
+                    GameCommands::SignalPlacementArgs args;
+                    args.type = cState.lastSelectedSignal;
+                    args.pos = World::Pos3(pos, track->baseHeight());
+                    args.rotation = track->rotation();
+                    args.trackId = track->trackId();
+                    args.index = track->sequenceIndex();
+                    args.trackObjType = track->trackObjectId();
+                    args.mode = getLastSignalMode();
+                    args.sides = _dragSignalSides;
+                    placements.push_back(args);
+                }
+            }
+        }
+
+        bool builtAnything = false;
+        GameCommands::setErrorTitle(isBothDirections ? StringIds::cant_build_signals_here : StringIds::cant_build_signal_here);
+        GameCommands::Undo::Group undoGroup;
+        for (const auto& args : placements)
+        {
+            GameCommands::setErrorSound(false);
+            builtAnything |= GameCommands::doCommand(args, GameCommands::Flags::apply) != GameCommands::kFailure;
+            GameCommands::setErrorSound(true);
+        }
+        if (builtAnything)
+        {
+            WindowManager::close(WindowType::error);
+        }
+
+        _isDragging = false;
+        _isDragStartValid = false;
+    }
+
     // 0x0049E75A
     static void onToolUp([[maybe_unused]] Window& self, const WidgetIndex_t widgetIndex, [[maybe_unused]] const WidgetId id, const int16_t x, const int16_t y)
     {
@@ -327,6 +451,12 @@ namespace OpenLoco::Ui::Windows::Construction::Signal
         removeConstructionGhosts();
 
         const bool isBothDirections = widgetIndex == widx::both_directions;
+        if (_isDragging)
+        {
+            onToolUpMultiple(isBothDirections);
+            return;
+        }
+
         auto args = getSignalPlacementArgsFromCursor(x, y, isBothDirections);
         if (!args)
         {
@@ -348,6 +478,12 @@ namespace OpenLoco::Ui::Windows::Construction::Signal
             return;
         }
         Audio::playSound(Audio::SoundId::construct, Audio::ChannelId::effects, GameCommands::getPosition());
+    }
+
+    static void onToolAbort([[maybe_unused]] Window& self, [[maybe_unused]] const WidgetIndex_t widgetIndex, [[maybe_unused]] const WidgetId id)
+    {
+        _isDragging = false;
+        _isDragStartValid = false;
     }
 
     // 0x0049E499
@@ -428,7 +564,10 @@ namespace OpenLoco::Ui::Windows::Construction::Signal
         .onDropdown = onDropdown,
         .onUpdate = onUpdate,
         .onToolUpdate = onToolUpdate,
+        .onToolDown = onToolDown,
+        .toolDrag = onToolDrag,
         .toolUp = onToolUp,
+        .onToolAbort = onToolAbort,
         .prepareDraw = prepareDraw,
         .draw = draw,
     };

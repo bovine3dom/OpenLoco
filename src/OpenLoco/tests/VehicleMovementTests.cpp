@@ -122,6 +122,25 @@ TEST(VehicleMovement, RoadVehicleCanReverseInCurrentLane)
     EXPECT_TRUE(canReverseRoadVehicleInCurrentLane(tad));
 }
 
+TEST(VehicleMovement, OrdinaryRoadVehicleCanYieldFromDifferentRoadPiece)
+{
+    TrackAndDirection::_RoadAndDirection headTad{ 0, 0 };
+    TrackAndDirection::_RoadAndDirection vehicleTad{ 1, 0 };
+
+    EXPECT_TRUE(canYieldByReversingInCurrentLane(headTad, vehicleTad, true));
+    EXPECT_FALSE(canYieldByReversingInCurrentLane(headTad, vehicleTad, false));
+
+    vehicleTad = headTad;
+    EXPECT_TRUE(canYieldByReversingInCurrentLane(headTad, vehicleTad, false));
+
+    vehicleTad._data = 1U << 8;
+    EXPECT_FALSE(canYieldByReversingInCurrentLane(headTad, vehicleTad, true));
+
+    vehicleTad = headTad;
+    headTad._data = 1U << 8;
+    EXPECT_FALSE(canYieldByReversingInCurrentLane(headTad, vehicleTad, true));
+}
+
 TEST(VehicleMovement, RoadVehicleResetsTurnaroundTimeoutForRetry)
 {
     constexpr uint16_t kFirstTimeout = 160;
