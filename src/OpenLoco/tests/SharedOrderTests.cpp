@@ -737,8 +737,12 @@ TEST_F(SharedOrderTest, ReplaceOrderTableGrowsAndShrinksPackedStorage)
     ASSERT_NE(last, nullptr);
     expectPacked({ first, middle, last });
 
+    armRoadRouteAvoidance(middle->id, 0);
+    activateRoadRouteAvoidance(middle->id, 0);
+    ASSERT_TRUE(shouldAvoidTramRoads(middle->id, 0));
     const auto large = makeOrderTable({ unload(1), waypoint(), waitFor(3) });
     OrderManager::replaceOrderTable(*middle, large);
+    EXPECT_FALSE(shouldAvoidTramRoads(middle->id, 0));
     expectOrders(*middle, large);
     expectOrders(*first, makeOrderTable({}));
     expectOrders(*last, makeOrderTable({}));

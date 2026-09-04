@@ -78,6 +78,11 @@ namespace OpenLoco::Vehicles
     }
 
     void mergeRoadRoutingResult(RailPathfinding::RouteResult& base, const RailPathfinding::RouteResult& candidate);
+    void resetRoadRouteAvoidance();
+    void clearRoadRouteAvoidance(EntityId vehicle);
+    void armRoadRouteAvoidance(EntityId vehicle, uint16_t currentOrder);
+    void activateRoadRouteAvoidance(EntityId vehicle, uint16_t currentOrder);
+    bool shouldAvoidTramRoads(EntityId vehicle, uint16_t currentOrder);
 
     struct VehicleStatus
     {

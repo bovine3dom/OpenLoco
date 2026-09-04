@@ -1366,6 +1366,7 @@ namespace OpenLoco::S5
             applyVehicleCapacityOverrides(cargoDistState);
             CargoDist::reset();
             Vehicles::SharedOrderManager::reset();
+            Vehicles::resetRoadRouteAvoidance();
             Vehicles::RoutingManager::resetPathReservationState();
             Vehicles::VehicleAutoRenewal::reset();
             Vehicles::VehicleReplacement::reset();

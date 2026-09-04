@@ -281,6 +281,7 @@ namespace OpenLoco::Vehicles::OrderManager
 
         head.sizeOfOrderTable = newSize;
         head.currentOrder = 0;
+        clearRoadRouteAvoidance(head.id);
         head.resetUnbunching();
         CargoDist::markServicesDirty();
     }
@@ -347,6 +348,7 @@ namespace OpenLoco::Vehicles::OrderManager
 
         // Compensate other vehicles to use new table offsets
         reoffsetVehicleOrderTables(head->orderTableOffset + orderOffset + 1, -removeOrderSize);
+        clearRoadRouteAvoidance(head->id);
         head->resetUnbunching();
         CargoDist::markServicesDirty();
     }
@@ -364,6 +366,7 @@ namespace OpenLoco::Vehicles::OrderManager
         // No need to zero order table as it will get cleaned up on save
         orderTableLength() = 0;
         clearNumDisplayFrames();
+        resetRoadRouteAvoidance();
         SharedOrderManager::reset();
         TimetableManager::reset();
         VehicleReplacement::reset();
