@@ -283,14 +283,15 @@ namespace OpenLoco::Paint
         else
         {
             const auto showAudit = (session.getViewFlags() & Ui::ViewportFlags::one_way_direction_arrows) != Ui::ViewportFlags::none;
-            if (World::Track::OneWaySignalConflicts::isHighlighted(session.getUnkPosition(), elTrack, showAudit) || (showAudit && World::Track::DisconnectedTracks::isHighlighted(session.getUnkPosition(), elTrack)))
+            if (World::Track::OneWaySignalConflicts::isHighlighted(session.getUnkPosition(), elTrack, showAudit)
+                || (showAudit && World::Track::DisconnectedTracks::isHighlighted(session.getUnkPosition(), elTrack)))
             {
                 // This error palette remains distinct from a red company's normal track colour.
                 baseTrackImageColour = ImageId(0, ExtColour::unk2B);
             }
             else if (World::Track::TrackFootprintPreview::isHighlighted(session.getUnkPosition(), elTrack))
             {
-                baseTrackImageColour = ImageId(0, ExtColour::white);
+                baseTrackImageColour = ImageId(0, ExtColour::unk2B);
             }
             else if (session.isRailSpeedOverlayEnabled())
             {
