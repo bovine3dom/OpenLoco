@@ -8,16 +8,13 @@
 
 namespace OpenLoco::StringManager
 {
-    // Size for buffer strings that are used for temporary text storage
-    static constexpr size_t kBufferStringSize = 512;
-
-    static char _buffer_337[kBufferStringSize];
-    static char _buffer_338[kBufferStringSize];
-    static char _buffer_1250[kBufferStringSize];
-    static char _preferred_currency_buffer[kBufferStringSize];
-    static char _buffer_1719[kBufferStringSize];
-    static char _buffer_2039[kBufferStringSize];
-    static char _buffer_2040[kBufferStringSize];
+    static char _buffer_337[kTemporaryStringSize];
+    static char _buffer_338[kTemporaryStringSize];
+    static char _buffer_1250[kTemporaryStringSize];
+    static char _preferred_currency_buffer[kTemporaryStringSize];
+    static char _buffer_1719[kTemporaryStringSize];
+    static char _buffer_2039[kTemporaryStringSize];
+    static char _buffer_2040[kTemporaryStringSize];
 
     // 0x005183FC
     // Initialize string pointer array with buffers for specific IDs

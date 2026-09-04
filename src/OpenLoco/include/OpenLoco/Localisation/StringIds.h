@@ -2398,6 +2398,13 @@ namespace OpenLoco::StringIds
     constexpr StringId orders_stop_at_unbunching_crush_loading = 2686;
     constexpr StringId cannot_change_crush_loading = 2687;
     constexpr StringId stats_crush_capacity = 2688;
+    constexpr StringId vehicle_details_power_to_weight = 2689;
+    constexpr StringId stats_full_load_transfer_time = 2690;
+    constexpr StringId stats_crush_load_transfer_time = 2691;
+    constexpr StringId stats_must_operate_in_pairs = 2692;
+    constexpr StringId stats_restricted_coupling = 2693;
+    constexpr StringId stats_wheel_slip = 2694;
+    constexpr StringId stats_any_road_type = 2695;
 
     constexpr StringId temporary_object_load_str_0 = 8192;
     constexpr StringId temporary_object_load_str_1 = 8193;

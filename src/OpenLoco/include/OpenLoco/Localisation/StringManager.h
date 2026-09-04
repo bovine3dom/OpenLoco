@@ -14,6 +14,8 @@
 
 namespace OpenLoco::StringManager
 {
+    constexpr size_t kTemporaryStringSize = 512;
+
     // Language strings, temporary object strings, and loaded object strings.
     constexpr size_t kLegacyNumStringPointers = 0x246E;
     constexpr size_t kNumStringPointers = kLegacyNumStringPointers + (Limits::kMaxVehicleObjects - S5::Limits::kMaxVehicleObjects);

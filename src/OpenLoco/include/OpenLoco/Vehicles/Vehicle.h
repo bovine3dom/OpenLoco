@@ -26,6 +26,7 @@ namespace OpenLoco::Vehicles
 {
     constexpr auto kMaxRoadVehicleLength = 176;    // TODO: Units?
     constexpr uint8_t kWheelSlippingDuration = 64; // In ticks
+    constexpr uint16_t kCargoTransferStartTimeout = 10;
 
     enum class Flags38 : uint8_t
     {
@@ -387,6 +388,7 @@ namespace OpenLoco::Vehicles
     bool isCrushLoadEligible(TransportMode mode, uint8_t cargoType);
     uint8_t getCrushLoadCapacity(uint8_t nominalCapacity);
     uint8_t getEffectiveLoadCapacity(uint8_t nominalCapacity, TransportMode mode, uint8_t cargoType, bool crushLoading);
+    uint16_t calculateCargoTransferTimeout(uint16_t cargoTransferTime, uint16_t quantity, uint8_t loadingModifier = 1, uint16_t crushQuantity = 0);
 
     struct Sub4ACEE7Result
     {

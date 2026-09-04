@@ -101,13 +101,6 @@ namespace OpenLoco::Vehicles
         return static_cast<currency32_t>(current + amount);
     }
 
-    static uint16_t calculateCargoTransferTimeout(const CargoObject& cargo, const uint16_t quantity, const uint8_t loadingModifier, const uint16_t crushQuantity = 0)
-    {
-        const auto transferUnits = static_cast<uint32_t>(quantity) + crushQuantity;
-        const auto timeout = static_cast<uint64_t>(cargo.cargoTransferTime) * transferUnits * loadingModifier / 256;
-        return static_cast<uint16_t>(std::min<uint64_t>(timeout, std::numeric_limits<uint16_t>::max()));
-    }
-
     static uint16_t getUnloadedCrushQuantity(const uint16_t quantityBefore, const uint16_t nominalCapacity, const uint16_t quantityUnloaded)
     {
         if (quantityBefore <= nominalCapacity || quantityUnloaded == 0)
@@ -2977,7 +2970,7 @@ namespace OpenLoco::Vehicles
         breakdownFlags &= ~BreakdownFlags::awaitingCargoTransfer;
 
         status = Status::unloading;
-        cargoTransferTimeout = 10;
+        cargoTransferTimeout = kCargoTransferStartTimeout;
         var_58 = 0;
 
         Vehicle train(head);
@@ -3529,7 +3522,7 @@ namespace OpenLoco::Vehicles
             const auto loadingModifier = getLoadingModifier(bogie);
             const auto* cargoObj = ObjectManager::get<CargoObject>(cargo.type);
             const auto crushQuantity = getUnloadedCrushQuantity(quantityBefore, cargo.maxQty, static_cast<uint16_t>(quantity));
-            cargoTransferTimeout = calculateCargoTransferTimeout(*cargoObj, static_cast<uint16_t>(quantity), loadingModifier, crushQuantity);
+            cargoTransferTimeout = calculateCargoTransferTimeout(cargoObj->cargoTransferTime, static_cast<uint16_t>(quantity), loadingModifier, crushQuantity);
             updateTrainProperties();
             Ui::WindowManager::invalidate(Ui::WindowType::vehicle, enumValue(id));
             return true;
@@ -3601,7 +3594,7 @@ namespace OpenLoco::Vehicles
 
         auto* cargoObj = ObjectManager::get<CargoObject>(cargo.type);
         const auto crushQuantity = quantityBefore > cargo.maxQty ? quantityBefore - cargo.maxQty : 0;
-        cargoTransferTimeout = calculateCargoTransferTimeout(*cargoObj, quantityBefore, loadingModifier, crushQuantity);
+        cargoTransferTimeout = calculateCargoTransferTimeout(cargoObj->cargoTransferTime, quantityBefore, loadingModifier, crushQuantity);
         cargo.qty = 0;
         updateTrainProperties();
         Ui::WindowManager::invalidate(Ui::WindowType::vehicle, enumValue(id));
@@ -3611,7 +3604,7 @@ namespace OpenLoco::Vehicles
     void VehicleHead::beginLoading()
     {
         status = Status::loading;
-        cargoTransferTimeout = 10;
+        cargoTransferTimeout = kCargoTransferStartTimeout;
 
         Vehicle train(head);
         train.cars.applyToComponents([](auto& component) { component.breakdownFlags |= BreakdownFlags::awaitingCargoTransfer; });
@@ -3831,7 +3824,7 @@ namespace OpenLoco::Vehicles
         }
         const auto normalRoom = cargo.maxQty > quantityBefore ? cargo.maxQty - quantityBefore : 0;
         const auto crushQuantity = qtyTransferred > normalRoom ? qtyTransferred - normalRoom : 0;
-        cargoTransferTimeout = calculateCargoTransferTimeout(*cargoObj, qtyTransferred, loadingModifier, crushQuantity);
+        cargoTransferTimeout = calculateCargoTransferTimeout(cargoObj->cargoTransferTime, qtyTransferred, loadingModifier, crushQuantity);
         station->updateCargoDistribution();
         const uint8_t typeAgeMap[] = { 0, 5, 3, 2, 0, 0 };
         stationCargo.age = std::min(stationCargo.age, typeAgeMap[static_cast<uint8_t>(vehicleType)]);

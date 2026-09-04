@@ -1,7 +1,9 @@
 #include "Date.h"
 #include "Objects/VehicleObject.h"
+#include "Vehicles/Vehicle.h"
 #include "Vehicles/VehiclePurchaseStats.h"
 #include <gtest/gtest.h>
+#include <limits>
 
 using namespace OpenLoco;
 using namespace OpenLoco::Vehicles;
@@ -82,6 +84,34 @@ TEST(VehiclePurchaseStatsTest, UsesSelectedCargoCapacityAcrossCompartments)
     EXPECT_EQ(calculateVehiclePurchaseStats(vehicle, 31).cargoCapacity, 50);
 }
 
+TEST(VehiclePurchaseStatsTest, CalculatesFullLoadTransferTimeAcrossCompartments)
+{
+    auto vehicle = makeVehicleObject();
+    vehicle.maxCargo[1] = 20;
+    vehicle.compatibleCargoCategories[0] = (1U << 1) | (1U << 2);
+    vehicle.compatibleCargoCategories[1] = (1U << 2) | (1U << 3);
+    vehicle.numSimultaneousCargoTypes = 2;
+
+    EXPECT_EQ(calculateFullLoadTimeTicks(vehicle, 1, 256), 64);
+    EXPECT_EQ(calculateFullLoadTimeTicks(vehicle, 2, 256), 84);
+    EXPECT_EQ(calculateFullLoadTimeTicks(vehicle, 3, 256), 34);
+    EXPECT_EQ(calculateFullLoadTimeTicks(vehicle, 4, 256), 0);
+    EXPECT_EQ(calculateFullLoadTimeTicks(vehicle, 0xFF, 256), 0);
+    EXPECT_EQ(calculateFullLoadTimeTicks(vehicle, 2, 256, true), 154);
+}
+
+TEST(VehiclePurchaseStatsTest, AccumulatesLargeCargoTransferTimeouts)
+{
+    auto vehicle = makeVehicleObject();
+    vehicle.maxCargo[0] = 255;
+    vehicle.maxCargo[1] = 255;
+    vehicle.compatibleCargoCategories[1] = 1U << 0;
+    vehicle.numSimultaneousCargoTypes = 2;
+
+    EXPECT_EQ(calculateFullLoadTimeTicks(vehicle, 0, std::numeric_limits<uint16_t>::max()), 130572);
+    EXPECT_EQ(calculateCargoTransferTimeout(std::numeric_limits<uint16_t>::max(), 255, 12), std::numeric_limits<uint16_t>::max());
+}
+
 TEST(VehiclePurchaseStatsTest, HandlesObsoleteAndNonBreakingVehicles)
 {
     CurrentYearGuard yearGuard;
@@ -110,4 +140,7 @@ TEST(VehiclePurchaseStatsTest, HandlesUnavailableRatios)
 
     EXPECT_EQ(stats.powerToWeightQ16, 0);
     EXPECT_EQ(stats.capacityPerTileQ16, 0);
+    EXPECT_EQ(calculatePowerToWeightQ16(1000, 0), 0);
+    EXPECT_EQ(calculatePowerToWeightQ16(1200, 150), 8 * kPurchaseStatFractionalScale);
+    EXPECT_EQ(purchaseStatToTenths(convertHpToKwQ16(10 * kPurchaseStatFractionalScale)), 75);
 }

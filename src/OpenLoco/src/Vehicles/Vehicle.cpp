@@ -66,6 +66,13 @@ namespace OpenLoco::Vehicles
         return crushLoading && isCrushLoadEligible(mode, cargoType) ? getCrushLoadCapacity(nominalCapacity) : nominalCapacity;
     }
 
+    uint16_t calculateCargoTransferTimeout(const uint16_t cargoTransferTime, const uint16_t quantity, const uint8_t loadingModifier, const uint16_t crushQuantity)
+    {
+        const auto transferUnits = static_cast<uint32_t>(quantity) + crushQuantity;
+        const auto timeout = static_cast<uint64_t>(cargoTransferTime) * transferUnits * loadingModifier / 256;
+        return static_cast<uint16_t>(std::min<uint64_t>(timeout, std::numeric_limits<uint16_t>::max()));
+    }
+
     VehicleBase* VehicleBase::nextVehicle()
     {
         return EntityManager::get<VehicleBase>(nextEntityId);

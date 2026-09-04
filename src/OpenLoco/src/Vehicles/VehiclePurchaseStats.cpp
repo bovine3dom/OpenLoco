@@ -2,6 +2,7 @@
 
 #include "Date.h"
 #include "Objects/VehicleObject.h"
+#include "Vehicles/Vehicle.h"
 #include "Vehicles/VehicleBogie.h"
 #include <OpenLoco/Core/Numerics.hpp>
 #include <algorithm>
@@ -45,6 +46,39 @@ namespace OpenLoco::Vehicles
         }
     }
 
+    uint32_t calculatePowerToWeightQ16(const uint32_t power, const uint32_t weight)
+    {
+        return calculateRatioQ16(power, weight);
+    }
+
+    uint32_t convertHpToKwQ16(const uint32_t valueQ16)
+    {
+        return static_cast<uint32_t>(static_cast<uint64_t>(valueQ16) * 764 / 1024);
+    }
+
+    uint32_t calculateFullLoadTimeTicks(const VehicleObject& vehicleObject, const uint8_t cargoType, const uint16_t cargoTransferTime, const bool crushLoading)
+    {
+        if (cargoType >= 32)
+        {
+            return 0;
+        }
+
+        uint32_t totalTicks = 0;
+        bool carriesCargo = false;
+        for (uint8_t compartment = 0; compartment < std::min<uint8_t>(vehicleObject.numSimultaneousCargoTypes, 2); ++compartment)
+        {
+            if ((vehicleObject.compatibleCargoCategories[compartment] & (1U << cargoType)) == 0)
+            {
+                continue;
+            }
+            carriesCargo = true;
+            const auto nominalCapacity = vehicleObject.maxCargo[compartment];
+            const auto capacity = crushLoading ? getCrushLoadCapacity(nominalCapacity) : nominalCapacity;
+            totalTicks += calculateCargoTransferTimeout(cargoTransferTime, capacity, 1, capacity - nominalCapacity);
+        }
+        return carriesCargo ? totalTicks + kCargoTransferStartTimeout + vehicleObject.numCarComponents * 3 + 1 : 0;
+    }
+
     VehiclePurchaseStats calculateVehiclePurchaseStats(const VehicleObject& vehicleObject, const std::optional<uint8_t> cargoType)
     {
         VehiclePurchaseStats stats;
@@ -52,7 +86,7 @@ namespace OpenLoco::Vehicles
         stats.reliabilityLossPerDay = calculateReliabilityLossPerDay(vehicleObject, getCurrentYear());
         if (vehicleObject.mode == TransportMode::rail || vehicleObject.mode == TransportMode::road)
         {
-            stats.powerToWeightQ16 = calculateRatioQ16(vehicleObject.power, vehicleObject.weight);
+            stats.powerToWeightQ16 = calculatePowerToWeightQ16(vehicleObject.power, vehicleObject.weight);
         }
         stats.cargoCapacity = getCargoCapacity(vehicleObject, cargoType);
         if (stats.cargoCapacity != 0)

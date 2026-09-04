@@ -89,6 +89,7 @@
 #include "Vehicles/VehicleDraw.h"
 #include "Vehicles/VehicleHead.h"
 #include "Vehicles/VehicleManager.h"
+#include "Vehicles/VehiclePurchaseStats.h"
 #include "Vehicles/VehicleReplacement.h"
 #include "Vehicles/VehicleTail.h"
 #include "ViewportManager.h"
@@ -1758,7 +1759,12 @@ namespace OpenLoco::Ui::Windows::Vehicle
 
         constexpr auto kVehicleDetailsOffset = 2;
         constexpr auto kVehicleDetailsLineHeight = 12;
-        constexpr auto kVehicleDetailsTextHeight = kVehicleDetailsOffset + kVehicleDetailsLineHeight * 3;
+
+        static int16_t getVehicleDetailsTextHeight(const Vehicles::VehicleHead& head)
+        {
+            const auto lineCount = head.mode == TransportMode::rail || head.mode == TransportMode::road ? 4 : 3;
+            return kVehicleDetailsOffset + kVehicleDetailsLineHeight * lineCount;
+        }
 
         static void alignToRightBar(Window& self, widx widget)
         {
@@ -1777,6 +1783,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
             {
                 return;
             }
+            const auto vehicleDetailsTextHeight = getVehicleDetailsTextHeight(*head);
 
             // Set title.
             {
@@ -1795,7 +1802,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
             Widget::leftAlignTabs(self, Common::widx::tabMain, Common::widx::tabRoute);
 
             self.widgets[widx::carList].right = self.width - 26;
-            self.widgets[widx::carList].bottom = self.height - kVehicleDetailsTextHeight;
+            self.widgets[widx::carList].bottom = self.height - vehicleDetailsTextHeight;
             alignToRightBar(self, widx::buildNew);
             alignToRightBar(self, widx::pickup);
             alignToRightBar(self, widx::remove);
@@ -1804,7 +1811,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
             if (isPaintToolActive(self))
             {
                 self.activatedWidgets |= (1U << widx::paintBrush);
-                self.widgets[widx::carList].bottom = self.height - kVehicleDetailsTextHeight;
+                self.widgets[widx::carList].bottom = self.height - vehicleDetailsTextHeight;
 
                 self.widgets[widx::paintColourPrimary].hidden = false;
                 self.widgets[widx::paintColourPrimary].right = self.width - 23;
@@ -1833,7 +1840,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
             }
             if (head->owner != CompanyManager::getControllingId())
             {
-                self.widgets[widx::carList].bottom = self.height - kVehicleDetailsTextHeight;
+                self.widgets[widx::carList].bottom = self.height - vehicleDetailsTextHeight;
                 self.widgets[Details::widx::paintColourPrimary].hidden = true;
                 self.widgets[Details::widx::paintColourSecondary].hidden = true;
 
@@ -1851,8 +1858,8 @@ namespace OpenLoco::Ui::Windows::Vehicle
                 self.widgets[widx::pickup].hidden = false;
                 self.widgets[widx::remove].hidden = false;
 
-                self.widgets[widx::paintBrush].bottom = self.height - kVehicleDetailsTextHeight;
-                self.widgets[widx::paintBrush].top = self.height - kVehicleDetailsTextHeight - 24;
+                self.widgets[widx::paintBrush].bottom = self.height - vehicleDetailsTextHeight;
+                self.widgets[widx::paintBrush].top = self.height - vehicleDetailsTextHeight - 24;
             }
 
             auto skin = ObjectManager::get<InterfaceSkinObject>();
@@ -2014,7 +2021,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
                 return;
             }
 
-            Ui::Point pos = { 3, self.height - kVehicleDetailsTextHeight + kVehicleDetailsOffset };
+            Ui::Point pos = { 3, self.height - getVehicleDetailsTextHeight(*head) + kVehicleDetailsOffset };
             Vehicles::Vehicle train{ *head };
 
             // Draw power and weight
@@ -2029,6 +2036,20 @@ namespace OpenLoco::Ui::Windows::Vehicle
                     str = StringIds::vehicle_details_total_power_and_weight;
                 }
                 tr.drawStringLeftClipped(pos, std::min<uint16_t>(self.width - 6, textRightEdge), Colour::black, str, args);
+            }
+
+            if (train.veh2->mode == TransportMode::rail || train.veh2->mode == TransportMode::road)
+            {
+                pos.y += kVehicleDetailsLineHeight;
+                FormatArguments args{};
+                const auto isImperial = Config::get().measurementFormat == Config::MeasurementFormat::imperial;
+                const auto imperialPowerToWeightQ16 = Vehicles::calculatePowerToWeightQ16(train.veh2->totalPower, train.veh2->totalWeight);
+                const auto powerToWeightQ16 = isImperial ? imperialPowerToWeightQ16 : Vehicles::convertHpToKwQ16(imperialPowerToWeightQ16);
+                const auto powerToWeight = Vehicles::purchaseStatToTenths(powerToWeightQ16);
+                args.push<int32_t>(powerToWeight / 10);
+                args.push<uint16_t>(powerToWeight % 10);
+                args.push(isImperial ? StringIds::unit_hp : StringIds::unit_kW);
+                tr.drawStringLeftClipped(pos, std::min<uint16_t>(self.width - 16, textRightEdge), Colour::black, StringIds::vehicle_details_power_to_weight, args);
             }
 
             // Draw max (rack rail) speed and reliability

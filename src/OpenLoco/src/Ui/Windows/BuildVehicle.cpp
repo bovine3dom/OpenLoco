@@ -44,12 +44,15 @@
 #include "Vehicles/VehiclePurchaseStats.h"
 #include "World/CompanyManager.h"
 #include <OpenLoco/Core/EnumFlags.hpp>
+#include <OpenLoco/Core/Exception.hpp>
 #include <OpenLoco/Core/Numerics.hpp>
 #include <OpenLoco/Engine/World.hpp>
 #include <OpenLoco/Math/Trigonometry.hpp>
 #include <algorithm>
+#include <cstring>
 #include <limits>
 #include <optional>
+#include <string_view>
 #include <type_traits>
 
 namespace OpenLoco::Ui::Windows::BuildVehicle
@@ -1147,7 +1150,7 @@ namespace OpenLoco::Ui::Windows::BuildVehicle
         window.flags |= WindowFlags::resizable;
 
         auto minWidth = std::max<uint16_t>(_numTrackTypeTabs * 31 + 195, 380);
-        window.setSizeBounds({ minWidth, 270 }, kMaxWindowSize);
+        window.setSizeBounds({ minWidth, 400 }, kMaxWindowSize);
 
         auto& scrollArea = window.scrollAreas[scrollIdx::vehicle_selection];
         auto& scrollWidget = window.widgets[widx::scrollview_vehicle_selection];
@@ -1496,20 +1499,56 @@ namespace OpenLoco::Ui::Windows::BuildVehicle
 
         auto vehicleObj = ObjectManager::get<VehicleObject>(self.rowHover);
         const auto purchaseStats = Vehicles::calculateVehiclePurchaseStats(*vehicleObj, getSelectedCargoType());
-        auto buffer = const_cast<char*>(StringManager::getString(StringIds::buffer_1250));
+        const auto isLandVehicle = vehicleObj->mode == TransportMode::rail || vehicleObj->mode == TransportMode::road;
+        auto* const bufferStart = const_cast<char*>(StringManager::getString(StringIds::buffer_1250));
+        auto* buffer = bufferStart;
+        const auto getRemaining = [&]() {
+            return StringManager::kTemporaryStringSize - std::min<size_t>(buffer - bufferStart, StringManager::kTemporaryStringSize);
+        };
+        const auto appendString = [&](const StringId stringId, const FormatArgumentsView args = {}) {
+            const auto remaining = getRemaining();
+            if (remaining <= 1)
+            {
+                return;
+            }
+            char formatted[StringManager::kTemporaryStringSize]{};
+            try
+            {
+                StringManager::formatString(formatted, std::size(formatted), stringId, args);
+            }
+            catch (const Exception::OverflowError&)
+            {
+                return;
+            }
+            const auto length = StringManager::locoStrlenS(formatted, remaining - 1);
+            std::memcpy(buffer, formatted, length);
+            buffer += length;
+            *buffer = '\0';
+        };
+        const auto appendText = [&](const std::string_view text) {
+            const auto remaining = getRemaining();
+            if (remaining == 0)
+            {
+                return;
+            }
+            const auto length = std::min(text.size(), remaining - 1);
+            std::memcpy(buffer, text.data(), length);
+            buffer += length;
+            *buffer = '\0';
+        };
 
         {
             auto cost = Economy::getInflationAdjustedCost(vehicleObj->costFactor, vehicleObj->costIndex, 6);
             FormatArguments args{};
             args.push(cost);
-            buffer = StringManager::formatString(buffer, StringIds::stats_cost, args);
+            appendString(StringIds::stats_cost, args);
         }
 
         {
             auto runningCost = Economy::getInflationAdjustedCost(vehicleObj->runCostFactor, vehicleObj->runCostIndex, 10);
             FormatArguments args{};
             args.push(runningCost);
-            buffer = StringManager::formatString(buffer, StringIds::stats_running_cost, args);
+            appendString(StringIds::stats_running_cost, args);
         }
 
         if (vehicleObj->designed != 0)
@@ -1519,40 +1558,37 @@ namespace OpenLoco::Ui::Windows::BuildVehicle
 
             const auto* company = CompanyManager::get(CompanyManager::getControllingId());
             auto unlocked = company->isVehicleIndexUnlocked(self.rowHover);
-            buffer = StringManager::formatString(
-                buffer,
-                unlocked ? StringIds::stats_designed : StringIds::stats_proposed_design,
-                args);
+            appendString(unlocked ? StringIds::stats_designed : StringIds::stats_proposed_design, args);
         }
 
         if (vehicleObj->obsolete != 0 && vehicleObj->obsolete != std::numeric_limits<uint16_t>::max())
         {
             FormatArguments args{};
             args.push(vehicleObj->obsolete);
-            buffer = StringManager::formatString(buffer, StringIds::stats_obsolete, args);
+            appendString(StringIds::stats_obsolete, args);
         }
 
         if (purchaseStats.reliability == 0)
         {
-            buffer = StringManager::formatString(buffer, StringIds::stats_no_breakdowns);
+            appendString(StringIds::stats_no_breakdowns);
         }
         else
         {
             FormatArguments args{};
             args.push<uint16_t>(purchaseStats.reliability / 256);
-            buffer = StringManager::formatString(buffer, StringIds::stats_reliability, args);
+            appendString(StringIds::stats_reliability, args);
         }
         {
             FormatArguments args{};
             const auto lossPerYear = Vehicles::reliabilityLossPerYearTenths(purchaseStats.reliabilityLossPerDay);
             args.push<int32_t>(lossPerYear / 10);
             args.push<uint16_t>(lossPerYear % 10);
-            buffer = StringManager::formatString(buffer, StringIds::stats_reliability_loss, args);
+            appendString(StringIds::stats_reliability_loss, args);
         }
 
-        if (vehicleObj->mode == TransportMode::rail || vehicleObj->mode == TransportMode::road)
+        if (isLandVehicle)
         {
-            buffer = StringManager::formatString(buffer, StringIds::stats_requires);
+            appendString(StringIds::stats_requires);
             auto trackName = StringIds::road;
             if (vehicleObj->mode == TransportMode::road)
             {
@@ -1566,21 +1602,20 @@ namespace OpenLoco::Ui::Windows::BuildVehicle
                 trackName = ObjectManager::get<TrackObject>(vehicleObj->trackType)->name;
             }
 
-            buffer = StringManager::formatString(buffer, trackName);
+            appendString(trackName);
 
             for (auto i = 0; i < vehicleObj->numTrackExtras; ++i)
             {
-                strcpy(buffer, " + ");
-                buffer += 3;
+                appendText(" + ");
                 if (vehicleObj->mode == TransportMode::road)
                 {
                     auto roadExtraObj = ObjectManager::get<RoadExtraObject>(vehicleObj->requiredTrackExtras[i]);
-                    buffer = StringManager::formatString(buffer, roadExtraObj->name);
+                    appendString(roadExtraObj->name);
                 }
                 else
                 {
                     auto trackExtraObj = ObjectManager::get<TrackExtraObject>(vehicleObj->requiredTrackExtras[i]);
-                    buffer = StringManager::formatString(buffer, trackExtraObj->name);
+                    appendString(trackExtraObj->name);
                 }
             }
 
@@ -1589,43 +1624,60 @@ namespace OpenLoco::Ui::Windows::BuildVehicle
                 auto trackExtraObj = ObjectManager::get<TrackExtraObject>(vehicleObj->rackRailType);
                 FormatArguments args{};
                 args.push(trackExtraObj->name);
-                buffer = StringManager::formatString(buffer, StringIds::stats_string_steep_slope, args);
+                appendString(StringIds::stats_string_steep_slope, args);
             }
         }
 
-        if (vehicleObj->power != 0)
+        if (vehicleObj->hasFlags(VehicleObjectFlags::mustHavePair))
         {
-            if (vehicleObj->mode == TransportMode::rail || vehicleObj->mode == TransportMode::road)
-            {
-                FormatArguments args{};
-                args.push(vehicleObj->power);
-                buffer = StringManager::formatString(buffer, StringIds::stats_power, args);
-            }
+            appendString(StringIds::stats_must_operate_in_pairs);
         }
-        if ((vehicleObj->mode == TransportMode::rail || vehicleObj->mode == TransportMode::road) && vehicleObj->weight != 0)
+        if (isLandVehicle && (vehicleObj->hasFlags(VehicleObjectFlags::cannotCoupleToSelf) || vehicleObj->numCompatibleVehicles != 0))
+        {
+            appendString(StringIds::stats_restricted_coupling);
+        }
+        if (isLandVehicle && vehicleObj->hasFlags(VehicleObjectFlags::canWheelslip))
+        {
+            appendString(StringIds::stats_wheel_slip);
+        }
+        if (vehicleObj->mode == TransportMode::road && vehicleObj->hasFlags(VehicleObjectFlags::anyRoadType))
+        {
+            appendString(StringIds::stats_any_road_type);
+        }
+
+        if (vehicleObj->power != 0 && isLandVehicle)
         {
             FormatArguments args{};
-            const auto powerToWeight = Vehicles::purchaseStatToTenths(purchaseStats.powerToWeightQ16);
+            args.push(vehicleObj->power);
+            appendString(StringIds::stats_power, args);
+        }
+        if (isLandVehicle && vehicleObj->weight != 0)
+        {
+            FormatArguments args{};
+            const auto isImperial = Config::get().measurementFormat == Config::MeasurementFormat::imperial;
+            const auto powerToWeightQ16 = isImperial ? purchaseStats.powerToWeightQ16 : Vehicles::convertHpToKwQ16(purchaseStats.powerToWeightQ16);
+            const auto powerToWeight = Vehicles::purchaseStatToTenths(powerToWeightQ16);
             args.push<int32_t>(powerToWeight / 10);
             args.push<uint16_t>(powerToWeight % 10);
-            buffer = StringManager::formatString(buffer, StringIds::stats_power_to_weight, args);
+            args.push(isImperial ? StringIds::unit_hp : StringIds::unit_kW);
+            appendString(StringIds::stats_power_to_weight, args);
         }
 
         {
             FormatArguments args{};
             args.push<uint32_t>(StringManager::internalLengthToComma1DP(vehicleObj->getLength()));
-            buffer = StringManager::formatString(buffer, StringIds::stats_length, args);
+            appendString(StringIds::stats_length, args);
         }
         {
             FormatArguments args{};
             args.push(vehicleObj->weight);
-            buffer = StringManager::formatString(buffer, StringIds::stats_weight, args);
+            appendString(StringIds::stats_weight, args);
         }
         {
             FormatArguments args{};
             args.setTransportMode(enumValue(vehicleObj->mode));
             args.push(vehicleObj->speed.getRaw());
-            buffer = StringManager::formatString(buffer, StringIds::stats_max_speed, args);
+            appendString(StringIds::stats_max_speed, args);
         }
         if (vehicleObj->hasFlags(VehicleObjectFlags::rackRail))
         {
@@ -1634,7 +1686,7 @@ namespace OpenLoco::Ui::Windows::BuildVehicle
             args.setTransportMode(enumValue(vehicleObj->mode));
             args.push(vehicleObj->rackSpeed);
             args.push(trackExtraObj->name);
-            buffer = StringManager::formatString(buffer, StringIds::stats_velocity_on_string, args);
+            appendString(StringIds::stats_velocity_on_string, args);
         }
 
         if (purchaseStats.capacityPerTileQ16 != 0 && purchaseStats.cargoType != 0xFF)
@@ -1647,15 +1699,13 @@ namespace OpenLoco::Ui::Windows::BuildVehicle
                 args.push<int32_t>(capacityPerTile / 10);
                 args.push<uint16_t>(capacityPerTile % 10);
                 args.push(cargoObj->name);
-                buffer = StringManager::formatString(buffer, StringIds::stats_capacity_per_tile, args);
+                appendString(StringIds::stats_capacity_per_tile, args);
             }
         }
 
-        vehicleObj->getCargoString(buffer);
-        buffer += StringManager::locoStrlen(buffer);
+        uint16_t crushCapacity = 0;
         if (purchaseStats.cargoType != 0xFF && Vehicles::isCrushLoadEligible(vehicleObj->mode, purchaseStats.cargoType))
         {
-            uint16_t crushCapacity = 0;
             for (uint8_t compartment = 0; compartment < std::min<uint8_t>(vehicleObj->numSimultaneousCargoTypes, 2); ++compartment)
             {
                 if ((vehicleObj->compatibleCargoCategories[compartment] & (1U << purchaseStats.cargoType)) != 0)
@@ -1663,13 +1713,37 @@ namespace OpenLoco::Ui::Windows::BuildVehicle
                     crushCapacity += Vehicles::getCrushLoadCapacity(vehicleObj->maxCargo[compartment]);
                 }
             }
-            if (crushCapacity > purchaseStats.cargoCapacity)
+        }
+
+        buffer = vehicleObj->getCargoString(buffer, getRemaining());
+        if (purchaseStats.cargoType != 0xFF)
+        {
+            const auto* cargoObj = ObjectManager::get<CargoObject>(purchaseStats.cargoType);
+            if (cargoObj != nullptr)
             {
-                const auto* cargoObj = ObjectManager::get<CargoObject>(purchaseStats.cargoType);
+                const auto transferTicks = Vehicles::calculateFullLoadTimeTicks(*vehicleObj, purchaseStats.cargoType, cargoObj->cargoTransferTime);
+                const auto transferTenths = (transferTicks * 10 + Engine::UpdateRateHz / 2) / Engine::UpdateRateHz;
                 FormatArguments args{};
-                args.push(crushCapacity);
                 args.push(cargoObj->name);
-                buffer = StringManager::formatString(buffer, StringIds::stats_crush_capacity, args);
+                args.push<int32_t>(transferTenths / 10);
+                args.push<uint16_t>(transferTenths % 10);
+                appendString(StringIds::stats_full_load_transfer_time, args);
+
+                if (crushCapacity > purchaseStats.cargoCapacity)
+                {
+                    FormatArguments capacityArgs{};
+                    capacityArgs.push(crushCapacity);
+                    capacityArgs.push(cargoObj->name);
+                    appendString(StringIds::stats_crush_capacity, capacityArgs);
+
+                    const auto crushTransferTicks = Vehicles::calculateFullLoadTimeTicks(*vehicleObj, purchaseStats.cargoType, cargoObj->cargoTransferTime, true);
+                    const auto crushTransferTenths = (crushTransferTicks * 10 + Engine::UpdateRateHz / 2) / Engine::UpdateRateHz;
+                    FormatArguments transferArgs{};
+                    transferArgs.push(cargoObj->name);
+                    transferArgs.push<int32_t>(crushTransferTenths / 10);
+                    transferArgs.push<uint16_t>(crushTransferTenths % 10);
+                    appendString(StringIds::stats_crush_load_transfer_time, transferArgs);
+                }
             }
         }
 

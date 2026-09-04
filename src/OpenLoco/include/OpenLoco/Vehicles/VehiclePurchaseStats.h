@@ -22,6 +22,9 @@ namespace OpenLoco::Vehicles
         uint32_t capacityPerTileQ16{};
     };
 
+    uint32_t calculatePowerToWeightQ16(uint32_t power, uint32_t weight);
+    uint32_t convertHpToKwQ16(uint32_t valueQ16);
+    uint32_t calculateFullLoadTimeTicks(const VehicleObject& vehicleObject, uint8_t cargoType, uint16_t cargoTransferTime, bool crushLoading = false);
     VehiclePurchaseStats calculateVehiclePurchaseStats(const VehicleObject& vehicleObject, std::optional<uint8_t> cargoType = std::nullopt);
 
     constexpr uint32_t purchaseStatToTenths(const uint32_t valueQ16)

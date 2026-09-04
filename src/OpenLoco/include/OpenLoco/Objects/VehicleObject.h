@@ -290,7 +290,7 @@ namespace OpenLoco
 
         void drawPreviewImage(Gfx::DrawingContext& drawingCtx, const int16_t x, const int16_t y) const;
         void drawDescription(Gfx::DrawingContext& drawingCtx, const int16_t x, const int16_t y, const int16_t width) const;
-        void getCargoString(char* buffer) const;
+        char* getCargoString(char* buffer, size_t bufferLen) const;
         bool validate() const;
         void load(const LoadedObjectHandle& handle, std::span<const std::byte> data, ObjectManager::DependentObjects* dependencies);
         void unload();

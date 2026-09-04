@@ -52,6 +52,15 @@ TEST(FormatArgumentsTests, StopsReadingAtBufferBoundary)
     EXPECT_EQ(view.pop<uint32_t>(), 0);
 }
 
+TEST(FormatArgumentsTests, TruncatesBeforeIncompleteControlCode)
+{
+    const char input[] = { static_cast<char>(ControlCodes::inlineSpriteStr), 1, 2, 3, 4, 'X', '\0' };
+
+    EXPECT_EQ(StringManager::locoStrlenS(input, 4), 0);
+    EXPECT_EQ(StringManager::locoStrlenS(input, 5), 5);
+    EXPECT_EQ(StringManager::locoStrlenS(input, 6), 6);
+}
+
 TEST(FormatArgumentsTests, RejectsInvalidGeneratedTown)
 {
     FormatArgumentsBuffer buffer;

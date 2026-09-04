@@ -13,7 +13,10 @@
 #include "Objects/ObjectStringTable.h"
 #include "Ui/WindowManager.h"
 #include "Vehicles/VehicleDraw.h"
+#include <OpenLoco/Core/Exception.hpp>
 #include <OpenLoco/Core/Numerics.hpp>
+#include <algorithm>
+#include <cstring>
 
 using namespace OpenLoco::Diagnostics;
 
@@ -191,7 +194,7 @@ namespace OpenLoco
         // Clear buffer
         *buffer = '\0';
 
-        getCargoString(buffer);
+        getCargoString(buffer, StringManager::kTemporaryStringSize);
 
         if (StringManager::locoStrlen(buffer) != 0)
         {
@@ -199,103 +202,96 @@ namespace OpenLoco
         }
     }
 
-    void VehicleObject::getCargoString(char* buffer) const
+    char* VehicleObject::getCargoString(char* buffer, const size_t bufferLen) const
     {
+        auto* const bufferStart = buffer;
+        const auto getRemaining = [&]() {
+            return bufferLen - std::min<size_t>(buffer - bufferStart, bufferLen);
+        };
+        const auto appendString = [&](const StringId stringId, const FormatArgumentsView args = {}) {
+            const auto remaining = getRemaining();
+            if (remaining <= 1)
+            {
+                return;
+            }
+            char formatted[StringManager::kTemporaryStringSize]{};
+            try
+            {
+                StringManager::formatString(formatted, std::size(formatted), stringId, args);
+            }
+            catch (const Exception::OverflowError&)
+            {
+                return;
+            }
+            const auto length = StringManager::locoStrlenS(formatted, remaining - 1);
+            std::memcpy(buffer, formatted, length);
+            buffer += length;
+            *buffer = '\0';
+        };
+        const auto appendText = [&](const std::string_view text) {
+            const auto remaining = getRemaining();
+            if (remaining == 0)
+            {
+                return;
+            }
+            const auto length = std::min(text.size(), remaining - 1);
+            std::memcpy(buffer, text.data(), length);
+            buffer += length;
+            *buffer = '\0';
+        };
+        const auto appendCompartment = [&](const uint8_t compartment, const StringId capacityString) {
+            auto cargoTypes = compatibleCargoCategories[compartment];
+            const auto defaultCargoType = Numerics::bitScanForward(cargoTypes);
+            if (defaultCargoType == -1)
+            {
+                return;
+            }
+            cargoTypes &= ~(1U << defaultCargoType);
+
+            const auto* cargoObj = ObjectManager::get<CargoObject>(defaultCargoType);
+            FormatArguments capacityArgs{};
+            capacityArgs.push(maxCargo[compartment] == 1 ? cargoObj->unitNameSingular : cargoObj->unitNamePlural);
+            capacityArgs.push<uint32_t>(maxCargo[compartment]);
+            appendString(capacityString, capacityArgs);
+
+            if (cargoTypes == 0)
+            {
+                return;
+            }
+            appendText(" (");
+            bool isFirst = true;
+            while (cargoTypes != 0)
+            {
+                const auto cargoType = Numerics::bitScanForward(cargoTypes);
+                cargoTypes &= ~(1U << cargoType);
+                if (!isFirst)
+                {
+                    appendText(" ");
+                }
+                const auto* alternativeCargoObj = ObjectManager::get<CargoObject>(cargoType);
+                FormatArguments cargoArgs{};
+                cargoArgs.push(alternativeCargoObj->name);
+                appendString(StringIds::stats_or_string, cargoArgs);
+                isFirst = false;
+            }
+            appendText(")");
+        };
+
         if (numSimultaneousCargoTypes != 0)
         {
-            {
-                auto cargoType = Numerics::bitScanForward(compatibleCargoCategories[0]);
-                if (cargoType != -1)
-                {
-                    auto primaryCargoTypes = compatibleCargoCategories[0] & ~(1 << cargoType);
-                    {
-                        auto cargoObj = ObjectManager::get<CargoObject>(cargoType);
-                        FormatArguments args{};
-                        auto cargoUnitName = cargoObj->unitNamePlural;
-                        if (maxCargo[0] == 1)
-                        {
-                            cargoUnitName = cargoObj->unitNameSingular;
-                        }
-                        args.push(cargoUnitName);
-                        args.push<uint32_t>(maxCargo[0]);
-                        buffer = StringManager::formatString(buffer, StringIds::stats_capacity, args);
-                    }
-                    cargoType = Numerics::bitScanForward(primaryCargoTypes);
-                    if (cargoType != -1)
-                    {
-                        strcpy(buffer, " (");
-                        buffer += 2;
-                        for (; cargoType != -1; cargoType = Numerics::bitScanForward(primaryCargoTypes))
-                        {
-                            primaryCargoTypes &= ~(1 << cargoType);
-                            if (buffer[-1] != '(')
-                            {
-                                strcpy(buffer, " ");
-                                buffer++;
-                            }
-
-                            auto cargoObj = ObjectManager::get<CargoObject>(cargoType);
-                            FormatArguments args{};
-                            args.push(cargoObj->name);
-                            buffer = StringManager::formatString(buffer, StringIds::stats_or_string, args);
-                            strcpy(buffer, " ");
-                            buffer++;
-                        }
-                        buffer[-1] = ')';
-                    }
-                }
-            }
+            appendCompartment(0, StringIds::stats_capacity);
 
             if (hasFlags(VehicleObjectFlags::refittable))
             {
-                buffer = StringManager::formatString(buffer, StringIds::stats_refittable);
+                appendString(StringIds::stats_refittable);
             }
 
             if (numSimultaneousCargoTypes > 1)
             {
-                auto cargoType = Numerics::bitScanForward(compatibleCargoCategories[1]);
-                if (cargoType != -1)
-                {
-                    auto secondaryCargoTypes = compatibleCargoCategories[1] & ~(1 << cargoType);
-                    {
-                        auto cargoObj = ObjectManager::get<CargoObject>(cargoType);
-                        FormatArguments args{};
-                        auto cargoUnitName = cargoObj->unitNamePlural;
-                        if (maxCargo[1] == 1)
-                        {
-                            cargoUnitName = cargoObj->unitNameSingular;
-                        }
-                        args.push(cargoUnitName);
-                        args.push<uint32_t>(maxCargo[1]);
-                        buffer = StringManager::formatString(buffer, StringIds::stats_plus_string, args);
-                    }
-
-                    cargoType = Numerics::bitScanForward(secondaryCargoTypes);
-                    if (cargoType != -1)
-                    {
-                        strcpy(buffer, " (");
-                        buffer += 2;
-                        for (; cargoType != -1; cargoType = Numerics::bitScanForward(secondaryCargoTypes))
-                        {
-                            secondaryCargoTypes &= ~(1 << cargoType);
-                            if (buffer[-1] != '(')
-                            {
-                                strcpy(buffer, " ");
-                                buffer++;
-                            }
-
-                            auto cargoObj = ObjectManager::get<CargoObject>(cargoType);
-                            FormatArguments args{};
-                            args.push(cargoObj->name);
-                            buffer = StringManager::formatString(buffer, StringIds::stats_or_string, args);
-                            strcpy(buffer, " ");
-                            buffer++;
-                        }
-                        buffer[-1] = ')';
-                    }
-                }
+                appendCompartment(1, StringIds::stats_plus_string);
             }
         }
+        return buffer;
     }
 
     // 0x004B8B23
