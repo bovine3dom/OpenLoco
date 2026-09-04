@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "Ui/CargoRouteTree.h"
 #include <OpenLoco/CargoDist/CargoDist.h>
+#include <OpenLoco/Objects/CargoObject.h>
 
 #include <algorithm>
 #include <gtest/gtest.h>
@@ -21,6 +22,28 @@ namespace
     {
         return { static_cast<ServiceId>(service), occurrence };
     }
+
+    CargoObject cargoExpiringAtSevenDays()
+    {
+        CargoObject cargo{};
+        cargo.premiumDays = 2;
+        cargo.maxNonPremiumDays = 3;
+        cargo.nonPremiumRate = 10000;
+        cargo.penaltyRate = 20000;
+        cargo.paymentFactor = 100;
+        return cargo;
+    }
+}
+
+TEST(CargoPayment, PaymentFactorDecaysToZero)
+{
+    const auto cargo = cargoExpiringAtSevenDays();
+
+    EXPECT_EQ(cargo.getPaymentFactor(2), 100);
+    EXPECT_EQ(cargo.getPaymentFactor(3), 84);
+    EXPECT_EQ(cargo.getPaymentFactor(5), 54);
+    EXPECT_EQ(cargo.getPaymentFactor(6), 23);
+    EXPECT_EQ(cargo.getPaymentFactor(7), 0);
 }
 
 TEST(CargoDistPackets, AppendsAndCoalescesMatchingPackets)
@@ -115,16 +138,17 @@ TEST(CargoDistPackets, RatingLossRemovesTripKindsInPacketOrder)
     EXPECT_EQ(packets.quantity(), 3);
 }
 
-TEST(CargoDistPackets, RemovesExpiredJourneys)
+TEST(CargoDistPackets, RemovesJourneysWithNoRemainingPayment)
 {
+    const auto cargo = cargoExpiringAtSevenDays();
     PacketList packets;
-    packets.append({ 5, station(1), station(2), std::numeric_limits<uint8_t>::max() - 1 });
-    packets.append({ 7, station(1), station(2), std::numeric_limits<uint8_t>::max() });
-    auto returning = CargoPacket{ 9, station(2), station(1), std::numeric_limits<uint8_t>::max() };
+    packets.append({ 5, station(1), station(2), 6 });
+    packets.append({ 7, station(1), station(2), 7 });
+    auto returning = CargoPacket{ 9, station(2), station(1), 7 };
     returning.tripKind = PassengerTripKind::holidayReturn;
     packets.append(returning);
 
-    EXPECT_EQ(packets.removeExpired(), 16);
+    EXPECT_EQ(packets.removeUnpayable(cargo), 16);
     ASSERT_EQ(packets.size(), 1);
     EXPECT_EQ(packets.quantity(), 5);
 }
@@ -327,17 +351,18 @@ TEST(CargoDistPackets, RepresentativeOriginUsesLargestQuantityThenLowestId)
     EXPECT_EQ(packets.representativeOrigin(), station(2));
 }
 
-TEST(CargoDistPackets, AgesAndExpiresOnlyTransferredCargoAtStation)
+TEST(CargoDistPackets, AgesAndExpiresOriginAndTransferredCargoAtStation)
 {
+    const auto cargo = cargoExpiringAtSevenDays();
     PacketList packets;
     packets.append({ 10, station(1), station(2), 0 });
-    packets.append({ 10, station(3), station(2), 254 });
-    packets.ageAtStation(station(1));
+    packets.append({ 10, station(1), station(2), 6 });
+    packets.append({ 10, station(3), station(2), 6 });
+    packets.ageAtStation();
 
-    EXPECT_EQ(packets.packets()[0].age, 0);
-    EXPECT_EQ(packets.packets()[1].age, 255);
-    EXPECT_EQ(packets.removeExpired(), 10);
+    EXPECT_EQ(packets.removeUnpayable(cargo), 20);
     ASSERT_EQ(packets.size(), 1);
+    EXPECT_EQ(packets.packets().front().age, 1);
     EXPECT_EQ(packets.packets().front().origin, station(1));
 }
 

@@ -2502,8 +2502,9 @@ namespace OpenLoco::CargoDist
             return;
         }
         const auto transferCreditBeforeUpdate = totalTransferCredit(*packets);
-        packets->ageAtStation(station);
-        bool changed = isTownCargo(cargo) && packets->removeExpired() != 0;
+        packets->ageAtStation();
+        const auto* cargoObject = ObjectManager::get<CargoObject>(cargo);
+        bool changed = cargoObject != nullptr && packets->removeUnpayable(*cargoObject) != 0;
         if (nativeCargo.quantity < quantityBeforeUpdate)
         {
             changed |= packets->removeForRating(quantityBeforeUpdate - nativeCargo.quantity) != 0;

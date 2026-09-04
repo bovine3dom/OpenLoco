@@ -12,6 +12,11 @@
 #include <span>
 #include <vector>
 
+namespace OpenLoco
+{
+    struct CargoObject;
+}
+
 namespace OpenLoco::CargoDist
 {
     inline constexpr int64_t kFlowCursorScale = 1024;
@@ -81,10 +86,10 @@ namespace OpenLoco::CargoDist
         PacketList takeForJourney(StationId destination, StationId nextHop, ServicePoint departure, uint32_t quantity);
         uint32_t remove(uint32_t quantity);
         uint32_t removeForRating(uint32_t quantity);
-        uint32_t removeExpired();
+        uint32_t removeUnpayable(const CargoObject& cargoObject);
         void removeStationReferences(StationId station);
         void removeServiceReferences(ServiceId service, bool preserveNextHop = false);
-        void ageAtStation(StationId station);
+        void ageAtStation();
         void ageInVehicle();
 
     private:

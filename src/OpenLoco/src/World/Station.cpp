@@ -758,8 +758,11 @@ namespace OpenLoco
             updateCargoDistribution();
             return;
         }
+        const auto previousQuantity = stationCargoStat.quantity;
         stationCargoStat.quantity = Math::Bound::add(stationCargoStat.quantity, cargoQuantity);
-        stationCargoStat.enrouteAge = 0;
+        stationCargoStat.enrouteAge = stationCargoStat.quantity == 0
+            ? 0
+            : static_cast<uint32_t>(stationCargoStat.enrouteAge) * previousQuantity / stationCargoStat.quantity;
         stationCargoStat.origin = id();
         updateCargoDistribution();
     }
@@ -814,17 +817,16 @@ namespace OpenLoco
             const auto quantityBeforeUpdate = stationCargo.quantity;
             if (!stationCargo.empty())
             {
-                if (stationCargo.quantity != 0 && stationCargo.origin != id())
+                if (stationCargo.quantity != 0)
                 {
                     stationCargo.enrouteAge = std::min(stationCargo.enrouteAge + 1, 255);
                 }
                 else
                 {
-                    // Change from vanilla to deal with the cargo transfer bug:
-                    // Reset en-route age once the station cargo gets cleared
-                    // or else the age keeps increasing
                     stationCargo.enrouteAge = 0;
                 }
+                const auto isCargoDistEnabled = CargoDist::isEnabled(i);
+                const auto* cargoObject = ObjectManager::get<CargoObject>(i);
                 stationCargo.age = std::min(stationCargo.age + 1, 255);
 
                 auto targetRating = calculateCargoRating(stationCargo);
@@ -858,9 +860,15 @@ namespace OpenLoco
                         quantityUpdated = true;
                     }
                 }
-                if (CargoDist::isEnabled(i))
+                if (isCargoDistEnabled)
                 {
                     CargoDist::updateStationCargoDaily(id(), i, stationCargo, quantityBeforeUpdate);
+                }
+                else if (stationCargo.quantity != 0 && cargoObject != nullptr && cargoObject->getPaymentFactor(stationCargo.enrouteAge) == 0)
+                {
+                    stationCargo.quantity = 0;
+                    stationCargo.enrouteAge = 0;
+                    quantityUpdated = true;
                 }
             }
         }

@@ -2,6 +2,7 @@
 #include <OpenLoco/CargoDist/Simulation.h>
 
 #include "CargoDist/FlowAnalytics.h"
+#include "Objects/CargoObject.h"
 
 #include <algorithm>
 #include <cassert>
@@ -497,10 +498,10 @@ namespace OpenLoco::CargoDist
         return removed;
     }
 
-    uint32_t PacketList::removeExpired()
+    uint32_t PacketList::removeUnpayable(const CargoObject& cargoObject)
     {
         const auto before = quantity();
-        std::erase_if(_packets, [](const auto& packet) { return packet.age == std::numeric_limits<uint8_t>::max(); });
+        std::erase_if(_packets, [&](const auto& packet) { return cargoObject.getPaymentFactor(packet.age) == 0; });
         return before - quantity();
     }
 
@@ -561,11 +562,11 @@ namespace OpenLoco::CargoDist
         canonicalise();
     }
 
-    void PacketList::ageAtStation(StationId station)
+    void PacketList::ageAtStation()
     {
         for (auto& packet : _packets)
         {
-            if (packet.origin != station && packet.age != std::numeric_limits<uint8_t>::max())
+            if (packet.age != std::numeric_limits<uint8_t>::max())
             {
                 ++packet.age;
             }

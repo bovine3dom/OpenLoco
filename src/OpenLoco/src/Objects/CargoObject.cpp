@@ -3,6 +3,7 @@
 #include "Objects/ObjectManager.h"
 #include "Objects/ObjectStringTable.h"
 
+#include <algorithm>
 #include <cassert>
 
 namespace OpenLoco
@@ -19,6 +20,26 @@ namespace OpenLoco
             return false;
         }
         return true;
+    }
+
+    uint16_t CargoObject::getPaymentFactor(const uint16_t numDays) const
+    {
+        auto adjustedPaymentFactor = static_cast<int64_t>(paymentFactor) << 16;
+        const auto reducePaymentFactor = [&](const int32_t percentage) {
+            adjustedPaymentFactor = std::max<int64_t>(0, adjustedPaymentFactor - static_cast<int64_t>(paymentFactor) * percentage);
+        };
+
+        const auto nonPremiumDays = static_cast<int32_t>(numDays) - premiumDays;
+        if (nonPremiumDays > 0)
+        {
+            reducePaymentFactor(nonPremiumRate * std::min<int32_t>(nonPremiumDays, maxNonPremiumDays));
+            const auto penaltyDays = std::min(255, nonPremiumDays - maxNonPremiumDays);
+            if (penaltyDays > 0)
+            {
+                reducePaymentFactor(penaltyRate * penaltyDays);
+            }
+        }
+        return static_cast<uint16_t>(adjustedPaymentFactor >> 16);
     }
 
     // 0x0042F4D0

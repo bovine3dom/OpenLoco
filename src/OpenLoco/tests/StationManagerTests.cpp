@@ -4,6 +4,7 @@
 #include "Map/TileManager.h"
 #include "World/Station.h"
 #include "World/StationManager.h"
+#include <OpenLoco/CargoDist/CargoDist.h>
 #include <gtest/gtest.h>
 
 using namespace OpenLoco;
@@ -26,6 +27,7 @@ namespace
 
         void SetUp() override
         {
+            CargoDist::reset();
             TileManager::initialise();
             resetStations();
             setCatchmentDisplay(nullptr, CatchmentFlags::flag_0);
@@ -47,6 +49,7 @@ namespace
 
         void TearDown() override
         {
+            CargoDist::reset();
             setCatchmentDisplay(nullptr, CatchmentFlags::flag_0);
             setCatchmentDisplay(nullptr, CatchmentFlags::flag_1);
             resetStations();
@@ -126,6 +129,37 @@ TEST_F(StationManagerTest, CatchmentRegionsRemainSparseAndFlagsIndependent)
     setCatchmentDisplay(nullptr, CatchmentFlags::flag_0);
     EXPECT_FALSE(isWithinCatchmentDisplay(toWorldSpace(firstDisplayTile)));
     EXPECT_FALSE(isWithinCatchmentDisplay(toWorldSpace(secondDisplayTile)));
+}
+
+TEST_F(StationManagerTest, OriginCargoAccumulatesPaymentAge)
+{
+    auto& station = getGameState().stations[enumValue(kStationId)];
+    station.stationTileSize = 0;
+    auto& cargo = station.cargoStats[0];
+    cargo.quantity = 10;
+    cargo.origin = kStationId;
+    cargo.enrouteAge = 4;
+    cargo.rating = 200;
+
+    station.updateCargo();
+
+    EXPECT_EQ(cargo.quantity, 10);
+    EXPECT_EQ(cargo.enrouteAge, 5);
+}
+
+TEST_F(StationManagerTest, ProducedCargoPreservesWeightedPaymentAge)
+{
+    auto& station = getGameState().stations[enumValue(kStationId)];
+    station.stationTileSize = 0;
+    auto& cargo = station.cargoStats[0];
+    cargo.quantity = 10;
+    cargo.origin = kStationId;
+    cargo.enrouteAge = 6;
+
+    station.deliverCargoToStation(0, 10, false);
+
+    EXPECT_EQ(cargo.quantity, 20);
+    EXPECT_EQ(cargo.enrouteAge, 3);
 }
 
 TEST(StationCatchmentEstimate, CalculatesExpectedMonthlyBuildingProduction)

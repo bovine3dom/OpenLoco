@@ -73,6 +73,7 @@ namespace OpenLoco
         bool validate() const;
         void load(const LoadedObjectHandle& handle, std::span<const std::byte> data, ObjectManager::DependentObjects*);
         void unload();
+        uint16_t getPaymentFactor(uint16_t numDays) const;
 
         constexpr bool hasFlags(CargoObjectFlags flagsToTest) const
         {
