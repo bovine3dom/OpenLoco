@@ -1646,7 +1646,7 @@ namespace OpenLoco::Ui::Windows::BuildVehicle
                 const auto capacityPerTile = Vehicles::purchaseStatToTenths(purchaseStats.capacityPerTileQ16);
                 args.push<int32_t>(capacityPerTile / 10);
                 args.push<uint16_t>(capacityPerTile % 10);
-                args.push(cargoObj->unitNamePlural);
+                args.push(cargoObj->name);
                 buffer = StringManager::formatString(buffer, StringIds::stats_capacity_per_tile, args);
             }
         }
