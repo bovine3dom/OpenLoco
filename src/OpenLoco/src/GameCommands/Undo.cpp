@@ -591,6 +591,7 @@ namespace OpenLoco::GameCommands::Undo
                 {
                     for (auto& entry : service.entries)
                     {
+                        entry.lastDispatchClaimedMinute.reset();
                         if (entry.dispatch.has_value())
                         {
                             entry.dispatch->lastClaimedMinute.reset();
@@ -983,6 +984,7 @@ namespace OpenLoco::GameCommands::Undo
             const auto clearClaims = [](auto& service) {
                 for (auto& entry : service.entries)
                 {
+                    entry.lastDispatchClaimedMinute.reset();
                     if (entry.dispatch.has_value())
                     {
                         entry.dispatch->lastClaimedMinute.reset();
@@ -996,6 +998,7 @@ namespace OpenLoco::GameCommands::Undo
             };
 
             std::vector<Vehicles::TimetableManager::ServiceId> unchangedServices;
+            std::vector<Vehicles::TimetableManager::ServiceId> changedServices;
             if (timetable.ticksPerMinute == after.ticksPerMinute)
             {
                 for (auto& service : timetable.services)
@@ -1005,18 +1008,33 @@ namespace OpenLoco::GameCommands::Undo
                     if (afterService == after.services.end() || currentService == current.services.end()
                         || !sameDefinition(service, *afterService) || !sameDefinition(*afterService, *currentService))
                     {
+                        if (afterService == after.services.end() || currentService == current.services.end())
+                        {
+                            continue;
+                        }
                         clearClaims(service);
-                        continue;
+                        changedServices.push_back(service.id);
+                    }
+                    else
+                    {
+                        unchangedServices.push_back(service.id);
                     }
                     for (auto& entry : service.entries)
                     {
                         const auto currentEntry = std::ranges::find(currentService->entries, entry.id, &Vehicles::TimetableManager::TimetableEntry::id);
-                        if (entry.dispatch.has_value() && currentEntry != currentService->entries.end())
+                        if (entry.orderType != Vehicles::OrderType::StopAt || currentEntry == currentService->entries.end())
                         {
-                            entry.dispatch->lastClaimedMinute = currentEntry->dispatch->lastClaimedMinute;
+                            continue;
+                        }
+                        const auto currentWatermark = currentEntry->dispatch.has_value()
+                            ? currentEntry->dispatch->lastClaimedMinute
+                            : currentEntry->lastDispatchClaimedMinute;
+                        auto& watermark = entry.dispatch.has_value() ? entry.dispatch->lastClaimedMinute : entry.lastDispatchClaimedMinute;
+                        if (currentWatermark.has_value() && (!watermark.has_value() || *watermark < *currentWatermark))
+                        {
+                            watermark = currentWatermark;
                         }
                     }
-                    unchangedServices.push_back(service.id);
                 }
             }
             else
@@ -1033,10 +1051,48 @@ namespace OpenLoco::GameCommands::Undo
                 const auto beforeAssignment = std::ranges::find(timetable.assignments, runtime.vehicle, &Vehicles::TimetableManager::VehicleAssignment::vehicle);
                 const auto afterAssignment = std::ranges::find(after.assignments, runtime.vehicle, &Vehicles::TimetableManager::VehicleAssignment::vehicle);
                 if (beforeAssignment != timetable.assignments.end() && afterAssignment != after.assignments.end()
-                    && beforeAssignment->service == afterAssignment->service
-                    && std::ranges::find(unchangedServices, runtime.service) != unchangedServices.end())
+                    && beforeAssignment->service == afterAssignment->service)
                 {
-                    timetable.vehicles.push_back(runtime);
+                    if (std::ranges::find(unchangedServices, runtime.service) != unchangedServices.end())
+                    {
+                        timetable.vehicles.push_back(runtime);
+                        continue;
+                    }
+                    if (std::ranges::find(changedServices, runtime.service) == changedServices.end())
+                    {
+                        continue;
+                    }
+
+                    const auto targetService = std::ranges::find(timetable.services, runtime.service, &Vehicles::TimetableManager::Service::id);
+                    const auto currentService = std::ranges::find(current.services, runtime.service, &Vehicles::TimetableManager::Service::id);
+                    if (targetService == timetable.services.end() || currentService == current.services.end())
+                    {
+                        continue;
+                    }
+                    const auto targetEntry = std::ranges::find(targetService->entries, runtime.currentEntry, &Vehicles::TimetableManager::TimetableEntry::id);
+                    const auto currentEntry = std::ranges::find(currentService->entries, runtime.currentEntry, &Vehicles::TimetableManager::TimetableEntry::id);
+                    if (targetEntry == targetService->entries.end() || targetEntry->orderType != Vehicles::OrderType::StopAt
+                        || currentEntry == currentService->entries.end() || currentEntry->orderType != Vehicles::OrderType::StopAt)
+                    {
+                        continue;
+                    }
+                    if (!runtime.atTimedStop || !runtime.departureCommitted)
+                    {
+                        continue;
+                    }
+
+                    auto migratedRuntime = runtime;
+                    migratedRuntime.serviceRevision = targetService->revision;
+                    migratedRuntime.departureCommitted = true;
+                    timetable.vehicles.push_back(migratedRuntime);
+                    if (migratedRuntime.assignedSlotMinute.has_value())
+                    {
+                        auto& watermark = targetEntry->dispatch.has_value() ? targetEntry->dispatch->lastClaimedMinute : targetEntry->lastDispatchClaimedMinute;
+                        if (!watermark.has_value() || *watermark < *migratedRuntime.assignedSlotMinute)
+                        {
+                            watermark = migratedRuntime.assignedSlotMinute;
+                        }
+                    }
                 }
             }
             timetableRestored = Vehicles::TimetableManager::restoreState(timetable);

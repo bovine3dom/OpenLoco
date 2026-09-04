@@ -63,15 +63,21 @@ namespace OpenLoco::Vehicles::TimetableManager
                 {
                     return false;
                 }
-                const auto residue = static_cast<uint32_t>(*pattern.lastClaimedMinute % pattern.periodMinutes);
-                if (std::ranges::none_of(pattern.slots, [&](const uint32_t slot) {
-                        return (pattern.phaseMinutes + slot) % pattern.periodMinutes == residue;
-                    }))
-                {
-                    return false;
-                }
             }
             return true;
+        }
+
+        bool isValidClaimedMinute(const std::optional<int64_t>& minute)
+        {
+            return !minute.has_value() || (*minute >= 0 && *minute != std::numeric_limits<int64_t>::max());
+        }
+
+        void mergeClaimedMinute(std::optional<int64_t>& watermark, const std::optional<int64_t>& claimedMinute)
+        {
+            if (claimedMinute.has_value() && (!watermark.has_value() || *watermark < *claimedMinute))
+            {
+                watermark = claimedMinute;
+            }
         }
 
         int64_t firstOccurrenceAtOrAfter(const uint32_t residue, const uint32_t period, const int64_t minimum)
@@ -109,7 +115,8 @@ namespace OpenLoco::Vehicles::TimetableManager
                     || (entry.orderType != OrderType::StopAt && (entry.dwellMinutes.has_value() || entry.dispatch.has_value()))
                     || (entry.travelMinutes.has_value() && *entry.travelMinutes > kMaxPeriodMinutes)
                     || (entry.dwellMinutes.has_value() && *entry.dwellMinutes > kMaxPeriodMinutes)
-                    || (entry.dispatch.has_value() && !isValidDispatchPattern(*entry.dispatch)))
+                    || (entry.dispatch.has_value() && !isValidDispatchPattern(*entry.dispatch))
+                    || (entry.lastDispatchClaimedMinute.has_value() && (entry.orderType != OrderType::StopAt || entry.dispatch.has_value() || !isValidClaimedMinute(entry.lastDispatchClaimedMinute))))
                 {
                     return false;
                 }
@@ -194,17 +201,82 @@ namespace OpenLoco::Vehicles::TimetableManager
             }
         }
 
-        bool updateService(const EntityId vehicle, auto&& update)
+        bool hasCommittedDeparture(const Service& service, const VehicleRuntime& runtime)
         {
-            auto* service = getServiceForVehicle(vehicle);
-            if (service == nullptr || !update(*service))
+            if (runtime.service != service.id || runtime.serviceRevision != service.revision || !runtime.atTimedStop || !runtime.departureCommitted)
             {
                 return false;
             }
+            const auto entry = std::ranges::find(service.entries, runtime.currentEntry, &TimetableEntry::id);
+            if (entry == service.entries.end() || entry->orderType != OrderType::StopAt)
+            {
+                return false;
+            }
+            return true;
+        }
+
+        bool updateService(const EntityId vehicle, auto&& update)
+        {
+            auto* service = getServiceForVehicle(vehicle);
+            if (service == nullptr)
+            {
+                return false;
+            }
+            const auto previousService = *service;
+            std::vector<VehicleRuntime> committedDepartures;
+            for (const auto assignedVehicle : getAssignedVehicles(service->id))
+            {
+                const auto* runtime = getVehicleRuntime(assignedVehicle);
+                if (runtime != nullptr && hasCommittedDeparture(previousService, *runtime))
+                {
+                    committedDepartures.push_back(*runtime);
+                }
+            }
+            if (!update(*service))
+            {
+                return false;
+            }
+
             ++service->revision;
             std::erase_if(_cycleAnchors, [id = service->id](const auto& item) { return item.service == id; });
             std::erase_if(_cycleSamples, [id = service->id](const auto& item) { return item.service == id; });
             resetServiceRuntime(service->id);
+
+            for (auto& entry : service->entries)
+            {
+                const auto previousEntry = std::ranges::find(previousService.entries, entry.id, &TimetableEntry::id);
+                if (previousEntry == previousService.entries.end() || entry.orderType != OrderType::StopAt)
+                {
+                    entry.lastDispatchClaimedMinute.reset();
+                    continue;
+                }
+                const auto previousWatermark = previousEntry->dispatch.has_value()
+                    ? previousEntry->dispatch->lastClaimedMinute
+                    : previousEntry->lastDispatchClaimedMinute;
+                auto& watermark = entry.dispatch.has_value() ? entry.dispatch->lastClaimedMinute : entry.lastDispatchClaimedMinute;
+                mergeClaimedMinute(watermark, previousWatermark);
+                if (entry.dispatch.has_value())
+                {
+                    mergeClaimedMinute(watermark, entry.lastDispatchClaimedMinute);
+                    entry.lastDispatchClaimedMinute.reset();
+                }
+            }
+            for (auto runtime : committedDepartures)
+            {
+                const auto entry = std::ranges::find(service->entries, runtime.currentEntry, &TimetableEntry::id);
+                if (entry == service->entries.end() || entry->orderType != OrderType::StopAt)
+                {
+                    continue;
+                }
+                runtime.serviceRevision = service->revision;
+                runtime.departureCommitted = true;
+                _vehicleRuntime[enumValue(runtime.vehicle)] = runtime;
+                if (runtime.assignedSlotMinute.has_value())
+                {
+                    auto& watermark = entry->dispatch.has_value() ? entry->dispatch->lastClaimedMinute : entry->lastDispatchClaimedMinute;
+                    mergeClaimedMinute(watermark, runtime.assignedSlotMinute);
+                }
+            }
             return true;
         }
 
@@ -354,6 +426,8 @@ namespace OpenLoco::Vehicles::TimetableManager
             runtime.atTimedStop = false;
             runtime.released = false;
             runtime.waiting = false;
+            runtime.departureCommitted = false;
+            runtime.supplementalBoardingClosed = false;
             runtime.assignedSlotMinute.reset();
             if (next->travelMinutes.has_value())
             {
@@ -586,6 +660,7 @@ namespace OpenLoco::Vehicles::TimetableManager
         for (auto& entry : clone->entries)
         {
             entry.id = allocateEntryId();
+            entry.lastDispatchClaimedMinute.reset();
             if (entry.id == kInvalidEntryId)
             {
                 removeService(id);
@@ -691,8 +766,8 @@ namespace OpenLoco::Vehicles::TimetableManager
             if (memberHead == nullptr || memberHead->hasUnbunchingOrder()
                 || !SharedOrderManager::areOrdersEqual(*head, *memberHead)
                 || (memberHead->sizeOfOrderTable == sizeof(OrderEnd)
-                    ? memberHead->currentOrder != 0
-                    : !OrderManager::isOrderOffsetValid(*memberHead, memberHead->currentOrder, false)))
+                        ? memberHead->currentOrder != 0
+                        : !OrderManager::isOrderOffsetValid(*memberHead, memberHead->currentOrder, false)))
             {
                 return false;
             }
@@ -1189,6 +1264,8 @@ namespace OpenLoco::Vehicles::TimetableManager
         runtime->assignedSlotMinute.reset();
         runtime->released = false;
         runtime->waiting = false;
+        runtime->departureCommitted = false;
+        runtime->supplementalBoardingClosed = false;
         runtime->atTimedStop = entry->orderType == OrderType::StopAt;
         if (!runtime->atTimedStop)
         {
@@ -1197,27 +1274,27 @@ namespace OpenLoco::Vehicles::TimetableManager
         return true;
     }
 
-    bool isWaitingForDeparture(const EntityId vehicle)
+    std::optional<uint64_t> prepareDeparture(const EntityId vehicle)
     {
         auto* service = getServiceForVehicle(vehicle);
         auto* runtime = getVehicleRuntime(vehicle);
         if (service == nullptr || runtime == nullptr || runtime->service != service->id
-            || runtime->serviceRevision != service->revision || !runtime->atTimedStop || runtime->released)
+            || runtime->serviceRevision != service->revision || !runtime->atTimedStop)
         {
-            return false;
+            return std::nullopt;
         }
 
         const auto entry = std::ranges::find(service->entries, runtime->currentEntry, &TimetableEntry::id);
         if (entry == service->entries.end() || entry->orderType != OrderType::StopAt)
         {
             clearVehicleRuntime(vehicle);
-            return false;
+            return std::nullopt;
         }
         if (hasDispatchSlots(*entry))
         {
             recordDispatchReady(vehicle, *service, *entry, std::max(_clockTicks, runtime->scheduledDepartureTick));
         }
-        if (entry->dispatch.has_value() && !entry->dispatch->slots.empty() && !runtime->assignedSlotMinute.has_value())
+        if (!runtime->departureCommitted && entry->dispatch.has_value() && !entry->dispatch->slots.empty() && !runtime->assignedSlotMinute.has_value())
         {
             const auto dwellPending = _clockTicks < runtime->scheduledDepartureTick;
             const auto earliestTick = std::max(_clockTicks, runtime->scheduledDepartureTick);
@@ -1233,7 +1310,8 @@ namespace OpenLoco::Vehicles::TimetableManager
             if (!claim.has_value())
             {
                 runtime->waiting = true;
-                return true;
+                runtime->released = false;
+                return std::nullopt;
             }
             entry->dispatch->lastClaimedMinute = claim->scheduledMinute;
             runtime->assignedSlotMinute = claim->scheduledMinute;
@@ -1242,22 +1320,48 @@ namespace OpenLoco::Vehicles::TimetableManager
                 ? slotTick
                 : std::max(runtime->scheduledDepartureTick, slotTick);
         }
+        runtime->departureCommitted = true;
 
         if (_clockTicks < runtime->scheduledDepartureTick)
         {
             runtime->waiting = true;
-            return true;
+            runtime->released = false;
+            return runtime->scheduledDepartureTick;
         }
         runtime->latenessTicks = tickDifference(_clockTicks, runtime->scheduledDepartureTick);
         runtime->released = true;
         runtime->waiting = false;
-        return false;
+        return runtime->scheduledDepartureTick;
+    }
+
+    bool isWaitingForDeparture(const EntityId vehicle)
+    {
+        prepareDeparture(vehicle);
+        const auto* service = getServiceForVehicle(vehicle);
+        const auto* runtime = getVehicleRuntime(vehicle);
+        return service != nullptr && runtime != nullptr && runtime->service == service->id
+            && runtime->serviceRevision == service->revision && runtime->atTimedStop && runtime->waiting && !runtime->released;
     }
 
     bool isWaitingAtTimedStop(const EntityId vehicle)
     {
         const auto* runtime = getVehicleRuntime(vehicle);
         return runtime != nullptr && runtime->atTimedStop && runtime->waiting && !runtime->released;
+    }
+
+    bool isSupplementalBoardingClosed(const EntityId vehicle)
+    {
+        const auto* runtime = getVehicleRuntime(vehicle);
+        return runtime != nullptr && runtime->atTimedStop && runtime->supplementalBoardingClosed;
+    }
+
+    void closeSupplementalBoarding(const EntityId vehicle)
+    {
+        auto* runtime = getVehicleRuntime(vehicle);
+        if (runtime != nullptr && runtime->atTimedStop && runtime->waiting && !runtime->released)
+        {
+            runtime->supplementalBoardingClosed = true;
+        }
     }
 
     void departFromOrder(const EntityId vehicle)
@@ -1399,6 +1503,7 @@ namespace OpenLoco::Vehicles::TimetableManager
         }
         for (auto& entry : service->entries)
         {
+            entry.lastDispatchClaimedMinute.reset();
             if (entry.dispatch.has_value())
             {
                 entry.dispatch->lastClaimedMinute.reset();
@@ -1419,6 +1524,8 @@ namespace OpenLoco::Vehicles::TimetableManager
                 runtime->assignedSlotMinute.reset();
                 runtime->released = false;
                 runtime->waiting = false;
+                runtime->departureCommitted = false;
+                runtime->supplementalBoardingClosed = false;
             }
             else
             {
@@ -1520,30 +1627,22 @@ namespace OpenLoco::Vehicles::TimetableManager
             const auto entry = std::ranges::find(service->entries, runtime.currentEntry, &TimetableEntry::id);
             if (runtime.currentEntry == kInvalidEntryId)
             {
-                if (runtime.timetableStarted || runtime.atTimedStop || runtime.released || runtime.waiting || runtime.assignedSlotMinute.has_value())
+                if (runtime.timetableStarted || runtime.atTimedStop || runtime.released || runtime.waiting || runtime.departureCommitted
+                    || runtime.supplementalBoardingClosed || runtime.assignedSlotMinute.has_value())
                 {
                     return false;
                 }
             }
-            else if (entry == service->entries.end()
-                || (runtime.atTimedStop && (entry->orderType != OrderType::StopAt || !runtime.timetableStarted))
-                || (!runtime.atTimedStop && (runtime.released || runtime.waiting || runtime.assignedSlotMinute.has_value()))
-                || (runtime.released && runtime.waiting))
+            else if (entry == service->entries.end() || (runtime.atTimedStop && (entry->orderType != OrderType::StopAt || !runtime.timetableStarted)) || (!runtime.atTimedStop && (runtime.released || runtime.waiting || runtime.departureCommitted || runtime.supplementalBoardingClosed || runtime.assignedSlotMinute.has_value())) || (runtime.released && runtime.waiting) || (runtime.departureCommitted && !runtime.waiting && !runtime.released) || (runtime.supplementalBoardingClosed && !runtime.departureCommitted))
             {
                 return false;
             }
             if (runtime.assignedSlotMinute.has_value())
             {
                 const auto& dispatch = entry->dispatch;
-                if (!dispatch.has_value() || !dispatch->lastClaimedMinute.has_value()
-                    || *runtime.assignedSlotMinute > *dispatch->lastClaimedMinute || *runtime.assignedSlotMinute < 0)
-                {
-                    return false;
-                }
-                const auto residue = static_cast<uint32_t>(*runtime.assignedSlotMinute % dispatch->periodMinutes);
-                if (std::ranges::none_of(dispatch->slots, [&](const uint32_t slot) {
-                        return (dispatch->phaseMinutes + slot) % dispatch->periodMinutes == residue;
-                    }))
+                const auto watermark = dispatch.has_value() ? dispatch->lastClaimedMinute : entry->lastDispatchClaimedMinute;
+                if (*runtime.assignedSlotMinute < 0 || !runtime.departureCommitted
+                    || !watermark.has_value() || *runtime.assignedSlotMinute > *watermark)
                 {
                     return false;
                 }

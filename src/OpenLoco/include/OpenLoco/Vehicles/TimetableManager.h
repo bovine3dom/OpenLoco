@@ -50,6 +50,7 @@ namespace OpenLoco::Vehicles::TimetableManager
         std::optional<uint32_t> travelMinutes;
         std::optional<uint32_t> dwellMinutes;
         std::optional<DispatchPattern> dispatch;
+        std::optional<int64_t> lastDispatchClaimedMinute;
 
         bool operator==(const TimetableEntry&) const = default;
     };
@@ -85,6 +86,8 @@ namespace OpenLoco::Vehicles::TimetableManager
         bool atTimedStop{};
         bool released{};
         bool waiting{};
+        bool departureCommitted{};
+        bool supplementalBoardingClosed{};
 
         bool operator==(const VehicleRuntime&) const = default;
     };
@@ -188,8 +191,11 @@ namespace OpenLoco::Vehicles::TimetableManager
     bool onOrdersReversed(EntityId vehicle, uint8_t orderCount);
 
     bool arriveAtOrder(EntityId vehicle, uint8_t orderIndex);
+    std::optional<uint64_t> prepareDeparture(EntityId vehicle);
     bool isWaitingForDeparture(EntityId vehicle);
     bool isWaitingAtTimedStop(EntityId vehicle);
+    bool isSupplementalBoardingClosed(EntityId vehicle);
+    void closeSupplementalBoarding(EntityId vehicle);
     void departFromOrder(EntityId vehicle);
     std::optional<FleetEstimate> getFleetEstimate(EntityId vehicle, uint8_t orderIndex);
     MeasurementState captureMeasurementState();

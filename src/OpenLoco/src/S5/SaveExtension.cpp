@@ -141,6 +141,8 @@ namespace OpenLoco::S5::SaveExtension
         constexpr uint16_t kVehicleReplacementPendingPlacementsVersion = 2;
         // Version 3 additionally stores whether a deferred placement should start.
         constexpr uint16_t kVehicleReplacementSectionVersion = 3;
+        // Version 2 adds dispatch history and supplemental-boarding runtime state.
+        constexpr uint16_t kTimetableSectionVersion = 2;
         constexpr uint16_t kSectionRequired = 1U << 0;
         constexpr uint16_t kKnownSectionFlags = kSectionRequired;
         constexpr size_t kSectionHeaderSize = 12;
@@ -658,7 +660,8 @@ namespace OpenLoco::S5::SaveExtension
         constexpr uint8_t kTimetableEntryHasTravel = 1U << 0;
         constexpr uint8_t kTimetableEntryHasDwell = 1U << 1;
         constexpr uint8_t kTimetableEntryHasDispatch = 1U << 2;
-        constexpr uint8_t kKnownTimetableEntryFlags = kTimetableEntryHasTravel | kTimetableEntryHasDwell | kTimetableEntryHasDispatch;
+        constexpr uint8_t kTimetableEntryHasDispatchHistory = 1U << 3;
+        constexpr uint8_t kKnownTimetableEntryFlags = kTimetableEntryHasTravel | kTimetableEntryHasDwell | kTimetableEntryHasDispatch | kTimetableEntryHasDispatchHistory;
         constexpr uint8_t kDispatchHasLastClaimedMinute = 1U << 0;
         constexpr uint8_t kKnownDispatchFlags = kDispatchHasLastClaimedMinute;
         constexpr uint8_t kRuntimeHasAssignedSlot = 1U << 0;
@@ -666,7 +669,9 @@ namespace OpenLoco::S5::SaveExtension
         constexpr uint8_t kRuntimeAtTimedStop = 1U << 2;
         constexpr uint8_t kRuntimeReleased = 1U << 3;
         constexpr uint8_t kRuntimeWaiting = 1U << 4;
-        constexpr uint8_t kKnownRuntimeFlags = kRuntimeHasAssignedSlot | kRuntimeTimetableStarted | kRuntimeAtTimedStop | kRuntimeReleased | kRuntimeWaiting;
+        constexpr uint8_t kRuntimeDepartureCommitted = 1U << 5;
+        constexpr uint8_t kRuntimeSupplementalBoardingClosed = 1U << 6;
+        constexpr uint8_t kKnownRuntimeFlags = kRuntimeHasAssignedSlot | kRuntimeTimetableStarted | kRuntimeAtTimedStop | kRuntimeReleased | kRuntimeWaiting | kRuntimeDepartureCommitted | kRuntimeSupplementalBoardingClosed;
 
         void canonicaliseTimetable(Vehicles::TimetableManager::State& state)
         {
@@ -709,7 +714,7 @@ namespace OpenLoco::S5::SaveExtension
                     payload.write(entry.orderIndex);
                     payload.write(enumValue(entry.orderType));
                     payload.write(enumValue(entry.station));
-                    const auto entryFlags = static_cast<uint8_t>((entry.travelMinutes.has_value() ? kTimetableEntryHasTravel : 0) | (entry.dwellMinutes.has_value() ? kTimetableEntryHasDwell : 0) | (entry.dispatch.has_value() ? kTimetableEntryHasDispatch : 0));
+                    const auto entryFlags = static_cast<uint8_t>((entry.travelMinutes.has_value() ? kTimetableEntryHasTravel : 0) | (entry.dwellMinutes.has_value() ? kTimetableEntryHasDwell : 0) | (entry.dispatch.has_value() ? kTimetableEntryHasDispatch : 0) | (entry.lastDispatchClaimedMinute.has_value() ? kTimetableEntryHasDispatchHistory : 0));
                     payload.write(entryFlags);
                     if (entry.travelMinutes.has_value())
                     {
@@ -736,6 +741,10 @@ namespace OpenLoco::S5::SaveExtension
                             payload.write(slot);
                         }
                     }
+                    if (entry.lastDispatchClaimedMinute.has_value())
+                    {
+                        payload.writeSigned(*entry.lastDispatchClaimedMinute);
+                    }
                 }
             }
 
@@ -755,7 +764,7 @@ namespace OpenLoco::S5::SaveExtension
                 payload.write(runtime.currentEntry);
                 payload.write(runtime.scheduledArrivalTick);
                 payload.write(runtime.scheduledDepartureTick);
-                const auto runtimeFlags = static_cast<uint8_t>((runtime.assignedSlotMinute.has_value() ? kRuntimeHasAssignedSlot : 0) | (runtime.timetableStarted ? kRuntimeTimetableStarted : 0) | (runtime.atTimedStop ? kRuntimeAtTimedStop : 0) | (runtime.released ? kRuntimeReleased : 0) | (runtime.waiting ? kRuntimeWaiting : 0));
+                const auto runtimeFlags = static_cast<uint8_t>((runtime.assignedSlotMinute.has_value() ? kRuntimeHasAssignedSlot : 0) | (runtime.timetableStarted ? kRuntimeTimetableStarted : 0) | (runtime.atTimedStop ? kRuntimeAtTimedStop : 0) | (runtime.released ? kRuntimeReleased : 0) | (runtime.waiting ? kRuntimeWaiting : 0) | (runtime.departureCommitted ? kRuntimeDepartureCommitted : 0) | (runtime.supplementalBoardingClosed ? kRuntimeSupplementalBoardingClosed : 0));
                 payload.write(runtimeFlags);
                 if (runtime.assignedSlotMinute.has_value())
                 {
@@ -767,7 +776,7 @@ namespace OpenLoco::S5::SaveExtension
             return payload.take();
         }
 
-        Vehicles::TimetableManager::State decodeTimetable(const std::span<const std::byte> data)
+        Vehicles::TimetableManager::State decodeTimetable(const std::span<const std::byte> data, const uint16_t version)
         {
             constexpr size_t kMaxEntries = Limits::kMaxVehicles * Limits::kMaxOrdersPerVehicle;
             constexpr size_t kMinServiceSize = sizeof(uint32_t) * 2 + sizeof(uint16_t);
@@ -811,7 +820,10 @@ namespace OpenLoco::S5::SaveExtension
                     entry.orderType = static_cast<Vehicles::OrderType>(input.read<uint8_t>());
                     entry.station = static_cast<StationId>(input.read<uint16_t>());
                     const auto entryFlags = input.read<uint8_t>();
-                    require((entryFlags & ~kKnownTimetableEntryFlags) == 0, "Invalid timetable entry flags");
+                    const auto knownEntryFlags = version >= kTimetableSectionVersion
+                        ? kKnownTimetableEntryFlags
+                        : kTimetableEntryHasTravel | kTimetableEntryHasDwell | kTimetableEntryHasDispatch;
+                    require((entryFlags & ~knownEntryFlags) == 0, "Invalid timetable entry flags");
                     require(j == 0 || previousOrderIndex < entry.orderIndex, "Non-canonical timetable entry order");
                     require(entry.id != Vehicles::TimetableManager::kInvalidEntryId && entry.id < seenEntryIds.size() && !seenEntryIds[entry.id], "Duplicate or invalid timetable entry ID");
                     previousOrderIndex = entry.orderIndex;
@@ -849,6 +861,10 @@ namespace OpenLoco::S5::SaveExtension
                         }
                         entry.dispatch = std::move(dispatch);
                     }
+                    if ((entryFlags & kTimetableEntryHasDispatchHistory) != 0)
+                    {
+                        entry.lastDispatchClaimedMinute = input.readSigned();
+                    }
                     service.entries.push_back(std::move(entry));
                 }
                 state.services.push_back(std::move(service));
@@ -884,7 +900,10 @@ namespace OpenLoco::S5::SaveExtension
                 runtime.scheduledArrivalTick = input.read<uint64_t>();
                 runtime.scheduledDepartureTick = input.read<uint64_t>();
                 const auto runtimeFlags = input.read<uint8_t>();
-                require((runtimeFlags & ~kKnownRuntimeFlags) == 0, "Invalid timetable runtime flags");
+                const auto knownRuntimeFlags = version >= kTimetableSectionVersion
+                    ? kKnownRuntimeFlags
+                    : kRuntimeHasAssignedSlot | kRuntimeTimetableStarted | kRuntimeAtTimedStop | kRuntimeReleased | kRuntimeWaiting;
+                require((runtimeFlags & ~knownRuntimeFlags) == 0, "Invalid timetable runtime flags");
                 require(i == 0 || previousRuntime < vehicle, "Non-canonical timetable runtime order");
                 previousRuntime = vehicle;
                 if ((runtimeFlags & kRuntimeHasAssignedSlot) != 0)
@@ -896,6 +915,26 @@ namespace OpenLoco::S5::SaveExtension
                 runtime.atTimedStop = (runtimeFlags & kRuntimeAtTimedStop) != 0;
                 runtime.released = (runtimeFlags & kRuntimeReleased) != 0;
                 runtime.waiting = (runtimeFlags & kRuntimeWaiting) != 0;
+                runtime.departureCommitted = (runtimeFlags & kRuntimeDepartureCommitted) != 0;
+                runtime.supplementalBoardingClosed = (runtimeFlags & kRuntimeSupplementalBoardingClosed) != 0;
+                if (version == kSectionVersion)
+                {
+                    runtime.departureCommitted = runtime.assignedSlotMinute.has_value();
+                    if (!runtime.departureCommitted && runtime.atTimedStop && (runtime.waiting || runtime.released))
+                    {
+                        const auto service = std::ranges::find(state.services, runtime.service, &Vehicles::TimetableManager::Service::id);
+                        if (service != state.services.end())
+                        {
+                            const auto entry = std::ranges::find(service->entries, runtime.currentEntry, &Vehicles::TimetableManager::TimetableEntry::id);
+                            runtime.departureCommitted = entry != service->entries.end() && (!entry->dispatch.has_value() || entry->dispatch->slots.empty());
+                        }
+                    }
+                    if (runtime.departureCommitted && !runtime.waiting && !runtime.released)
+                    {
+                        runtime.waiting = state.clockTicks < runtime.scheduledDepartureTick;
+                        runtime.released = !runtime.waiting;
+                    }
+                }
                 state.vehicles.push_back(runtime);
             }
 
@@ -982,8 +1021,7 @@ namespace OpenLoco::S5::SaveExtension
             constexpr uint8_t kVehiclesNeverExpire = 1U << 0;
             constexpr uint8_t kExtendedVehicleObjects = 1U << 1;
             Writer payload;
-            const auto rules = static_cast<uint8_t>((state.vehiclesNeverExpire ? kVehiclesNeverExpire : 0)
-                | (state.extendedVehicleObjects ? kExtendedVehicleObjects : 0));
+            const auto rules = static_cast<uint8_t>((state.vehiclesNeverExpire ? kVehiclesNeverExpire : 0) | (state.extendedVehicleObjects ? kExtendedVehicleObjects : 0));
             payload.write(rules);
             return payload.take();
         }
@@ -1205,7 +1243,7 @@ namespace OpenLoco::S5::SaveExtension
         }
         if (state.timetableState != nullptr)
         {
-            appendSection(payload, kTimetableTag, encodeTimetable(*state.timetableState), kSectionRequired);
+            appendSection(payload, kTimetableTag, encodeTimetable(*state.timetableState), kSectionRequired, kTimetableSectionVersion);
         }
 
         require(payload.size() <= std::numeric_limits<uint32_t>::max(), "Save extension is too large");
@@ -1341,8 +1379,8 @@ namespace OpenLoco::S5::SaveExtension
                 require(flags == kSectionRequired, "Invalid timetable section flags");
                 require(!hasTimetable, "Duplicate timetable save extension section");
                 hasTimetable = true;
-                require(version == kSectionVersion, "Unsupported timetable section version");
-                state.timetableState = decodeTimetable(sectionData);
+                require(version == kSectionVersion || version == kTimetableSectionVersion, "Unsupported timetable section version");
+                state.timetableState = decodeTimetable(sectionData, version);
             }
             else
             {

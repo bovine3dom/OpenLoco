@@ -197,11 +197,16 @@ namespace OpenLoco::Vehicles
         void updateLastJourneyAverageSpeed();
         void beginUnloading();
         void beginLoading();
+        bool postLoadHold();
+        bool tryBeginSupplementalLoading(std::optional<uint64_t> departureTick);
+        bool hasSupplementalCargoOpportunity(bool skipCargoDist) const;
+        uint64_t estimateSupplementalLoadingDuration();
+        bool isSupplementalLoading() const;
         WaterMotionFlags updateWaterMotion(WaterMotionFlags flags);
-        uint8_t getLoadingModifier(const VehicleBogie* bogie);
+        uint8_t getLoadingModifier(const VehicleBogie* bogie, bool updateRoadStopState = true);
         bool updateUnloadCargoComponent(VehicleCargo& cargo, VehicleBogie* bogie, EntityId cargoComponent, bool isSecondaryCargo);
         void updateUnloadCargo();
-        bool updateLoadCargoComponent(VehicleCargo& cargo, VehicleBogie* bogie, EntityId cargoComponent, bool isSecondaryCargo);
+        bool updateLoadCargoComponent(VehicleCargo& cargo, VehicleBogie* bogie, EntityId cargoComponent, bool isSecondaryCargo, bool skipCargoDist);
         bool updateLoadCargo();
         void beginNewJourney();
         void advanceToNextRoutableOrder();

@@ -409,6 +409,63 @@ TEST_F(SharedOrderTest, UndoPreservesUnrelatedDispatchProgress)
     EXPECT_EQ(TimetableManager::getEntry(waiting->id, 0)->dispatch->lastClaimedMinute, claimedMinute);
 }
 
+TEST_F(SharedOrderTest, UndoPreservesCommittedDepartureOnEditedService)
+{
+    auto* head = createHead();
+    ASSERT_NE(head, nullptr);
+    setOrders(*head, { OrderStopAt(StationId(1)).getRaw() });
+    ASSERT_TRUE(TimetableManager::enableForVehicle(head->id));
+    ASSERT_TRUE(TimetableManager::setDwellMinutes(head->id, 0, 10));
+    ASSERT_TRUE(TimetableManager::arriveAtOrder(head->id, 0));
+    ASSERT_TRUE(TimetableManager::isWaitingForDeparture(head->id));
+    const auto departureTick = TimetableManager::getVehicleRuntime(head->id)->scheduledDepartureTick;
+
+    VehicleTimetableArgs args{};
+    args.head = head->id;
+    args.action = VehicleTimetableArgs::Action::setDwellMinutes;
+    args.orderIndex = 0;
+    args.value = 20;
+    auto regs = static_cast<registers>(args);
+    Undo::prepare(GameCommand::vehicleTimetable, kOwner, regs, Flags::apply);
+    vehicleTimetable(regs, Flags::apply);
+    ASSERT_EQ(static_cast<uint32_t>(regs.ebx), 0U);
+    Undo::commit(0, ExpenditureType::VehiclePurchases, {});
+
+    TimetableManager::tick();
+    ASSERT_EQ(Undo::apply(), Undo::Result::success);
+    const auto* runtime = TimetableManager::getVehicleRuntime(head->id);
+    ASSERT_NE(runtime, nullptr);
+    EXPECT_EQ(runtime->scheduledDepartureTick, departureTick);
+    EXPECT_TRUE(runtime->departureCommitted);
+    EXPECT_TRUE(TimetableManager::isWaitingForDeparture(head->id));
+}
+
+TEST_F(SharedOrderTest, UndoRestoresDisabledTimetableDispatchHistory)
+{
+    auto* head = createHead();
+    ASSERT_NE(head, nullptr);
+    setOrders(*head, { OrderStopAt(StationId(1)).getRaw() });
+    ASSERT_TRUE(TimetableManager::enableForVehicle(head->id));
+    ASSERT_TRUE(TimetableManager::addDispatchSlot(head->id, 0, 15));
+    TimetableManager::getEntry(head->id, 0)->dispatch->lastClaimedMinute = 15;
+    ASSERT_TRUE(TimetableManager::clearDispatch(head->id, 0));
+
+    VehicleTimetableArgs args{};
+    args.head = head->id;
+    args.action = VehicleTimetableArgs::Action::setEnabled;
+    auto regs = static_cast<registers>(args);
+    Undo::prepare(GameCommand::vehicleTimetable, kOwner, regs, Flags::apply);
+    vehicleTimetable(regs, Flags::apply);
+    ASSERT_EQ(static_cast<uint32_t>(regs.ebx), 0U);
+    Undo::commit(0, ExpenditureType::VehiclePurchases, {});
+
+    ASSERT_EQ(Undo::apply(), Undo::Result::success);
+    const auto* entry = TimetableManager::getEntry(head->id, 0);
+    ASSERT_NE(entry, nullptr);
+    EXPECT_FALSE(entry->dispatch.has_value());
+    EXPECT_EQ(entry->lastDispatchClaimedMinute, 15);
+}
+
 TEST_F(SharedOrderTest, FleetEstimateCountsActiveSharedVehicles)
 {
     TimetableManager::reset();

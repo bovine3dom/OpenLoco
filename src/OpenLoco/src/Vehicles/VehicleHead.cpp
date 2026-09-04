@@ -123,6 +123,113 @@ namespace OpenLoco::Vehicles
         return false;
     }
 
+    struct CargoLoadingPolicy
+    {
+        uint32_t cargoToWaitFor{};
+        uint32_t cargoToUnload{};
+        uint32_t allPossibleCargoToWaitFor{};
+    };
+
+    static CargoLoadingPolicy getCargoLoadingPolicy(const VehicleHead& head)
+    {
+        const auto orders = head.getCurrentOrders();
+        const auto first = orders.begin();
+        const auto startsWithCargoOrder = first != orders.end() && first->hasFlags(OrderFlags::HasCargo);
+        bool beforeFirstRoutableOrder = true;
+        CargoLoadingPolicy leadingPolicy;
+        CargoLoadingPolicy trailingPolicy;
+        uint32_t allPossibleCargoToWaitFor = 0;
+
+        for (const auto& order : orders)
+        {
+            if (const auto* waitFor = order.as<OrderWaitFor>())
+            {
+                allPossibleCargoToWaitFor |= 1U << waitFor->getCargo();
+            }
+            if (order.hasFlags(OrderFlags::IsRoutable))
+            {
+                beforeFirstRoutableOrder = false;
+                trailingPolicy = {};
+                continue;
+            }
+            if (!order.hasFlags(OrderFlags::HasCargo))
+            {
+                continue;
+            }
+
+            const auto* waitFor = order.as<OrderWaitFor>();
+            const auto cargoType = waitFor != nullptr ? waitFor->getCargo() : order.as<OrderUnloadAll>()->getCargo();
+            auto& mask = waitFor != nullptr ? trailingPolicy.cargoToWaitFor : trailingPolicy.cargoToUnload;
+            mask |= 1U << cargoType;
+            if (beforeFirstRoutableOrder)
+            {
+                auto& leadingMask = waitFor != nullptr ? leadingPolicy.cargoToWaitFor : leadingPolicy.cargoToUnload;
+                leadingMask |= 1U << cargoType;
+            }
+        }
+
+        auto policy = startsWithCargoOrder ? leadingPolicy : trailingPolicy;
+        policy.allPossibleCargoToWaitFor = allPossibleCargoToWaitFor != 0 ? allPossibleCargoToWaitFor : std::numeric_limits<uint32_t>::max();
+        return policy;
+    }
+
+    static uint32_t getAvailableCargoQuantity(const VehicleHead& head, const Station& station, const std::optional<CargoDist::VehicleServiceLeg>& serviceLeg, const uint8_t cargoType)
+    {
+        return CargoDist::isEnabled(cargoType)
+            ? (serviceLeg.has_value() ? CargoDist::getLoadableQuantity(head.stationId, cargoType, *serviceLeg) : 0)
+            : station.cargoStats[cargoType].quantity;
+    }
+
+    static uint32_t getSelectableCargoTypes(const VehicleCargo& cargo, const CargoLoadingPolicy& policy)
+    {
+        auto acceptedCargo = cargo.acceptedTypes;
+        if (policy.allPossibleCargoToWaitFor != std::numeric_limits<uint32_t>::max())
+        {
+            const auto routeWaitForCargo = acceptedCargo & policy.allPossibleCargoToWaitFor;
+            acceptedCargo = routeWaitForCargo != 0
+                ? routeWaitForCargo
+                : cargo.type < 32 ? acceptedCargo & (1U << cargo.type)
+                                  : 0;
+        }
+        const auto currentWaitForCargo = acceptedCargo & policy.cargoToWaitFor;
+        return currentWaitForCargo != 0 ? 1U << Numerics::bitScanReverse(currentWaitForCargo) : acceptedCargo;
+    }
+
+    static std::optional<uint8_t> selectCargoForLoading(const VehicleHead& head, const VehicleCargo& cargo, const Station& station, const CargoLoadingPolicy& policy, const std::optional<CargoDist::VehicleServiceLeg>& serviceLeg, const bool skipCargoDist)
+    {
+        if (cargo.qty != 0)
+        {
+            return std::nullopt;
+        }
+
+        auto acceptedCargo = getSelectableCargoTypes(cargo, policy);
+        uint8_t chosenCargo = 0xFF;
+        uint32_t highestQty = 0;
+        while (acceptedCargo != 0)
+        {
+            const auto possibleCargo = Numerics::bitScanForward(acceptedCargo);
+            acceptedCargo &= ~(1U << possibleCargo);
+            if (skipCargoDist && CargoDist::isEnabled(possibleCargo))
+            {
+                continue;
+            }
+            if ((policy.cargoToWaitFor & (1U << possibleCargo)) != 0)
+            {
+                chosenCargo = possibleCargo;
+                highestQty = std::numeric_limits<uint32_t>::max();
+                continue;
+            }
+
+            const auto availableQuantity = getAvailableCargoQuantity(head, station, serviceLeg, possibleCargo);
+            if (highestQty < availableQuantity)
+            {
+                highestQty = availableQuantity;
+                chosenCargo = possibleCargo;
+            }
+        }
+        return highestQty != 0 ? std::optional<uint8_t>{ chosenCargo } : std::nullopt;
+    }
+
     using RouteSignalState = RailPathfinding::SignalState;
     using RoutingResult = RailPathfinding::RouteResult;
 
@@ -1639,11 +1746,7 @@ namespace OpenLoco::Vehicles
             return true;
         }
 
-        if (isWaitingForUnbunching())
-        {
-            return true;
-        }
-        if (TimetableManager::isWaitingForDeparture(id))
+        if (postLoadHold())
         {
             return true;
         }
@@ -2259,11 +2362,7 @@ namespace OpenLoco::Vehicles
             return true;
         }
 
-        if (isWaitingForUnbunching())
-        {
-            return true;
-        }
-        if (TimetableManager::isWaitingForDeparture(id))
+        if (postLoadHold())
         {
             return true;
         }
@@ -2532,11 +2631,7 @@ namespace OpenLoco::Vehicles
                 return true;
             }
 
-            if (isWaitingForUnbunching())
-            {
-                return true;
-            }
-            if (TimetableManager::isWaitingForDeparture(id))
+            if (postLoadHold())
             {
                 return true;
             }
@@ -3252,7 +3347,7 @@ namespace OpenLoco::Vehicles
         train.cars.firstCar.body->tileX = 0;
     }
 
-    uint8_t VehicleHead::getLoadingModifier(const VehicleBogie* bogie)
+    uint8_t VehicleHead::getLoadingModifier(const VehicleBogie* bogie, const bool updateRoadStopState)
     {
         constexpr uint8_t kMinVehiclePastStationPenalty = 1;
         constexpr uint8_t kRailVehiclePastStationPenalty = 12;
@@ -3307,7 +3402,7 @@ namespace OpenLoco::Vehicles
                     }
 
                     auto* roadStationObj = ObjectManager::get<RoadStationObject>(elStation->objectId());
-                    if (!roadStationObj->hasFlags(RoadStationFlags::roadEnd))
+                    if (updateRoadStopState && !roadStationObj->hasFlags(RoadStationFlags::roadEnd))
                     {
                         // Set on the vehicleHead awaitingCargoTransfer see note on flag
                         breakdownFlags |= BreakdownFlags::awaitingCargoTransfer;
@@ -3621,6 +3716,150 @@ namespace OpenLoco::Vehicles
         Vehicle train(head);
         train.cars.applyToComponents([](auto& component) { component.breakdownFlags |= BreakdownFlags::awaitingCargoTransfer; });
     }
+
+    bool VehicleHead::isSupplementalLoading() const
+    {
+        return isWaitingToUnbunch() || TimetableManager::isWaitingAtTimedStop(id);
+    }
+
+    bool VehicleHead::hasSupplementalCargoOpportunity(const bool skipCargoDist) const
+    {
+        if (stationId == StationId::null)
+        {
+            return false;
+        }
+        const auto* station = StationManager::get(stationId);
+        if (station == nullptr || station->empty())
+        {
+            return false;
+        }
+
+        const auto policy = getCargoLoadingPolicy(*this);
+        const auto serviceLeg = CargoDist::getCurrentServiceLeg(*this);
+        const auto crushLoading = isCrushLoadingAtCurrentStop();
+        const Vehicle train(head);
+        const auto canLoad = [&](const VehicleCargo& cargo) {
+            if (cargo.maxQty == 0)
+            {
+                return false;
+            }
+            const auto selectedCargo = selectCargoForLoading(*this, cargo, *station, policy, serviceLeg, skipCargoDist);
+            if (cargo.qty == 0 && !selectedCargo.has_value())
+            {
+                return false;
+            }
+            const auto cargoType = selectedCargo.value_or(cargo.type);
+            if (cargoType >= 32 || (policy.cargoToUnload & (1U << cargoType)) != 0
+                || (skipCargoDist && CargoDist::isEnabled(cargoType)))
+            {
+                return false;
+            }
+            const auto capacity = getEffectiveLoadCapacity(cargo.maxQty, mode, cargoType, crushLoading);
+            return cargo.qty < capacity && getAvailableCargoQuantity(*this, *station, serviceLeg, cargoType) != 0;
+        };
+        for (const auto& car : train.cars)
+        {
+            for (const auto& component : car)
+            {
+                if (canLoad(component.front->secondaryCargo) || canLoad(component.body->primaryCargo))
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    uint64_t VehicleHead::estimateSupplementalLoadingDuration()
+    {
+        const auto policy = getCargoLoadingPolicy(*this);
+        const auto crushLoading = isCrushLoadingAtCurrentStop();
+        uint64_t total = kCargoTransferStartTimeout + 1;
+        const auto addSaturated = [&total](const uint64_t value) {
+            total = value > std::numeric_limits<uint64_t>::max() - total ? std::numeric_limits<uint64_t>::max() : total + value;
+        };
+        const auto estimateCargo = [&](const VehicleCargo& cargo, const VehicleBogie* bogie) {
+            if (cargo.maxQty == 0)
+            {
+                return uint16_t{};
+            }
+
+            uint32_t cargoTypes = cargo.qty != 0 && cargo.type < 32
+                ? 1U << cargo.type
+                : getSelectableCargoTypes(cargo, policy);
+            cargoTypes &= ~policy.cargoToUnload;
+
+            uint16_t longestTransfer = 0;
+            while (cargoTypes != 0)
+            {
+                const auto cargoType = Numerics::bitScanForward(cargoTypes);
+                cargoTypes &= ~(1U << cargoType);
+                const auto* cargoObject = ObjectManager::get<CargoObject>(cargoType);
+                if (cargoObject == nullptr)
+                {
+                    return std::numeric_limits<uint16_t>::max();
+                }
+                const auto capacity = getEffectiveLoadCapacity(cargo.maxQty, mode, cargoType, crushLoading);
+                const auto quantity = capacity - std::min<uint16_t>(cargo.qty, capacity);
+                const auto normalRoom = cargo.maxQty > cargo.qty ? cargo.maxQty - cargo.qty : 0;
+                const auto crushQuantity = quantity > normalRoom ? quantity - normalRoom : 0;
+                longestTransfer = std::max(longestTransfer, calculateCargoTransferTimeout(cargoObject->cargoTransferTime, quantity, getLoadingModifier(bogie, false), crushQuantity));
+            }
+            return longestTransfer;
+        };
+
+        Vehicle train(head);
+        for (const auto& car : train.cars)
+        {
+            for (const auto& component : car)
+            {
+                addSaturated(3);
+                addSaturated(estimateCargo(component.front->secondaryCargo, component.front));
+                addSaturated(estimateCargo(component.body->primaryCargo, component.back));
+            }
+        }
+        return total;
+    }
+
+    bool VehicleHead::tryBeginSupplementalLoading(const std::optional<uint64_t> departureTick)
+    {
+        const auto skipCargoDist = CargoDist::isServiceRecalculationPending();
+        if (!hasSupplementalCargoOpportunity(skipCargoDist))
+        {
+            return false;
+        }
+        if (departureTick.has_value())
+        {
+            const auto now = TimetableManager::getClockTicks();
+            if (*departureTick < now || estimateSupplementalLoadingDuration() > *departureTick - now)
+            {
+                TimetableManager::closeSupplementalBoarding(id);
+                return false;
+            }
+        }
+        beginLoading();
+        return true;
+    }
+
+    bool VehicleHead::postLoadHold()
+    {
+        const auto departureTick = TimetableManager::prepareDeparture(id);
+        if (TimetableManager::isWaitingAtTimedStop(id))
+        {
+            if (departureTick.has_value() && !TimetableManager::isSupplementalBoardingClosed(id))
+            {
+                tryBeginSupplementalLoading(departureTick);
+            }
+            return true;
+        }
+        if (isWaitingForUnbunching())
+        {
+            tryBeginSupplementalLoading(std::nullopt);
+            return true;
+        }
+        return false;
+    }
+
     // 0x004B9A2A
     void VehicleHead::updateUnloadCargo()
     {
@@ -3681,7 +3920,7 @@ namespace OpenLoco::Vehicles
     }
 
     // 0x004BA19D
-    bool VehicleHead::updateLoadCargoComponent(VehicleCargo& cargo, VehicleBogie* bogie, EntityId cargoComponent, bool isSecondaryCargo)
+    bool VehicleHead::updateLoadCargoComponent(VehicleCargo& cargo, VehicleBogie* bogie, EntityId cargoComponent, bool isSecondaryCargo, const bool skipCargoDist)
     {
         if (cargo.maxQty == 0)
         {
@@ -3696,87 +3935,19 @@ namespace OpenLoco::Vehicles
 
         auto* station = StationManager::get(stationId);
         const auto serviceLeg = CargoDist::getCurrentServiceLeg(*this);
-        auto orders = getCurrentOrders();
-        if (cargo.qty == 0)
+        const auto policy = getCargoLoadingPolicy(*this);
+        if (const auto selectedCargo = selectCargoForLoading(*this, cargo, *station, policy, serviceLeg, skipCargoDist); selectedCargo.has_value())
         {
-            // bitmask of cargo to wait for
-            uint32_t cargoToWaitFor = 0;
-            for (auto& order : orders)
-            {
-                auto* waitFor = order.as<OrderWaitFor>();
-                if (waitFor != nullptr)
-                {
-                    cargoToWaitFor |= (1 << waitFor->getCargo());
-                }
-                if (order.hasFlags(OrderFlags::IsRoutable))
-                {
-                    break;
-                }
-            }
-            // bitmask of all cargo from orders
-            uint32_t allPossibleCargoToWaitFor = 0;
-            for (auto& order : orders)
-            {
-                auto* waitFor = order.as<OrderWaitFor>();
-                if (waitFor != nullptr)
-                {
-                    allPossibleCargoToWaitFor |= (1 << waitFor->getCargo());
-                }
-            }
-            if (allPossibleCargoToWaitFor == 0)
-            {
-                allPossibleCargoToWaitFor = 0xFFFFFFFF;
-            }
-
-            auto acceptedCargo = cargo.acceptedTypes;
-            uint8_t chosenCargo = 0xFF;
-            uint16_t highestQty = 0;
-            for (; acceptedCargo != 0;)
-            {
-                auto possibleCargo = Numerics::bitScanForward(acceptedCargo);
-                acceptedCargo &= ~(1 << possibleCargo);
-
-                if (!(allPossibleCargoToWaitFor & (1 << possibleCargo)))
-                {
-                    continue;
-                }
-                if (cargoToWaitFor & (1 << possibleCargo))
-                {
-                    chosenCargo = possibleCargo;
-                    highestQty = std::numeric_limits<uint16_t>::max();
-                }
-                else
-                {
-                    const auto availableQuantity = CargoDist::isEnabled(possibleCargo)
-                        ? (serviceLeg.has_value() ? CargoDist::getLoadableQuantity(stationId, possibleCargo, *serviceLeg) : 0)
-                        : station->cargoStats[possibleCargo].quantity;
-                    if (highestQty < availableQuantity)
-                    {
-                        highestQty = static_cast<uint16_t>(std::min<uint32_t>(availableQuantity, std::numeric_limits<uint16_t>::max()));
-                        chosenCargo = possibleCargo;
-                    }
-                }
-            }
-            if (highestQty != 0)
-            {
-                cargo.type = chosenCargo;
-            }
+            cargo.type = *selectedCargo;
         }
-
-        for (auto& order : orders)
+        else if (cargo.qty == 0)
         {
-            if (!order.hasFlags(OrderFlags::HasCargo))
-            {
-                break;
-            }
-            auto* unloadAll = order.as<OrderUnloadAll>();
-            if (unloadAll != nullptr)
-            {
-                if (unloadAll->getCargo() == cargo.type)
-                {
-                    return false;
-                }
-            }
+            return false;
+        }
+        if (cargo.type >= 32 || (policy.cargoToUnload & (1U << cargo.type)) != 0
+            || (skipCargoDist && CargoDist::isEnabled(cargo.type)))
+        {
+            return false;
         }
 
         const auto crushLoading = isCrushLoadingAtCurrentStop();
@@ -3877,6 +4048,8 @@ namespace OpenLoco::Vehicles
 
         Vehicle train(head);
         const auto cargoDistBlocked = CargoDist::isServiceRecalculationPending();
+        const auto supplementalLoading = isSupplementalLoading();
+        const auto skipCargoDist = cargoDistBlocked && supplementalLoading;
         for (auto& car : train.cars)
         {
             for (auto& carComponent : car)
@@ -3885,7 +4058,7 @@ namespace OpenLoco::Vehicles
                 {
                     const auto& cargo = carComponent.front->secondaryCargo;
                     const auto usesCargoDist = cargo.qty != 0 ? CargoDist::isEnabled(cargo.type) : acceptsCargoDistCargo(cargo);
-                    if (cargo.maxQty != 0 && cargoDistBlocked && usesCargoDist)
+                    if (cargo.maxQty != 0 && cargoDistBlocked && usesCargoDist && !supplementalLoading)
                     {
                         return true;
                     }
@@ -3894,7 +4067,7 @@ namespace OpenLoco::Vehicles
                     {
                         return true;
                     }
-                    updateLoadCargoComponent(carComponent.front->secondaryCargo, carComponent.front, carComponent.front->id, true);
+                    updateLoadCargoComponent(carComponent.front->secondaryCargo, carComponent.front, carComponent.front->id, true, skipCargoDist);
                     return true;
                 }
                 else if (carComponent.back->hasBreakdownFlags(BreakdownFlags::awaitingCargoTransfer))
@@ -3906,7 +4079,7 @@ namespace OpenLoco::Vehicles
                 {
                     const auto& cargo = carComponent.body->primaryCargo;
                     const auto usesCargoDist = cargo.qty != 0 ? CargoDist::isEnabled(cargo.type) : acceptsCargoDistCargo(cargo);
-                    if (cargo.maxQty != 0 && cargoDistBlocked && usesCargoDist)
+                    if (cargo.maxQty != 0 && cargoDistBlocked && usesCargoDist && !supplementalLoading)
                     {
                         return true;
                     }
@@ -3915,7 +4088,7 @@ namespace OpenLoco::Vehicles
                     {
                         return true;
                     }
-                    if (updateLoadCargoComponent(carComponent.body->primaryCargo, carComponent.back, carComponent.body->id, false))
+                    if (updateLoadCargoComponent(carComponent.body->primaryCargo, carComponent.back, carComponent.body->id, false, skipCargoDist))
                     {
                         carComponent.body->updateCargoSprite();
                     }

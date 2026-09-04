@@ -119,6 +119,9 @@ namespace
                 .latenessTicks = -9,
                 .timetableStarted = true,
                 .atTimedStop = true,
+                .waiting = true,
+                .departureCommitted = true,
+                .supplementalBoardingClosed = true,
             },
             {
                 .vehicle = entity(12),
@@ -182,10 +185,10 @@ namespace
     }
 
     uint16_t readU16(const std::span<const std::byte> data, size_t offset)
-{
-    return std::to_integer<uint8_t>(data[offset])
-        | (static_cast<uint16_t>(std::to_integer<uint8_t>(data[offset + 1])) << 8);
-}
+    {
+        return std::to_integer<uint8_t>(data[offset])
+            | (static_cast<uint16_t>(std::to_integer<uint8_t>(data[offset + 1])) << 8);
+    }
 
     uint32_t readU32(const std::span<const std::byte> data, size_t offset)
     {
@@ -446,7 +449,7 @@ TEST(SaveExtension, RoundTripsRequiredTimetable)
     EXPECT_EQ(*decoded.timetableState, timetable);
     EXPECT_EQ(S5::SaveExtension::encode(decoded), encoded);
     expectTag(encoded, 16, "TTBL");
-    EXPECT_EQ(readU16(encoded, 20), 1);
+    EXPECT_EQ(readU16(encoded, 20), 2);
     EXPECT_EQ(readU16(encoded, 22), 1);
     EXPECT_EQ(readU16(encoded, 28), 45);
     EXPECT_EQ(readU32(encoded, 30), 0x05060708U);
@@ -477,6 +480,34 @@ TEST(SaveExtension, TimetableEncodingIsDeterministic)
         S5::SaveExtension::encode({ .timetableState = &shuffled }));
 }
 
+TEST(SaveExtension, MigratesLegacyCommittedTimetableRuntime)
+{
+    auto expected = timetableState();
+    auto encoded = S5::SaveExtension::encode({ .timetableState = &expected });
+    writeU16(encoded, 20, 1);
+    encoded[190] &= std::byte{ 0x0F };
+
+    expected.vehicles.front().supplementalBoardingClosed = false;
+    const auto decoded = S5::SaveExtension::decode(encoded);
+
+    ASSERT_TRUE(decoded.timetableState.has_value());
+    EXPECT_EQ(*decoded.timetableState, expected);
+}
+
+TEST(SaveExtension, RoundTripsDispatchHistoryWithoutActivePattern)
+{
+    auto timetable = timetableState();
+    auto& entry = timetable.services.front().entries.front();
+    entry.dispatch.reset();
+    entry.lastDispatchClaimedMinute = 44;
+
+    const auto encoded = S5::SaveExtension::encode({ .timetableState = &timetable });
+    const auto decoded = S5::SaveExtension::decode(encoded);
+
+    ASSERT_TRUE(decoded.timetableState.has_value());
+    EXPECT_EQ(*decoded.timetableState, timetable);
+}
+
 TEST(SaveExtension, RejectsInvalidTimetableSectionMetadataAndState)
 {
     const auto timetable = timetableState();
@@ -486,7 +517,7 @@ TEST(SaveExtension, RejectsInvalidTimetableSectionMetadataAndState)
     EXPECT_THROW(S5::SaveExtension::decode(optionalSection), std::runtime_error);
 
     auto unsupportedVersion = S5::SaveExtension::encode({ .timetableState = &timetable });
-    writeU16(unsupportedVersion, 20, 2);
+    writeU16(unsupportedVersion, 20, 3);
     EXPECT_THROW(S5::SaveExtension::decode(unsupportedVersion), std::runtime_error);
 
     auto invalidRate = S5::SaveExtension::encode({ .timetableState = &timetable });
