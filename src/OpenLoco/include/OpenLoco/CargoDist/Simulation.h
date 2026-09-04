@@ -98,7 +98,7 @@ namespace OpenLoco::CargoDist
 
     uint32_t getLoadableQuantity(StationId station, uint8_t cargo, const VehicleServiceLeg& serviceLeg);
     std::map<ServiceEdgeKey, CommittedServiceDemand> getCommittedServiceDemands(uint8_t cargo);
-    uint16_t loadVehicleCargo(VehicleCargoKey key, Vehicles::VehicleCargo& nativeCargo, StationId station, StationCargoStats& nativeStationCargo, const VehicleServiceLeg& serviceLeg);
+    uint16_t loadVehicleCargo(VehicleCargoKey key, Vehicles::VehicleCargo& nativeCargo, StationId station, StationCargoStats& nativeStationCargo, const VehicleServiceLeg& serviceLeg, std::optional<uint8_t> loadCapacity = std::nullopt);
     UnloadResult unloadVehicleCargo(VehicleCargoKey key, Vehicles::VehicleCargo& nativeCargo, StationId station, StationCargoStats& nativeStationCargo, std::span<const StationId> remainingStops, bool forceUnload, std::optional<VehicleServiceLeg> onwardLeg, TransferPaymentCalculator transferPayment = {});
     currency32_t accrueTransferCredit(CargoPacket& packet, currency32_t projectedPayment);
     int64_t calculateFinalDeliveryIncome(int64_t transferCredit, currency32_t grossPayment);
@@ -106,7 +106,7 @@ namespace OpenLoco::CargoDist
     std::optional<int64_t> consumeVehicleRevenueAdjustment(EntityId vehicle);
 
     std::optional<VehicleServiceLeg> getCurrentServiceLeg(const Vehicles::VehicleHead& head);
-    void recordVehicleDeparture(const Vehicles::VehicleHead& head, StationId from, StationId to);
+    void recordVehicleDeparture(const Vehicles::VehicleHead& head, StationId from, StationId to, bool crushLoading = false);
     StationId getNextStop(const Vehicles::VehicleHead& head);
     void update();
     bool isServiceRecalculationPending();

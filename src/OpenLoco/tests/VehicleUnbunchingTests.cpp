@@ -1,5 +1,6 @@
 #include "Entities/EntityManager.h"
 #include "GameCommands/Vehicles/VehicleOrderInsert.h"
+#include "GameCommands/Vehicles/VehicleOrderSetCrushLoading.h"
 #include "GameCommands/Vehicles/VehicleOrderToggleUnbunching.h"
 #include "S5/S5Entity.h"
 #include "Scenario/ScenarioManager.h"
@@ -85,6 +86,23 @@ namespace
             vehicleOrderToggleUnbunching(regs, flags);
             return regs.ebx;
         }
+
+        static uint32_t setCrushLoading(VehicleHead& head, const uint32_t orderOffset, const bool enabled, const uint8_t flags)
+        {
+            VehicleOrderSetCrushLoadingArgs args{};
+            args.head = head.id;
+            args.orderOffset = orderOffset;
+            args.enabled = enabled;
+            auto regs = static_cast<registers>(args);
+            vehicleOrderSetCrushLoading(regs, flags);
+            return regs.ebx;
+        }
+
+        static bool isCrushLoading(const VehicleHead& head, const uint16_t orderOffset)
+        {
+            const auto* order = OrderRingView(head.orderTableOffset, orderOffset).begin()->as<OrderStopAt>();
+            return order != nullptr && order->isCrushLoading();
+        }
     };
 }
 
@@ -100,6 +118,109 @@ TEST(OrderStopAtTest, UnbunchingFlagPreservesPackedOrderData)
     order.setUnbunching(false);
     EXPECT_FALSE(order.isUnbunching());
     EXPECT_EQ(order.getStation(), StationId(0x2AB));
+}
+
+TEST(OrderStopAtTest, CrushLoadingFlagPreservesPackedOrderData)
+{
+    OrderStopAt order{ StationId(0x2AB) };
+
+    EXPECT_FALSE(order.isCrushLoading());
+    order.setCrushLoading(true);
+    EXPECT_TRUE(order.isCrushLoading());
+    EXPECT_EQ(order.getType(), OrderType::StopAt);
+    EXPECT_EQ(order.getStation(), StationId(0x2AB));
+
+    order.setUnbunching(true);
+    order.setCrushLoading(false);
+    EXPECT_FALSE(order.isCrushLoading());
+    EXPECT_TRUE(order.isUnbunching());
+    EXPECT_EQ(order.getStation(), StationId(0x2AB));
+
+    order.setCrushLoading(true);
+    order.setUnbunching(false);
+    EXPECT_TRUE(order.isCrushLoading());
+    EXPECT_FALSE(order.isUnbunching());
+}
+
+TEST(VehicleOrderSetCrushLoadingArgsTest, RoundTripsThroughRegisters)
+{
+    VehicleOrderSetCrushLoadingArgs args{};
+    args.head = EntityId(123);
+    args.orderOffset = 0x12345678;
+    args.enabled = 1;
+
+    const VehicleOrderSetCrushLoadingArgs result(static_cast<registers>(args));
+
+    EXPECT_EQ(result.head, args.head);
+    EXPECT_EQ(result.orderOffset, args.orderOffset);
+    EXPECT_EQ(result.enabled, args.enabled);
+}
+
+TEST_F(VehicleUnbunchingTest, CrushLoadingCommandUpdatesMatchingRoutes)
+{
+    auto& first = createVehicle();
+    auto& second = createVehicle();
+    auto& different = createVehicle();
+    const auto selectedOffset = appendStop(first, 1);
+    appendStop(first, 2);
+    addRoute(second);
+    addRoute(different, 1, 3);
+
+    EXPECT_EQ(setCrushLoading(first, selectedOffset, true, 0), 0U);
+    EXPECT_FALSE(isCrushLoading(first, selectedOffset));
+    EXPECT_FALSE(isCrushLoading(second, selectedOffset));
+
+    EXPECT_EQ(setCrushLoading(first, selectedOffset, true, Flags::apply), 0U);
+    EXPECT_TRUE(isCrushLoading(first, selectedOffset));
+    EXPECT_TRUE(isCrushLoading(second, selectedOffset));
+    EXPECT_FALSE(isCrushLoading(different, selectedOffset));
+
+    EXPECT_EQ(setCrushLoading(first, selectedOffset, false, Flags::apply), 0U);
+    EXPECT_FALSE(isCrushLoading(first, selectedOffset));
+    EXPECT_FALSE(isCrushLoading(second, selectedOffset));
+}
+
+TEST_F(VehicleUnbunchingTest, CrushLoadingCommandKeepsSharedRoutesSynchronized)
+{
+    auto& sharedLocal = createVehicle();
+    auto& sharedExpress = createVehicle(CompanyId(0), VehicleType::train, true);
+    auto& matchingLocal = createVehicle();
+    auto& matchingExpress = createVehicle(CompanyId(0), VehicleType::train, true);
+    const auto selectedOffset = appendStop(sharedLocal, 1);
+    appendStop(sharedLocal, 2);
+    addRoute(sharedExpress);
+    addRoute(matchingLocal);
+    addRoute(matchingExpress);
+    ASSERT_TRUE(SharedOrderManager::join(sharedExpress.id, sharedLocal.id));
+
+    ASSERT_EQ(setCrushLoading(sharedLocal, selectedOffset, true, Flags::apply), 0U);
+
+    for (const auto* vehicle : { &sharedLocal, &sharedExpress, &matchingLocal, &matchingExpress })
+    {
+        EXPECT_TRUE(isCrushLoading(*vehicle, selectedOffset));
+    }
+    EXPECT_TRUE(SharedOrderManager::areOrdersEqual(sharedLocal, sharedExpress));
+}
+
+TEST_F(VehicleUnbunchingTest, CrushLoadingCommandRejectsInvalidPolicyAndOrder)
+{
+    auto& invalidPolicy = createVehicle();
+    const auto stopOffset = appendStop(invalidPolicy, 1);
+    appendStop(invalidPolicy, 2);
+    VehicleOrderSetCrushLoadingArgs args{};
+    args.head = invalidPolicy.id;
+    args.orderOffset = stopOffset;
+    args.enabled = 2;
+    auto regs = static_cast<registers>(args);
+    vehicleOrderSetCrushLoading(regs, Flags::apply);
+    EXPECT_EQ(static_cast<uint32_t>(regs.ebx), kFailure);
+    EXPECT_FALSE(isCrushLoading(invalidPolicy, stopOffset));
+
+    auto& nonStop = createVehicle();
+    const OrderWaitFor waitFor{ 0 };
+    const auto waitOffset = appendOrder(nonStop, waitFor);
+    appendStop(nonStop, 2);
+    EXPECT_EQ(setCrushLoading(nonStop, waitOffset, true, Flags::apply), kFailure);
 }
 
 TEST_F(VehicleUnbunchingTest, RouteIdentityIncludesOwnerTypeModeAndOrders)

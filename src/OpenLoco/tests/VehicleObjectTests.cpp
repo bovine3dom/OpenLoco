@@ -1,7 +1,9 @@
 #include "Graphics/Colour.h"
+#include "Objects/CargoObject.h"
 #include "Objects/ObjectManager.h"
 #include "Objects/VehicleObject.h"
 #include "S5/Limits.h"
+#include "Vehicles/Vehicle.h"
 #include <algorithm>
 #include <gtest/gtest.h>
 #include <string_view>
@@ -93,6 +95,28 @@ TEST(VehicleObjectTest, IdentifiesOfficialSrn4Hovercraft)
 TEST(VehicleObjectTest, DoesNotOverrideCompactedSecondaryCargo)
 {
     EXPECT_EQ(getEffectiveVehicleCapacity(makeHeader("2EPB    "), 5), 5);
+}
+
+TEST(VehicleCapacityTest, CalculatesCrushLoadCapacity)
+{
+    EXPECT_EQ(Vehicles::getCrushLoadCapacity(0), 0);
+    EXPECT_EQ(Vehicles::getCrushLoadCapacity(1), 1);
+    EXPECT_EQ(Vehicles::getCrushLoadCapacity(2), 3);
+    EXPECT_EQ(Vehicles::getCrushLoadCapacity(3), 4);
+    EXPECT_EQ(Vehicles::getCrushLoadCapacity(100), 150);
+    EXPECT_EQ(Vehicles::getCrushLoadCapacity(170), 255);
+    EXPECT_EQ(Vehicles::getCrushLoadCapacity(255), 255);
+}
+
+TEST(VehicleCapacityTest, RestrictsCrushLoadingToLandPassengers)
+{
+    EXPECT_TRUE(Vehicles::isCrushLoadEligible(TransportMode::rail, CargoCategory::passengers));
+    EXPECT_TRUE(Vehicles::isCrushLoadEligible(TransportMode::road, CargoCategory::passengers));
+    EXPECT_FALSE(Vehicles::isCrushLoadEligible(TransportMode::air, CargoCategory::passengers));
+    EXPECT_FALSE(Vehicles::isCrushLoadEligible(TransportMode::water, CargoCategory::passengers));
+    EXPECT_FALSE(Vehicles::isCrushLoadEligible(TransportMode::rail, CargoCategory::mail));
+    EXPECT_FALSE(Vehicles::isCrushLoadEligible(TransportMode::road, CargoCategory::goods));
+    EXPECT_FALSE(Vehicles::isCrushLoadEligible(TransportMode::road, uint8_t{ 0xFF }));
 }
 
 TEST(VehicleObjectTest, IdentifiesTgvLaPosteObjects)

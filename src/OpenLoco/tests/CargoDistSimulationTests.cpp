@@ -234,6 +234,31 @@ TEST_F(CargoDistServiceSimulationTest, MixedVehicleCapacityUsesAverageDeparture)
     EXPECT_EQ(getStateConst().serviceEdges.begin()->second.fleetCapacity, 30);
 }
 
+TEST_F(CargoDistServiceSimulationTest, CrushLoadingPolicyBelongsToDepartureStop)
+{
+    auto* head = createVehicle();
+    auto* firstStop = Vehicles::OrderRingView(head->orderTableOffset).begin()->as<Vehicles::OrderStopAt>();
+    ASSERT_NE(firstStop, nullptr);
+    firstStop->setCrushLoading(true);
+
+    recalculateNow();
+
+    const auto& legs = getStateConst().vehicleServiceLegs.at(head->id);
+    const auto firstLeg = std::ranges::find(legs, station(1), &VehicleServiceLeg::from);
+    const auto secondLeg = std::ranges::find(legs, station(2), &VehicleServiceLeg::from);
+    ASSERT_NE(firstLeg, legs.end());
+    ASSERT_NE(secondLeg, legs.end());
+    EXPECT_TRUE(firstLeg->crushLoading);
+    EXPECT_FALSE(secondLeg->crushLoading);
+
+    head->stationId = station(1);
+    head->currentOrder = firstLeg->currentOrder;
+    EXPECT_TRUE(head->isCrushLoadingAtCurrentStop());
+    head->stationId = station(2);
+    head->currentOrder = secondLeg->currentOrder;
+    EXPECT_FALSE(head->isCrushLoadingAtCurrentStop());
+}
+
 TEST_F(CargoDistServiceSimulationTest, RepeatedStopDoesNotCreateSelfEdge)
 {
     createVehicleWithStops({ station(1), station(1), station(2) });
@@ -1390,6 +1415,25 @@ TEST(CargoDistSimulation, LoadsOnlyCargoForVehiclesNextStop)
     EXPECT_EQ(vehicleCargo.qty, 20);
     EXPECT_EQ(stationCargo.quantity, 15);
     EXPECT_EQ(getVehicleCargoConst(key)->quantityFor(station(2), leg.departure), 20);
+}
+
+TEST(CargoDistSimulation, ExplicitCrushCapacityLoadsAboveNominalCapacity)
+{
+    reset();
+    constexpr auto leg = serviceLeg(1, 2, 4, 0, 1);
+    auto& waiting = getOrCreateStationCargo(station(1), 0);
+    waiting.append({ 20, station(1), station(2), 3, leg.departure, leg.arrival });
+    StationCargoStats stationCargo{};
+    synchroniseStationCargo(station(1), 0, stationCargo);
+    Vehicles::VehicleCargo vehicleCargo{ 1, 0, 10, StationId::null, 0, 0 };
+    const VehicleCargoKey key{ entity(10), VehicleCargoSlot::primary };
+
+    EXPECT_EQ(loadVehicleCargo(key, vehicleCargo, station(1), stationCargo, leg, 15), 15);
+    EXPECT_EQ(vehicleCargo.maxQty, 10);
+    EXPECT_EQ(vehicleCargo.qty, 15);
+    EXPECT_EQ(stationCargo.quantity, 5);
+    EXPECT_EQ(getVehicleCargoConst(key)->quantity(), 15U);
+    EXPECT_EQ(loadVehicleCargo(key, vehicleCargo, station(1), stationCargo, leg, 15), 0);
 }
 
 TEST(CargoDistSimulation, LoadsOnlyCargoForExactService)

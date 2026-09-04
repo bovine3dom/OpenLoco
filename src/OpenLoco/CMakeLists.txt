@@ -96,6 +96,7 @@ set(OLOCO_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/GameCommands/Vehicles/VehicleOrderReverse.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/GameCommands/Vehicles/VehicleOrderShare.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/GameCommands/Vehicles/VehicleOrderSkip.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/GameCommands/Vehicles/VehicleOrderSetCrushLoading.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/GameCommands/Vehicles/VehicleOrderToggleUnbunching.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/GameCommands/Vehicles/VehicleOrderUp.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/GameCommands/Vehicles/VehiclePassSignal.cpp"

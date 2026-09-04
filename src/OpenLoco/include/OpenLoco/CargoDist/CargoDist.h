@@ -185,6 +185,7 @@ namespace OpenLoco::CargoDist
         StationId to = StationId::null;
         ServicePoint departure{};
         ServicePoint arrival{};
+        bool crushLoading{};
 
         auto operator<=>(const VehicleServiceLeg&) const = default;
     };

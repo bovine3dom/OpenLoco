@@ -113,6 +113,7 @@ namespace OpenLoco::Vehicles
     public:
         bool isVehicleTypeCompatible(const uint16_t vehicleTypeId);
         bool hasUnbunchingOrder() const;
+        bool isCrushLoadingAtCurrentStop() const;
         void resetUnbunching();
         void arriveAtUnbunchingStop();
         bool isWaitingForUnbunching();

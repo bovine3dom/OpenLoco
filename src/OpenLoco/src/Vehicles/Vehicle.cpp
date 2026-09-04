@@ -12,6 +12,7 @@
 #include "Map/Track/TrackData.h"
 #include "MessageManager.h"
 #include "Objects/AirportObject.h"
+#include "Objects/CargoObject.h"
 #include "Objects/ObjectManager.h"
 #include "Objects/RoadObject.h"
 #include "Ui/WindowManager.h"
@@ -35,6 +36,35 @@ namespace OpenLoco::Vehicles
     static constexpr int32_t kObjDistToHighPrecisionDistance = 2179;
     // TODO: Get rid of this global
     static VehicleUpdateDistances _vehicleUpdateDistances = {};
+
+    bool isCrushLoadEligible(const TransportMode mode, const CargoCategory cargoCategory)
+    {
+        if (mode != TransportMode::rail && mode != TransportMode::road)
+        {
+            return false;
+        }
+        return cargoCategory == CargoCategory::passengers;
+    }
+
+    bool isCrushLoadEligible(const TransportMode mode, const uint8_t cargoType)
+    {
+        if (cargoType >= ObjectManager::getMaxObjects(CargoObject::kObjectType))
+        {
+            return false;
+        }
+        const auto* cargoObject = ObjectManager::get<CargoObject>(cargoType);
+        return cargoObject != nullptr && isCrushLoadEligible(mode, cargoObject->cargoCategory);
+    }
+
+    uint8_t getCrushLoadCapacity(const uint8_t nominalCapacity)
+    {
+        return static_cast<uint8_t>(std::min<uint16_t>(static_cast<uint16_t>(nominalCapacity) * 3 / 2, std::numeric_limits<uint8_t>::max()));
+    }
+
+    uint8_t getEffectiveLoadCapacity(const uint8_t nominalCapacity, const TransportMode mode, const uint8_t cargoType, const bool crushLoading)
+    {
+        return crushLoading && isCrushLoadEligible(mode, cargoType) ? getCrushLoadCapacity(nominalCapacity) : nominalCapacity;
+    }
 
     VehicleBase* VehicleBase::nextVehicle()
     {

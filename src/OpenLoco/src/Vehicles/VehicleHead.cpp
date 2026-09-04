@@ -101,6 +101,35 @@ namespace OpenLoco::Vehicles
         return static_cast<currency32_t>(current + amount);
     }
 
+    static uint16_t calculateCargoTransferTimeout(const CargoObject& cargo, const uint16_t quantity, const uint8_t loadingModifier, const uint16_t crushQuantity = 0)
+    {
+        const auto transferUnits = static_cast<uint32_t>(quantity) + crushQuantity;
+        const auto timeout = static_cast<uint64_t>(cargo.cargoTransferTime) * transferUnits * loadingModifier / 256;
+        return static_cast<uint16_t>(std::min<uint64_t>(timeout, std::numeric_limits<uint16_t>::max()));
+    }
+
+    static uint16_t getUnloadedCrushQuantity(const uint16_t quantityBefore, const uint16_t nominalCapacity, const uint16_t quantityUnloaded)
+    {
+        if (quantityBefore <= nominalCapacity || quantityUnloaded == 0)
+        {
+            return 0;
+        }
+        const auto crushQuantity = quantityBefore - nominalCapacity;
+        return static_cast<uint16_t>((static_cast<uint32_t>(quantityUnloaded) * crushQuantity + quantityBefore / 2) / quantityBefore);
+    }
+
+    static bool acceptsCargoDistCargo(const VehicleCargo& cargo)
+    {
+        for (uint8_t cargoType = 0; cargoType < 32; ++cargoType)
+        {
+            if ((cargo.acceptedTypes & (1U << cargoType)) != 0 && CargoDist::isEnabled(cargoType))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     using RouteSignalState = RailPathfinding::SignalState;
     using RoutingResult = RailPathfinding::RouteResult;
 
@@ -1619,6 +1648,7 @@ namespace OpenLoco::Vehicles
 
         const auto departureFrom = stationId;
         const auto departureTo = CargoDist::getNextStop(*this);
+        const auto crushLoading = isCrushLoadingAtCurrentStop();
         leaveUnbunchingStop();
         beginNewJourney();
         TimetableManager::departFromOrder(id);
@@ -1627,7 +1657,7 @@ namespace OpenLoco::Vehicles
 
         if (hasVehicleFlags(VehicleFlags::manualControl))
         {
-            CargoDist::recordVehicleDeparture(*this, departureFrom, departureTo);
+            CargoDist::recordVehicleDeparture(*this, departureFrom, departureTo, crushLoading);
             return true;
         }
 
@@ -1636,12 +1666,12 @@ namespace OpenLoco::Vehicles
             const auto reversed = tryReverse();
             if (reversed)
             {
-                CargoDist::recordVehicleDeparture(*this, departureFrom, departureTo);
+                CargoDist::recordVehicleDeparture(*this, departureFrom, departureTo, crushLoading);
             }
             return reversed;
         }
 
-        CargoDist::recordVehicleDeparture(*this, departureFrom, departureTo);
+        CargoDist::recordVehicleDeparture(*this, departureFrom, departureTo, crushLoading);
         return true;
     }
 
@@ -3420,10 +3450,6 @@ namespace OpenLoco::Vehicles
     // 0x004B9A88
     bool VehicleHead::updateUnloadCargoComponent(VehicleCargo& cargo, VehicleBogie* bogie, EntityId cargoComponent, bool isSecondaryCargo)
     {
-        if (CargoDist::isEnabled(cargo.type) && CargoDist::isServiceRecalculationPending())
-        {
-            return false;
-        }
         if (cargo.qty == 0)
         {
             return false;
@@ -3434,6 +3460,7 @@ namespace OpenLoco::Vehicles
             return false;
         }
 
+        const auto quantityBefore = static_cast<uint16_t>(cargo.qty);
         auto* station = StationManager::get(stationId);
         auto& cargoStats = station->cargoStats[cargo.type];
         if (CargoDist::isEnabled(cargo.type))
@@ -3501,7 +3528,8 @@ namespace OpenLoco::Vehicles
 
             const auto loadingModifier = getLoadingModifier(bogie);
             const auto* cargoObj = ObjectManager::get<CargoObject>(cargo.type);
-            cargoTransferTimeout = static_cast<uint16_t>(std::min<uint32_t>((cargoObj->cargoTransferTime * quantity * loadingModifier) / 256, std::numeric_limits<uint16_t>::max()));
+            const auto crushQuantity = getUnloadedCrushQuantity(quantityBefore, cargo.maxQty, static_cast<uint16_t>(quantity));
+            cargoTransferTimeout = calculateCargoTransferTimeout(*cargoObj, static_cast<uint16_t>(quantity), loadingModifier, crushQuantity);
             updateTrainProperties();
             Ui::WindowManager::invalidate(Ui::WindowType::vehicle, enumValue(id));
             return true;
@@ -3572,7 +3600,8 @@ namespace OpenLoco::Vehicles
         uint8_t loadingModifier = getLoadingModifier(bogie);
 
         auto* cargoObj = ObjectManager::get<CargoObject>(cargo.type);
-        cargoTransferTimeout = static_cast<uint16_t>(std::min<uint32_t>((cargoObj->cargoTransferTime * cargo.qty * loadingModifier) / 256, std::numeric_limits<uint16_t>::max()));
+        const auto crushQuantity = quantityBefore > cargo.maxQty ? quantityBefore - cargo.maxQty : 0;
+        cargoTransferTimeout = calculateCargoTransferTimeout(*cargoObj, quantityBefore, loadingModifier, crushQuantity);
         cargo.qty = 0;
         updateTrainProperties();
         Ui::WindowManager::invalidate(Ui::WindowType::vehicle, enumValue(id));
@@ -3597,12 +3626,17 @@ namespace OpenLoco::Vehicles
         }
 
         Vehicle train(head);
+        const auto cargoDistBlocked = CargoDist::isServiceRecalculationPending();
         for (auto& car : train.cars)
         {
             for (auto& carComponent : car)
             {
                 if (carComponent.front->hasBreakdownFlags(BreakdownFlags::awaitingCargoTransfer))
                 {
+                    if (carComponent.front->secondaryCargo.qty != 0 && cargoDistBlocked && CargoDist::isEnabled(carComponent.front->secondaryCargo.type))
+                    {
+                        return;
+                    }
                     carComponent.front->breakdownFlags &= ~BreakdownFlags::awaitingCargoTransfer;
                     if (carComponent.front->secondaryCargo.type == 0xFF)
                     {
@@ -3618,6 +3652,10 @@ namespace OpenLoco::Vehicles
                 }
                 else if (carComponent.body->hasBreakdownFlags(BreakdownFlags::awaitingCargoTransfer))
                 {
+                    if (carComponent.body->primaryCargo.qty != 0 && cargoDistBlocked && CargoDist::isEnabled(carComponent.body->primaryCargo.type))
+                    {
+                        return;
+                    }
                     carComponent.body->breakdownFlags &= ~BreakdownFlags::awaitingCargoTransfer;
                     if (carComponent.body->primaryCargo.type == 0xFF)
                     {
@@ -3640,10 +3678,6 @@ namespace OpenLoco::Vehicles
     // 0x004BA19D
     bool VehicleHead::updateLoadCargoComponent(VehicleCargo& cargo, VehicleBogie* bogie, EntityId cargoComponent, bool isSecondaryCargo)
     {
-        if (CargoDist::isEnabled(cargo.type) && CargoDist::isServiceRecalculationPending())
-        {
-            return false;
-        }
         if (cargo.maxQty == 0)
         {
             return false;
@@ -3740,11 +3774,14 @@ namespace OpenLoco::Vehicles
             }
         }
 
-        if (cargo.qty == cargo.maxQty)
+        const auto crushLoading = isCrushLoadingAtCurrentStop();
+        const auto loadCapacity = getEffectiveLoadCapacity(cargo.maxQty, mode, cargo.type, crushLoading);
+        if (cargo.qty >= loadCapacity)
         {
             return false;
         }
 
+        const auto quantityBefore = static_cast<uint16_t>(cargo.qty);
         auto* cargoObj = ObjectManager::get<CargoObject>(cargo.type);
         auto& stationCargo = station->cargoStats[cargo.type];
         uint16_t qtyTransferred;
@@ -3755,12 +3792,12 @@ namespace OpenLoco::Vehicles
                 isSecondaryCargo ? CargoDist::VehicleCargoSlot::secondary : CargoDist::VehicleCargoSlot::primary,
             };
             qtyTransferred = serviceLeg.has_value()
-                ? CargoDist::loadVehicleCargo(key, cargo, stationId, stationCargo, *serviceLeg)
+                ? CargoDist::loadVehicleCargo(key, cargo, stationId, stationCargo, *serviceLeg, loadCapacity)
                 : 0;
         }
         else
         {
-            qtyTransferred = std::min<uint16_t>(cargo.maxQty - cargo.qty, stationCargo.quantity);
+            qtyTransferred = std::min<uint16_t>(loadCapacity - cargo.qty, stationCargo.quantity);
 
             if (stationCargo.quantity != 0)
             {
@@ -3792,7 +3829,9 @@ namespace OpenLoco::Vehicles
             stationCargo.quantity -= qtyTransferred;
             cargo.qty += qtyTransferred;
         }
-        cargoTransferTimeout = static_cast<uint16_t>(std::min<uint32_t>((cargoObj->cargoTransferTime * qtyTransferred * loadingModifier) / 256, std::numeric_limits<uint16_t>::max()));
+        const auto normalRoom = cargo.maxQty > quantityBefore ? cargo.maxQty - quantityBefore : 0;
+        const auto crushQuantity = qtyTransferred > normalRoom ? qtyTransferred - normalRoom : 0;
+        cargoTransferTimeout = calculateCargoTransferTimeout(*cargoObj, qtyTransferred, loadingModifier, crushQuantity);
         station->updateCargoDistribution();
         const uint8_t typeAgeMap[] = { 0, 5, 3, 2, 0, 0 };
         stationCargo.age = std::min(stationCargo.age, typeAgeMap[static_cast<uint8_t>(vehicleType)]);
@@ -3832,12 +3871,19 @@ namespace OpenLoco::Vehicles
         }
 
         Vehicle train(head);
+        const auto cargoDistBlocked = CargoDist::isServiceRecalculationPending();
         for (auto& car : train.cars)
         {
             for (auto& carComponent : car)
             {
                 if (carComponent.front->hasBreakdownFlags(BreakdownFlags::awaitingCargoTransfer))
                 {
+                    const auto& cargo = carComponent.front->secondaryCargo;
+                    const auto usesCargoDist = cargo.qty != 0 ? CargoDist::isEnabled(cargo.type) : acceptsCargoDistCargo(cargo);
+                    if (cargo.maxQty != 0 && cargoDistBlocked && usesCargoDist)
+                    {
+                        return true;
+                    }
                     carComponent.front->breakdownFlags &= ~BreakdownFlags::awaitingCargoTransfer;
                     if (carComponent.front->secondaryCargo.type == 0xFF)
                     {
@@ -3853,6 +3899,12 @@ namespace OpenLoco::Vehicles
                 }
                 else if (carComponent.body->hasBreakdownFlags(BreakdownFlags::awaitingCargoTransfer))
                 {
+                    const auto& cargo = carComponent.body->primaryCargo;
+                    const auto usesCargoDist = cargo.qty != 0 ? CargoDist::isEnabled(cargo.type) : acceptsCargoDistCargo(cargo);
+                    if (cargo.maxQty != 0 && cargoDistBlocked && usesCargoDist)
+                    {
+                        return true;
+                    }
                     carComponent.body->breakdownFlags &= ~BreakdownFlags::awaitingCargoTransfer;
                     if (carComponent.body->primaryCargo.type == 0xFF)
                     {
@@ -3867,6 +3919,7 @@ namespace OpenLoco::Vehicles
             }
         }
 
+        const auto crushLoading = isCrushLoadingAtCurrentStop();
         auto orders = getCurrentOrders();
         for (auto& order : orders)
         {
@@ -3887,7 +3940,8 @@ namespace OpenLoco::Vehicles
             {
                 for (auto& carComponent : car)
                 {
-                    if (carComponent.front->secondaryCargo.type == waitFor->getCargo() && carComponent.front->secondaryCargo.maxQty != carComponent.front->secondaryCargo.qty)
+                    const auto& secondaryCargo = carComponent.front->secondaryCargo;
+                    if (secondaryCargo.type == waitFor->getCargo() && secondaryCargo.qty < getEffectiveLoadCapacity(secondaryCargo.maxQty, mode, secondaryCargo.type, crushLoading))
                     {
                         // Look at the vehicleHead awaitingCargoTransfer see note on flag
                         if (!hasBreakdownFlags(BreakdownFlags::awaitingCargoTransfer))
@@ -3902,7 +3956,8 @@ namespace OpenLoco::Vehicles
                         cantWait = true;
                         break;
                     }
-                    if (carComponent.body->primaryCargo.type == waitFor->getCargo() && carComponent.body->primaryCargo.maxQty != carComponent.body->primaryCargo.qty)
+                    const auto& primaryCargo = carComponent.body->primaryCargo;
+                    if (primaryCargo.type == waitFor->getCargo() && primaryCargo.qty < getEffectiveLoadCapacity(primaryCargo.maxQty, mode, primaryCargo.type, crushLoading))
                     {
                         // Look at the vehicleHead awaitingCargoTransfer see note on flag
                         if (!hasBreakdownFlags(BreakdownFlags::awaitingCargoTransfer))
@@ -3954,6 +4009,24 @@ namespace OpenLoco::Vehicles
             }
         }
         return false;
+    }
+
+    bool VehicleHead::isCrushLoadingAtCurrentStop() const
+    {
+        if (stationId == StationId::null)
+        {
+            return false;
+        }
+
+        const OrderStopAt* previousStop = nullptr;
+        for (const auto& order : getCurrentOrders())
+        {
+            if (order.hasFlags(OrderFlags::IsRoutable))
+            {
+                previousStop = order.as<OrderStopAt>();
+            }
+        }
+        return previousStop != nullptr && previousStop->getStation() == stationId && previousStop->isCrushLoading();
     }
 
     void VehicleHead::arriveAtUnbunchingStop()

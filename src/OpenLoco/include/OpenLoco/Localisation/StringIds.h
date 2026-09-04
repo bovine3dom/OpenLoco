@@ -2392,6 +2392,12 @@ namespace OpenLoco::StringIds
     constexpr StringId sortByReliabilityLoss = 2680;
     constexpr StringId sortByPowerToWeight = 2681;
     constexpr StringId sortByCapacityPerTile = 2682;
+    constexpr StringId crush_loading_button = 2683;
+    constexpr StringId tooltip_route_toggle_crush_loading = 2684;
+    constexpr StringId orders_stop_at_crush_loading = 2685;
+    constexpr StringId orders_stop_at_unbunching_crush_loading = 2686;
+    constexpr StringId cannot_change_crush_loading = 2687;
+    constexpr StringId stats_crush_capacity = 2688;
 
     constexpr StringId temporary_object_load_str_0 = 8192;
     constexpr StringId temporary_object_load_str_1 = 8193;

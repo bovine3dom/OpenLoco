@@ -10,6 +10,7 @@
 #include "GameCommands/Vehicles/VehicleOrderDown.h"
 #include "GameCommands/Vehicles/VehicleOrderInsert.h"
 #include "GameCommands/Vehicles/VehicleOrderReverse.h"
+#include "GameCommands/Vehicles/VehicleOrderSetCrushLoading.h"
 #include "GameCommands/Vehicles/VehicleOrderShare.h"
 #include "GameCommands/Vehicles/VehicleOrderSkip.h"
 #include "GameCommands/Vehicles/VehicleOrderToggleUnbunching.h"
@@ -403,6 +404,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
             timetableResetDispatch,
             timetableFleetStatus,
             timetableRuntimeStatus,
+            orderCrushLoading,
         };
 
         namespace Widx
@@ -435,6 +437,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
             constexpr WidgetId kTimetableResetDispatch{ "timetableResetDispatch" };
             constexpr WidgetId kTimetableFleetStatus{ "timetableFleetStatus" };
             constexpr WidgetId kTimetableRuntimeStatus{ "timetableRuntimeStatus" };
+            constexpr WidgetId kOrderCrushLoading{ "orderCrushLoading" };
         }
 
         constexpr uint64_t holdableWidgets = 0;
@@ -446,7 +449,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
             makeWidget({ 0, 0 }, { 1, 1 }, WidgetType::empty, WindowColour::primary),
             Widgets::Button(Widx::kLocalMode, { 3, 44 }, { 118, 12 }, WindowColour::secondary, StringIds::local_mode_button),
             Widgets::Button(Widx::kExpressMode, { 121, 44 }, { 119, 12 }, WindowColour::secondary, StringIds::express_mode_button),
-            Widgets::Button(Widx::kOrderUnbunch, { 3, 56 }, { 237, 12 }, WindowColour::secondary, StringIds::unbunching_button, StringIds::tooltip_route_toggle_unbunching),
+            Widgets::Button(Widx::kOrderUnbunch, { 3, 56 }, { 118, 12 }, WindowColour::secondary, StringIds::unbunching_button, StringIds::tooltip_route_toggle_unbunching),
             Widgets::Label(Widx::kSharedOrderStatus, { 3, 70 }, { 100, 12 }, WindowColour::secondary, ContentAlign::left),
             Widgets::Button(Widx::kSharedOrderPrimary, { 103, 70 }, { 95, 12 }, WindowColour::secondary, StringIds::use_shared_orders_from, StringIds::tooltip_use_shared_orders_from),
             Widgets::Button(Widx::kSharedOrderLeave, { 198, 70 }, { 42, 12 }, WindowColour::secondary, StringIds::leave_shared_orders, StringIds::tooltip_leave_shared_orders),
@@ -471,7 +474,8 @@ namespace OpenLoco::Ui::Windows::Vehicle
             Widgets::Button(Widx::kTimetableClearDispatch, { 81, 257 }, { 78, 12 }, WindowColour::secondary, StringIds::timetable_clear_dispatch, StringIds::tooltip_timetable_clear_dispatch),
             Widgets::Button(Widx::kTimetableResetDispatch, { 159, 257 }, { 81, 12 }, WindowColour::secondary, StringIds::timetable_reset_dispatch, StringIds::tooltip_timetable_reset_dispatch),
             Widgets::Label(Widx::kTimetableFleetStatus, { 3, 259 }, { 259, 12 }, WindowColour::secondary, ContentAlign::left),
-            Widgets::Label(Widx::kTimetableRuntimeStatus, { 3, 272 }, { 259, 12 }, WindowColour::secondary, ContentAlign::left)
+            Widgets::Label(Widx::kTimetableRuntimeStatus, { 3, 272 }, { 259, 12 }, WindowColour::secondary, ContentAlign::left),
+            Widgets::Button(Widx::kOrderCrushLoading, { 121, 56 }, { 119, 12 }, WindowColour::secondary, StringIds::crush_loading_button, StringIds::tooltip_route_toggle_crush_loading)
 
         );
     }
@@ -2827,8 +2831,8 @@ namespace OpenLoco::Ui::Windows::Vehicle
             for (const auto& car : train.cars)
             {
                 for (const auto key : {
-                    CargoDist::VehicleCargoKey{ car.body->id, CargoDist::VehicleCargoSlot::primary },
-                    CargoDist::VehicleCargoKey{ car.front->id, CargoDist::VehicleCargoSlot::secondary } })
+                         CargoDist::VehicleCargoKey{ car.body->id, CargoDist::VehicleCargoSlot::primary },
+                         CargoDist::VehicleCargoKey{ car.front->id, CargoDist::VehicleCargoSlot::secondary } })
                 {
                     const auto* packets = CargoDist::getVehicleCargoConst(key);
                     if (packets == nullptr || packets->empty())
@@ -3984,6 +3988,28 @@ namespace OpenLoco::Ui::Windows::Vehicle
                     GameCommands::VehicleOrderToggleUnbunchingArgs args{};
                     args.head = head->id;
                     args.orderOffset = order->getOffset() - head->orderTableOffset;
+                    GameCommands::doCommand(args, GameCommands::Flags::apply);
+                    break;
+                }
+                case Widx::kOrderCrushLoading:
+                {
+                    if (head->owner != CompanyManager::getControllingId() || self.orderTableIndex < 0)
+                    {
+                        return;
+                    }
+
+                    auto* order = getOrderTable(head).atIndex(self.orderTableIndex);
+                    auto* stopOrder = order != nullptr ? order->as<Vehicles::OrderStopAt>() : nullptr;
+                    if (stopOrder == nullptr)
+                    {
+                        return;
+                    }
+
+                    GameCommands::setErrorTitle(StringIds::cannot_change_crush_loading);
+                    GameCommands::VehicleOrderSetCrushLoadingArgs args{};
+                    args.head = head->id;
+                    args.orderOffset = order->getOffset() - head->orderTableOffset;
+                    args.enabled = !stopOrder->isCrushLoading();
                     GameCommands::doCommand(args, GameCommands::Flags::apply);
                     break;
                 }
@@ -5185,6 +5211,8 @@ namespace OpenLoco::Ui::Windows::Vehicle
 
             self.disabledWidgets |= 1 << widx::orderUnbunch;
             self.activatedWidgets &= ~(1 << widx::orderUnbunch);
+            self.disabledWidgets |= 1ULL << widx::orderCrushLoading;
+            self.activatedWidgets &= ~(1ULL << widx::orderCrushLoading);
             if (self.orderTableIndex >= 0)
             {
                 const auto* selectedOrder = getOrderTable(head).atIndex(self.orderTableIndex);
@@ -5195,9 +5223,17 @@ namespace OpenLoco::Ui::Windows::Vehicle
                     {
                         self.disabledWidgets &= ~(1 << widx::orderUnbunch);
                     }
+                    if (head->owner == CompanyManager::getControllingId() && (head->mode == TransportMode::rail || head->mode == TransportMode::road))
+                    {
+                        self.disabledWidgets &= ~(1ULL << widx::orderCrushLoading);
+                    }
                     if (stopOrder->isUnbunching())
                     {
                         self.activatedWidgets |= 1 << widx::orderUnbunch;
+                    }
+                    if (stopOrder->isCrushLoading())
+                    {
+                        self.activatedWidgets |= 1ULL << widx::orderCrushLoading;
                     }
                 }
             }
@@ -5280,7 +5316,9 @@ namespace OpenLoco::Ui::Windows::Vehicle
             self.widgets[widx::expressMode].right = self.widgets[widx::routeList].right;
             self.widgets[widx::expressMode].left = (self.widgets[widx::expressMode].right - 3) / 2 + 3;
             self.widgets[widx::localMode].right = self.widgets[widx::expressMode].left - 1;
-            self.widgets[widx::orderUnbunch].right = self.widgets[widx::routeList].right;
+            self.widgets[widx::orderUnbunch].right = self.widgets[widx::localMode].right;
+            self.widgets[widx::orderCrushLoading].left = self.widgets[widx::expressMode].left;
+            self.widgets[widx::orderCrushLoading].right = self.widgets[widx::routeList].right;
 
             self.disabledWidgets |= (1 << widx::orderUp) | (1 << widx::orderDown);
             if (self.orderTableIndex != -1)
@@ -5503,11 +5541,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
                     self.disabledWidgets &= ~(1ULL << widx::timetableTravel);
                     if (timetableEntry->orderType == Vehicles::OrderType::StopAt)
                     {
-                        self.disabledWidgets &= ~((1ULL << widx::timetableDwell)
-                            | (1ULL << widx::timetablePeriod)
-                            | (1ULL << widx::timetablePhase)
-                            | (1ULL << widx::timetableMaxDelay)
-                            | (1ULL << widx::timetableAddSlot));
+                        self.disabledWidgets &= ~((1ULL << widx::timetableDwell) | (1ULL << widx::timetablePeriod) | (1ULL << widx::timetablePhase) | (1ULL << widx::timetableMaxDelay) | (1ULL << widx::timetableAddSlot));
                         if (dispatch != nullptr)
                         {
                             self.disabledWidgets &= ~(1ULL << widx::timetableClearDispatch);
@@ -5685,9 +5719,17 @@ namespace OpenLoco::Ui::Windows::Vehicle
 
                 auto orderStringId = orderString[static_cast<uint8_t>(order.getType())];
                 const auto* stopOrder = order.as<Vehicles::OrderStopAt>();
-                if (stopOrder != nullptr && stopOrder->isUnbunching())
+                if (stopOrder != nullptr && stopOrder->isUnbunching() && stopOrder->isCrushLoading())
+                {
+                    orderStringId = StringIds::orders_stop_at_unbunching_crush_loading;
+                }
+                else if (stopOrder != nullptr && stopOrder->isUnbunching())
                 {
                     orderStringId = StringIds::orders_stop_at_unbunching;
+                }
+                else if (stopOrder != nullptr && stopOrder->isCrushLoading())
+                {
+                    orderStringId = StringIds::orders_stop_at_crush_loading;
                 }
                 FormatArguments args{};
                 args.push(orderStringId);

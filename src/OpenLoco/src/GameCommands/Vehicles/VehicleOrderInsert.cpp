@@ -192,6 +192,7 @@ namespace OpenLoco::GameCommands
                 auto* member = VehicleOrderCommon::getHead(id);
                 auto& existingOrder = OrderManager::orders()[member->orderTableOffset + previousOffset];
                 existingOrder.as<OrderStopAt>()->setUnbunching(false);
+                existingOrder.as<OrderStopAt>()->setCrushLoading(false);
                 existingOrder.setType(OrderType::RouteThrough);
                 member->resetUnbunching();
             }

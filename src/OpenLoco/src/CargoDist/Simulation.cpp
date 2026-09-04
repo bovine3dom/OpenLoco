@@ -24,8 +24,8 @@
 #include "World/Station.h"
 #include "World/StationManager.h"
 #include "World/TownManager.h"
-#include <OpenLoco/Math/Vector.hpp>
 #include <OpenLoco/Math/Bound.hpp>
+#include <OpenLoco/Math/Vector.hpp>
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -55,6 +55,7 @@ namespace OpenLoco::CargoDist
             StationId stop = StationId::null;
             uint8_t unloadCargo = 0xFF;
             uint8_t waitForCargo = 0xFF;
+            bool crushLoading{};
         };
 
         struct EdgeAccumulator
@@ -75,8 +76,10 @@ namespace OpenLoco::CargoDist
         struct CargoCapacityInput
         {
             uint32_t acceptedTypes{};
+            uint32_t crushLoadTypes{};
             uint8_t type{};
             uint16_t maxQty{};
+            std::array<uint16_t, 32> crushTransferTimes{};
         };
 
         struct VehicleServiceInput
@@ -364,27 +367,91 @@ namespace OpenLoco::CargoDist
             });
         }
 
-        void addCargoCapacity(std::array<uint32_t, 32>& capacities, const CargoCapacityInput& cargo, uint32_t routeWaitForMask, uint32_t departureWaitForMask)
+        uint32_t getAcceptedCargoTypes(const CargoCapacityInput& cargo, const uint32_t routeWaitForMask, const uint32_t departureWaitForMask)
+        {
+            auto acceptedTypes = cargo.acceptedTypes;
+            if (routeWaitForMask != 0)
+            {
+                const auto waitedTypes = acceptedTypes & routeWaitForMask;
+                acceptedTypes = waitedTypes != 0
+                    ? waitedTypes
+                    : cargo.type < 32 ? acceptedTypes & (1U << cargo.type)
+                                      : 0;
+            }
+            const auto requiredTypes = acceptedTypes & departureWaitForMask;
+            return requiredTypes != 0 ? std::bit_floor(requiredTypes) : acceptedTypes;
+        }
+
+        void addCargoCapacity(std::array<uint32_t, 32>& capacities, const CargoCapacityInput& cargo, const uint32_t routeWaitForMask, const uint32_t departureWaitForMask, const bool crushLoading)
         {
             if (cargo.maxQty == 0)
             {
                 return;
             }
-            auto acceptedTypes = cargo.acceptedTypes;
-            if (routeWaitForMask != 0)
-            {
-                const auto waitedTypes = acceptedTypes & routeWaitForMask;
-                acceptedTypes = waitedTypes != 0 ? waitedTypes : acceptedTypes & (1U << cargo.type);
-            }
-            const auto requiredTypes = acceptedTypes & departureWaitForMask;
-            acceptedTypes = requiredTypes != 0 ? std::bit_floor(requiredTypes) : acceptedTypes;
+            const auto acceptedTypes = getAcceptedCargoTypes(cargo, routeWaitForMask, departureWaitForMask);
             for (uint8_t cargoType = 0; cargoType < capacities.size(); ++cargoType)
             {
                 if ((acceptedTypes & (1U << cargoType)) != 0)
                 {
-                    capacities[cargoType] = saturatedAdd(capacities[cargoType], cargo.maxQty);
+                    const auto capacity = crushLoading && (cargo.crushLoadTypes & (1U << cargoType)) != 0
+                        ? Vehicles::getCrushLoadCapacity(static_cast<uint8_t>(cargo.maxQty))
+                        : cargo.maxQty;
+                    capacities[cargoType] = saturatedAdd(capacities[cargoType], capacity);
                 }
             }
+        }
+
+        uint32_t estimateCrushLoadingDwell(const VehicleServiceInput& vehicle, const uint32_t routeWaitForMask, const uint32_t departureWaitForMask, const bool crushLoading)
+        {
+            if (!crushLoading)
+            {
+                return 0;
+            }
+
+            uint32_t dwell = 0;
+            for (const auto& cargo : vehicle.compartments)
+            {
+                const auto crushLoadTypes = getAcceptedCargoTypes(cargo, routeWaitForMask, departureWaitForMask) & cargo.crushLoadTypes;
+                if (crushLoadTypes == 0)
+                {
+                    continue;
+                }
+                uint16_t transferTime = 0;
+                for (uint8_t cargoType = 0; cargoType < cargo.crushTransferTimes.size(); ++cargoType)
+                {
+                    if ((crushLoadTypes & (1U << cargoType)) != 0)
+                    {
+                        transferTime = std::max(transferTime, cargo.crushTransferTimes[cargoType]);
+                    }
+                }
+                const auto nominalCapacity = static_cast<uint8_t>(cargo.maxQty);
+                const auto excessCapacity = Vehicles::getCrushLoadCapacity(nominalCapacity) - nominalCapacity;
+                const auto transferDwell = static_cast<uint32_t>(transferTime) * excessCapacity * 2 / 256;
+                dwell = saturatedAdd(dwell, transferDwell * 2);
+            }
+            return dwell;
+        }
+
+        CargoCapacityInput captureCargoCapacity(const Vehicles::VehicleCargo& cargo, const TransportMode mode)
+        {
+            CargoCapacityInput result{};
+            result.acceptedTypes = cargo.acceptedTypes;
+            result.type = cargo.type;
+            result.maxQty = cargo.maxQty;
+            for (uint8_t cargoType = 0; cargoType < 32; ++cargoType)
+            {
+                if ((cargo.acceptedTypes & (1U << cargoType)) == 0)
+                {
+                    continue;
+                }
+                const auto* cargoObj = ObjectManager::get<CargoObject>(cargoType);
+                if (cargoObj != nullptr && Vehicles::isCrushLoadEligible(mode, cargoObj->cargoCategory))
+                {
+                    result.crushLoadTypes |= 1U << cargoType;
+                    result.crushTransferTimes[cargoType] = cargoObj->cargoTransferTime;
+                }
+            }
+            return result;
         }
 
         size_t getCanonicalRotation(const std::vector<RouteOrder>& orders)
@@ -511,7 +578,6 @@ namespace OpenLoco::CargoDist
                     }
                 }
 
-                const auto travelTime = estimateTravelTime(distance, vehicle.mode, vehicle.maxSpeed);
                 uint32_t unloadMask = 0;
                 uint32_t departureWaitForMask = 0;
                 for (auto orderIndex = (fromIndex + 1) % orders.size(); orderIndex != toIndex; orderIndex = (orderIndex + 1) % orders.size())
@@ -529,20 +595,26 @@ namespace OpenLoco::CargoDist
                         departureWaitForMask |= 1U << orders[orderIndex].waitForCargo;
                     }
                 }
+                const auto travelTime = estimateTravelTime(distance, vehicle.mode, vehicle.maxSpeed);
+                const auto dwellTime = estimateCrushLoadingDwell(vehicle, routeWaitForMask, departureWaitForMask, orders[fromIndex].crushLoading);
+                const auto legTime = saturatedAdd(travelTime, dwellTime);
                 std::array<uint32_t, 32> capacities{};
                 for (const auto& cargo : vehicle.compartments)
                 {
-                    addCargoCapacity(capacities, cargo, routeWaitForMask, departureWaitForMask);
+                    addCargoCapacity(capacities, cargo, routeWaitForMask, departureWaitForMask, orders[fromIndex].crushLoading);
                 }
                 route.legs.push_back({
                     orders[(fromIndex + 1) % orders.size()].offset,
                     orders[fromIndex].stop,
                     orders[toIndex].stop,
+                    {},
+                    {},
+                    orders[fromIndex].crushLoading,
                 });
-                route.legTimes.push_back(travelTime);
+                route.legTimes.push_back(legTime);
                 route.unloadMasks.push_back(unloadMask);
                 route.legCapacities.push_back(capacities);
-                route.cycleTime += travelTime;
+                route.cycleTime = saturatedAdd(route.cycleTime, static_cast<uint64_t>(legTime));
             }
             return route;
         }
@@ -694,6 +766,7 @@ namespace OpenLoco::CargoDist
                         }
                         routeOrder.position = World::Pos2{ station->x, station->y };
                         routeOrder.stop = stop->getStation();
+                        routeOrder.crushLoading = stop->isCrushLoading();
                     }
                     else if (const auto* through = order.as<Vehicles::OrderRouteThrough>())
                     {
@@ -726,8 +799,8 @@ namespace OpenLoco::CargoDist
                 vehicle.compartments.reserve(train.cars.size() * 2);
                 for (const auto& car : train.cars)
                 {
-                    vehicle.compartments.push_back({ car.body->primaryCargo.acceptedTypes, car.body->primaryCargo.type, car.body->primaryCargo.maxQty });
-                    vehicle.compartments.push_back({ car.front->secondaryCargo.acceptedTypes, car.front->secondaryCargo.type, car.front->secondaryCargo.maxQty });
+                    vehicle.compartments.push_back(captureCargoCapacity(car.body->primaryCargo, vehicle.mode));
+                    vehicle.compartments.push_back(captureCargoCapacity(car.front->secondaryCargo, vehicle.mode));
                 }
                 vehicles.push_back(std::move(vehicle));
             }
@@ -2615,7 +2688,7 @@ namespace OpenLoco::CargoDist
         return adjustment;
     }
 
-    uint16_t loadVehicleCargo(VehicleCargoKey key, Vehicles::VehicleCargo& nativeCargo, StationId station, StationCargoStats& nativeStationCargo, const VehicleServiceLeg& serviceLeg)
+    uint16_t loadVehicleCargo(VehicleCargoKey key, Vehicles::VehicleCargo& nativeCargo, StationId station, StationCargoStats& nativeStationCargo, const VehicleServiceLeg& serviceLeg, const std::optional<uint8_t> loadCapacity)
     {
         if (serviceLeg.from != station || serviceLeg.to == StationId::null)
         {
@@ -2637,7 +2710,8 @@ namespace OpenLoco::CargoDist
 
         auto& stationPackets = getOrCreateStationCargo(station, nativeCargo.type);
         auto& vehiclePackets = getOrCreateVehicleCargo(key);
-        const auto freeCapacity = nativeCargo.maxQty - std::min<uint32_t>(vehiclePackets.quantity(), nativeCargo.maxQty);
+        const auto capacity = loadCapacity.value_or(nativeCargo.maxQty);
+        const auto freeCapacity = capacity - std::min<uint32_t>(vehiclePackets.quantity(), capacity);
         auto loaded = stationPackets.takeFor(serviceLeg.to, serviceLeg.departure, freeCapacity);
         auto remainingCapacity = freeCapacity - loaded.quantity();
         if (remainingCapacity != 0)
@@ -2863,12 +2937,13 @@ namespace OpenLoco::CargoDist
         return leg == nullptr ? std::nullopt : std::optional{ *leg };
     }
 
-    void recordVehicleDeparture(const Vehicles::VehicleHead& head, const StationId from, const StationId to)
+    void recordVehicleDeparture(const Vehicles::VehicleHead& head, const StationId from, const StationId to, const bool crushLoading)
     {
         const auto recordCargo = [&](const Vehicles::VehicleCargo& cargo) {
             if (isEnabled(cargo.type))
             {
-                FlowAnalytics::recordDeparture(cargo.type, from, to, cargo.qty, cargo.maxQty);
+                const auto capacity = Vehicles::getEffectiveLoadCapacity(cargo.maxQty, head.mode, cargo.type, crushLoading);
+                FlowAnalytics::recordDeparture(cargo.type, from, to, cargo.qty, capacity);
             }
         };
         Vehicles::Vehicle vehicle(head.head);
@@ -2932,10 +3007,7 @@ namespace OpenLoco::CargoDist
         return std::none_of(stationCargo.begin(), stationCargo.end(), [cargo](const auto& item) {
                    return item.first.cargo == cargo && item.second.quantity() > std::numeric_limits<uint16_t>::max();
                })
-            && std::none_of(stationCargo.begin(), stationCargo.end(), hasHolidayPackets)
-            && !hasVehicleHolidayPackets
-            && std::none_of(state.pendingHolidayReturns.begin(), state.pendingHolidayReturns.end(), [cargo](const auto& pending) { return pending.cargo == cargo; })
-            && !hasOutstandingTransferCredits(cargo);
+            && std::none_of(stationCargo.begin(), stationCargo.end(), hasHolidayPackets) && !hasVehicleHolidayPackets && std::none_of(state.pendingHolidayReturns.begin(), state.pendingHolidayReturns.end(), [cargo](const auto& pending) { return pending.cargo == cargo; }) && !hasOutstandingTransferCredits(cargo);
     }
 
     void setMode(uint8_t cargo, DistributionMode mode)
@@ -3509,8 +3581,9 @@ namespace OpenLoco::CargoDist
         std::sort(state.pendingHolidayReturns.begin(), state.pendingHolidayReturns.end());
         processHolidayReturns(false);
         bool pendingChanged = std::erase_if(state.pendingHolidayReturns, [industry](const auto& pending) {
-            return pending.resort == industry && pending.resortStation == StationId::null;
-        }) != 0;
+                                  return pending.resort == industry && pending.resortStation == StationId::null;
+                              })
+            != 0;
         for (auto& pending : state.pendingHolidayReturns)
         {
             if (pending.resort == industry)
@@ -3604,9 +3677,10 @@ namespace OpenLoco::CargoDist
         std::erase_if(state.stationCargo, [](const auto& item) { return item.second.empty(); });
         std::erase_if(state.vehicleCargo, [](const auto& item) { return item.second.empty(); });
         changed |= std::erase_if(state.holidaySources, [town](const auto& item) {
-            const auto* station = StationManager::get(item.first.station);
-            return station == nullptr || station->empty() || station->town == town;
-        }) != 0;
+                       const auto* station = StationManager::get(item.first.station);
+                       return station == nullptr || station->empty() || station->town == town;
+                   })
+            != 0;
         if (changed)
         {
             clearHolidayRouting();

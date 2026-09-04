@@ -1652,6 +1652,26 @@ namespace OpenLoco::Ui::Windows::BuildVehicle
         }
 
         vehicleObj->getCargoString(buffer);
+        buffer += StringManager::locoStrlen(buffer);
+        if (purchaseStats.cargoType != 0xFF && Vehicles::isCrushLoadEligible(vehicleObj->mode, purchaseStats.cargoType))
+        {
+            uint16_t crushCapacity = 0;
+            for (uint8_t compartment = 0; compartment < std::min<uint8_t>(vehicleObj->numSimultaneousCargoTypes, 2); ++compartment)
+            {
+                if ((vehicleObj->compatibleCargoCategories[compartment] & (1U << purchaseStats.cargoType)) != 0)
+                {
+                    crushCapacity += Vehicles::getCrushLoadCapacity(vehicleObj->maxCargo[compartment]);
+                }
+            }
+            if (crushCapacity > purchaseStats.cargoCapacity)
+            {
+                const auto* cargoObj = ObjectManager::get<CargoObject>(purchaseStats.cargoType);
+                FormatArguments args{};
+                args.push(crushCapacity);
+                args.push(cargoObj->name);
+                buffer = StringManager::formatString(buffer, StringIds::stats_crush_capacity, args);
+            }
+        }
 
         auto x = self.widgets[widx::scrollview_vehicle_selection].right + 2;
         auto y = self.widgets[widx::scrollview_vehicle_preview].bottom + 2;

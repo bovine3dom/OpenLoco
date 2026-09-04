@@ -87,6 +87,7 @@ namespace OpenLoco::Vehicles
     {
         static constexpr OrderType kType = OrderType::StopAt;
         static constexpr uint8_t kUnbunch = 1U << 3;
+        static constexpr uint8_t kCrushLoading = 1U << 4;
 
         OrderStopAt(const StationId station)
         {
@@ -98,6 +99,12 @@ namespace OpenLoco::Vehicles
         void setUnbunching(bool enabled)
         {
             _type = (_type & ~kUnbunch) | (enabled ? kUnbunch : 0);
+        }
+
+        bool isCrushLoading() const { return (_type & kCrushLoading) != 0; }
+        void setCrushLoading(bool enabled)
+        {
+            _type = (_type & ~kCrushLoading) | (enabled ? kCrushLoading : 0);
         }
     };
 

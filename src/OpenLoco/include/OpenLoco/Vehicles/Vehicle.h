@@ -17,6 +17,11 @@ namespace OpenLoco::World
     enum class SignalMode : uint8_t;
 }
 
+namespace OpenLoco
+{
+    enum class CargoCategory : uint16_t;
+}
+
 namespace OpenLoco::Vehicles
 {
     constexpr auto kMaxRoadVehicleLength = 176;    // TODO: Units?
@@ -377,6 +382,11 @@ namespace OpenLoco::Vehicles
         uint8_t numDays;
         uint8_t qty;
     };
+
+    bool isCrushLoadEligible(TransportMode mode, CargoCategory cargoCategory);
+    bool isCrushLoadEligible(TransportMode mode, uint8_t cargoType);
+    uint8_t getCrushLoadCapacity(uint8_t nominalCapacity);
+    uint8_t getEffectiveLoadCapacity(uint8_t nominalCapacity, TransportMode mode, uint8_t cargoType, bool crushLoading);
 
     struct Sub4ACEE7Result
     {
