@@ -340,6 +340,9 @@ namespace OpenLoco::Ui::Windows::Construction
             signal_mode_dropdown,
             both_directions,
             single_direction,
+            train_length,
+            train_length_decrease,
+            train_length_increase,
         };
 
         namespace Widx
@@ -350,6 +353,9 @@ namespace OpenLoco::Ui::Windows::Construction
             constexpr WidgetId kSignalModeDropdown{ "signal_mode_dropdown" };
             constexpr WidgetId kBothDirections{ "both_directions" };
             constexpr WidgetId kSingleDirection{ "single_direction" };
+            constexpr WidgetId kTrainLength{ "train_length" };
+            constexpr WidgetId kTrainLengthDecrease{ "train_length_decrease" };
+            constexpr WidgetId kTrainLengthIncrease{ "train_length_increase" };
         }
 
         std::span<const Widget> getWidgets();

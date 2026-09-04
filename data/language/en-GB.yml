@@ -2748,3 +2748,5 @@ strings:
   2693: "{NEWLINE}{COLOUR WINDOW_2}Coupling: {COLOUR BLACK}Restricted"
   2694: "{NEWLINE}{COLOUR WINDOW_2}Traction: {COLOUR BLACK}Wheel slip possible"
   2695: "{NEWLINE}{COLOUR WINDOW_2}Road compatibility: {COLOUR BLACK}Any compatible road type"
+  2696: "Train length: {UINT16} tiles"
+  2697: "{SMALLFONT}{COLOUR BLACK}Set the train length used to preview track occupied behind a signal"

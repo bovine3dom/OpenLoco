@@ -14,6 +14,7 @@
 #include "Map/TileManager.h"
 #include "Map/Track/OneWaySignalConflicts.h"
 #include "Map/Track/TrackData.h"
+#include "Map/Track/TrackFootprintPreview.h"
 #include "Map/TrackElement.h"
 #include "Objects/ObjectManager.h"
 #include "Objects/TrackObject.h"
@@ -25,7 +26,9 @@
 #include "Ui/Widget.h"
 #include "Ui/Widgets/DropdownWidget.h"
 #include "Ui/Widgets/ImageButtonWidget.h"
+#include "Ui/Widgets/StepperWidget.h"
 #include "Ui/Windows/Construction/Construction.h"
+#include <algorithm>
 #include <vector>
 
 using namespace OpenLoco::World;
@@ -46,11 +49,14 @@ namespace OpenLoco::Ui::Windows::Construction::Signal
     }
 
     static constexpr auto widgets = makeWidgets(
-        Common::makeCommonWidgets(138, 188, StringIds::stringid_2),
+        Common::makeCommonWidgets(138, 205, StringIds::stringid_2),
         Widgets::dropdownWidgets(Widx::kSignal, Widx::kSignalDropdown, { 3, 45 }, { 132, 12 }, WindowColour::secondary, Widget::kContentNull, StringIds::tooltip_select_signal_type),
         Widgets::dropdownWidgets(Widx::kSignalMode, Widx::kSignalModeDropdown, { 3, 105 }, { 132, 12 }, WindowColour::secondary, StringIds::signal_mode_block, StringIds::tooltip_select_signal_type),
-        Widgets::ImageButton(Widx::kBothDirections, { 27, 122 }, { 40, 40 }, WindowColour::secondary, Widget::kContentNull, StringIds::tooltip_signal_both_directions),
-        Widgets::ImageButton(Widx::kSingleDirection, { 71, 122 }, { 40, 40 }, WindowColour::secondary, Widget::kContentNull, StringIds::tooltip_signal_single_direction));
+        Widgets::ImageButton(Widx::kBothDirections, { 27, 139 }, { 40, 40 }, WindowColour::secondary, Widget::kContentNull, StringIds::tooltip_signal_both_directions),
+        Widgets::ImageButton(Widx::kSingleDirection, { 71, 139 }, { 40, 40 }, WindowColour::secondary, Widget::kContentNull, StringIds::tooltip_signal_single_direction),
+        Widgets::stepperWidgets(Widx::kTrainLength, Widx::kTrainLengthDecrease, Widx::kTrainLengthIncrease, { 3, 122 }, { 132, 12 }, WindowColour::secondary, StringIds::signal_train_length, StringIds::tooltip_signal_train_length));
+
+    static constexpr uint64_t kHoldableWidgets = (1ULL << widx::train_length_decrease) | (1ULL << widx::train_length_increase);
 
     static constexpr StringId getSignalModeString(const World::SignalMode mode)
     {
@@ -134,6 +140,18 @@ namespace OpenLoco::Ui::Windows::Construction::Signal
                 Dropdown::add(2, StringIds::signal_mode_one_way_path);
                 Dropdown::setHighlightedItem(static_cast<size_t>(getLastSignalMode()));
                 break;
+
+            case Widx::kTrainLengthDecrease:
+            case Widx::kTrainLengthIncrease:
+            {
+                auto& construction = Scenario::getConstruction();
+                const auto delta = id == Widx::kTrainLengthDecrease ? -1 : 1;
+                const auto length = std::clamp<int32_t>(construction.lastSignalTrainLength() + delta, Scenario::Construction::kMinSignalTrainLength, Scenario::Construction::kMaxSignalTrainLength);
+                construction.setLastSignalTrainLength(static_cast<uint8_t>(length));
+                removeConstructionGhosts();
+                self.invalidate();
+                break;
+            }
 
             case Widx::kBothDirections:
             {
@@ -251,6 +269,7 @@ namespace OpenLoco::Ui::Windows::Construction::Signal
             {
                 World::Track::OneWaySignalConflicts::updatePreview({ args.pos, args.sides, args.trackId, args.rotation, args.index, args.trackObjType });
             }
+            World::Track::TrackFootprintPreview::updatePreview({ args.pos, args.sides, args.trackId, args.rotation, args.index, args.trackObjType }, Scenario::getConstruction().lastSignalTrainLength());
         }
         return res;
     }
@@ -259,6 +278,7 @@ namespace OpenLoco::Ui::Windows::Construction::Signal
     void removeSignalGhost()
     {
         World::Track::OneWaySignalConflicts::clearPreview();
+        World::Track::TrackFootprintPreview::clearPreview();
         if (Common::hasGhostVisibilityFlag(GhostVisibilityFlags::signal))
         {
             auto& cState = getConstructionState();
@@ -482,6 +502,7 @@ namespace OpenLoco::Ui::Windows::Construction::Signal
 
     static void onToolAbort([[maybe_unused]] Window& self, [[maybe_unused]] const WidgetIndex_t widgetIndex, [[maybe_unused]] const WidgetId id)
     {
+        removeSignalGhost();
         _isDragging = false;
         _isDragStartValid = false;
     }
@@ -501,6 +522,8 @@ namespace OpenLoco::Ui::Windows::Construction::Signal
 
         self.widgets[widx::signal].text = trainSignalObject->name;
         self.widgets[widx::signal_mode].text = getSignalModeString(getLastSignalMode());
+        auto lengthArgs = FormatArguments(self.widgets[widx::train_length].textArgs);
+        lengthArgs.push<uint16_t>(Scenario::getConstruction().lastSignalTrainLength());
 
         Common::repositionTabs(&self);
     }
@@ -554,6 +577,7 @@ namespace OpenLoco::Ui::Windows::Construction::Signal
 
     void tabReset(Window& self)
     {
+        self.holdableWidgets = kHoldableWidgets;
         self.callOnMouseDown(Signal::widx::single_direction, self.widgets[Signal::widx::single_direction].id);
     }
 

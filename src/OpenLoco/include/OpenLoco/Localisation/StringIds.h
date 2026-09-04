@@ -2405,6 +2405,8 @@ namespace OpenLoco::StringIds
     constexpr StringId stats_restricted_coupling = 2693;
     constexpr StringId stats_wheel_slip = 2694;
     constexpr StringId stats_any_road_type = 2695;
+    constexpr StringId signal_train_length = 2696;
+    constexpr StringId tooltip_signal_train_length = 2697;
 
     constexpr StringId temporary_object_load_str_0 = 8192;
     constexpr StringId temporary_object_load_str_1 = 8193;

@@ -16,6 +16,7 @@
 #include <OpenLoco/Map/Track/OneWaySignalConflicts.h>
 #include <OpenLoco/Map/Track/Track.h>
 #include <OpenLoco/Map/Track/TrackData.h>
+#include <OpenLoco/Map/Track/TrackFootprintPreview.h>
 #include <OpenLoco/Map/Track/TrackOverlayAudits.h>
 #include <OpenLoco/Map/TrackElement.h>
 #include <OpenLoco/Map/TreeElement.h>
@@ -39,11 +40,13 @@
 #include <cstring>
 #include <gtest/gtest.h>
 #include <memory>
+#include <optional>
 #include <vector>
 
 using namespace OpenLoco::World;
 namespace SignalConflicts = OpenLoco::World::Track::OneWaySignalConflicts;
 namespace DisconnectedTracks = OpenLoco::World::Track::DisconnectedTracks;
+namespace TrackFootprintPreview = OpenLoco::World::Track::TrackFootprintPreview;
 namespace TrackOverlayAudits = OpenLoco::World::Track::TrackOverlayAudits;
 
 namespace
@@ -117,6 +120,7 @@ namespace
         void TearDown() override
         {
             SignalConflicts::clearPreview();
+            TrackFootprintPreview::clearPreview();
             OpenLoco::World::resetMapSelectionFlag(OpenLoco::World::MapSelectionFlags::unk_04);
             OpenLoco::GameCommands::setUpdatingCompanyId(_previousUpdatingCompany);
             OpenLoco::EntityManager::reset();
@@ -183,7 +187,7 @@ namespace
             return head;
         }
 
-        static void addTrack(const Pos3& start, const uint8_t trackId, const uint8_t rotation, const bool hasSignal = false, const SignalMode signalMode = SignalMode::block)
+        static void addTrack(const Pos3& start, const uint8_t trackId, const uint8_t rotation, const bool hasSignal = false, const SignalMode signalMode = SignalMode::block, const OpenLoco::CompanyId owner = OpenLoco::CompanyId(0), const uint8_t trackObjectId = 0)
         {
             const auto pieces = TrackData::getTrackPiece(trackId);
             for (const auto& piece : pieces)
@@ -196,10 +200,10 @@ namespace
                 auto& track = trackEntry->get<TrackElement>();
                 track.setClearZ(track.baseZ() + 8);
                 track.setRotation(rotation);
-                track.setTrackObjectId(0);
+                track.setTrackObjectId(trackObjectId);
                 track.setSequenceIndex(piece.index);
                 track.setTrackId(trackId);
-                track.setOwner(OpenLoco::CompanyId(0));
+                track.setOwner(owner);
                 track.setFlag6(piece.index == pieces.size() - 1);
                 if (!hasSignal)
                 {
@@ -241,12 +245,13 @@ namespace
             station.setStationType(OpenLoco::StationType::trainStation);
         }
 
-        static TrackElement* getTrack(const Pos3& pos, const uint8_t trackId = 0, const uint8_t rotation = 0)
+        static TrackElement* getTrack(const Pos3& pos, const uint8_t trackId = 0, const uint8_t rotation = 0, const std::optional<OpenLoco::CompanyId> owner = {}, const std::optional<uint8_t> trackObjectId = {})
         {
             auto tile = TileManager::get(pos);
-            const auto track = std::ranges::find_if(tile, [pos, trackId, rotation](const auto& entry) {
+            const auto track = std::ranges::find_if(tile, [pos, trackId, rotation, owner, trackObjectId](const auto& entry) {
                 const auto* elTrack = entry.template as<TrackElement>();
-                return elTrack != nullptr && elTrack->baseHeight() == pos.z && elTrack->trackId() == trackId && elTrack->rotation() == rotation;
+                return elTrack != nullptr && elTrack->baseHeight() == pos.z && elTrack->trackId() == trackId && elTrack->rotation() == rotation
+                    && (!owner || elTrack->owner() == *owner) && (!trackObjectId || elTrack->trackObjectId() == *trackObjectId);
             });
             return track != tile.end() ? track->template as<TrackElement>() : nullptr;
         }
@@ -277,6 +282,13 @@ namespace
             const auto* track = getTrack(pos, trackId, rotation);
             EXPECT_NE(track, nullptr);
             return track != nullptr && DisconnectedTracks::isHighlighted(pos, *track);
+        }
+
+        static bool isFootprintHighlighted(const Pos3& pos, const uint8_t trackId = 0, const uint8_t rotation = 0)
+        {
+            const auto* track = getTrack(pos, trackId, rotation);
+            EXPECT_NE(track, nullptr);
+            return track != nullptr && TrackFootprintPreview::isHighlighted(pos, *track);
         }
 
         static void addTwoRouteJunction(const Pos3& firstPos = kFirstPos)
@@ -1107,6 +1119,24 @@ TEST(SignalModePersistenceTest, LastSelectedModeRoundTripsThroughS5)
 
     const auto restored = OpenLoco::S5::importGameState(*saved);
     EXPECT_EQ(restored->scenarioConstruction.lastSignalMode(), static_cast<uint8_t>(SignalMode::path));
+}
+
+TEST(SignalModePersistenceTest, TrainLengthRoundTripsAndSanitisesLegacyValues)
+{
+    auto gameState = std::make_unique<OpenLoco::GameState>();
+    gameState->scenarioConstruction.setLastSignalTrainLength(12);
+
+    const auto saved = OpenLoco::S5::exportGameState(*gameState);
+    EXPECT_EQ(saved->general.scenarioConstruction.var_17A[1], 12);
+    EXPECT_EQ(OpenLoco::S5::importGameState(*saved)->scenarioConstruction.lastSignalTrainLength(), 12);
+
+    saved->general.scenarioConstruction.var_17A[1] = 0xFF;
+    auto restored = OpenLoco::S5::importGameState(*saved);
+    EXPECT_EQ(restored->scenarioConstruction.lastSignalTrainLength(), OpenLoco::Scenario::Construction::kDefaultSignalTrainLength);
+    restored->scenarioConstruction.setLastSignalTrainLength(0);
+    EXPECT_EQ(restored->scenarioConstruction.lastSignalTrainLength(), OpenLoco::Scenario::Construction::kMinSignalTrainLength);
+    restored->scenarioConstruction.setLastSignalTrainLength(65);
+    EXPECT_EQ(restored->scenarioConstruction.lastSignalTrainLength(), OpenLoco::Scenario::Construction::kMaxSignalTrainLength);
 }
 
 TEST_F(TileManagerTest, StandardPathSignalCanBePassedFromBehindButOneWayPathSignalCannot)
@@ -2098,6 +2128,214 @@ TEST_F(PathSignalsTest, PreviewsConflictThroughPathSignalPassableFromBehind)
     EXPECT_TRUE(isConflictHighlighted(pathSignal));
     EXPECT_TRUE(isConflictHighlighted(middle));
     EXPECT_TRUE(isConflictHighlighted(existingSignal));
+}
+
+TEST_F(PathSignalsTest, TrackFootprintStartsBehindBothSignalSidesAndUsesExactLength)
+{
+    constexpr Pos3 selectedSignal{ 320, 320, 32 };
+    constexpr Pos3 firstEastApproach{ 352, 320, 32 };
+    constexpr Pos3 secondEastApproach{ 384, 320, 32 };
+    constexpr Pos3 beyondEastFootprint{ 416, 320, 32 };
+    constexpr Pos3 firstWestApproach{ 288, 320, 32 };
+    constexpr Pos3 secondWestApproach{ 256, 320, 32 };
+    constexpr Pos3 beyondWestFootprint{ 224, 320, 32 };
+    for (const auto pos : { beyondWestFootprint, secondWestApproach, firstWestApproach, selectedSignal, firstEastApproach, secondEastApproach, beyondEastFootprint })
+    {
+        addTrack(pos, 0, 0);
+    }
+
+    TrackFootprintPreview::updatePreview({ selectedSignal, 0xC000, 0, 0, 0, 0 }, 2);
+
+    EXPECT_FALSE(isFootprintHighlighted(selectedSignal));
+    for (const auto pos : { firstEastApproach, secondEastApproach, firstWestApproach, secondWestApproach })
+    {
+        EXPECT_TRUE(isFootprintHighlighted(pos));
+    }
+    for (const auto pos : { beyondEastFootprint, beyondWestFootprint })
+    {
+        EXPECT_FALSE(isFootprintHighlighted(pos));
+    }
+
+    TrackFootprintPreview::clearPreview();
+    EXPECT_FALSE(isFootprintHighlighted(firstEastApproach));
+}
+
+TEST_F(PathSignalsTest, TrackFootprintResolvesSignalPlacementFromAnySequenceElement)
+{
+    constexpr Pos3 selectedTrackStart{ 320, 320, 32 };
+    constexpr Pos3 approach{ 352, 320, 32 };
+    constexpr uint8_t selectedTrackId = 4;
+    constexpr uint8_t selectedRotation = 0;
+    constexpr uint8_t selectedSequence = 2;
+    addTrack(selectedTrackStart, selectedTrackId, selectedRotation);
+    addTrack(approach, 0, 0);
+    const auto& selectedPiece = TrackData::getTrackPiece(selectedTrackId)[selectedSequence];
+    const auto selectedOffset = OpenLoco::Math::Vector::rotate(Pos2{ selectedPiece.x, selectedPiece.y }, selectedRotation);
+    const auto selectedPos = selectedTrackStart + Pos3{ selectedOffset, selectedPiece.z };
+
+    TrackFootprintPreview::updatePreview({ selectedPos, 0x8000, selectedTrackId, selectedRotation, selectedSequence, 0 }, 1);
+
+    EXPECT_TRUE(isFootprintHighlighted(approach));
+    for (const auto& piece : TrackData::getTrackPiece(selectedTrackId))
+    {
+        const auto offset = OpenLoco::Math::Vector::rotate(Pos2{ piece.x, piece.y }, selectedRotation);
+        const auto pos = selectedTrackStart + Pos3{ offset, piece.z };
+        EXPECT_FALSE(isFootprintHighlighted(pos, selectedTrackId, selectedRotation));
+    }
+}
+
+TEST_F(PathSignalsTest, TrackFootprintUsesSubpositionDistanceThroughCurve)
+{
+    constexpr Pos3 selectedSignal{ 320, 320, 32 };
+    constexpr Pos3 curveStart{ 352, 320, 32 };
+    constexpr uint8_t curveId = 2;
+    constexpr uint8_t curveRotation = 2;
+    constexpr Pos3 reverseBeyondFootprint{ 288, 320, 32 };
+    addTrack(reverseBeyondFootprint, 0, 0);
+    addTrack(selectedSignal, 0, 0);
+    addTrack(curveStart, curveId, curveRotation);
+    const auto [firstStraight, firstStraightRotation] = Track::getTrackConnectionEnd(curveStart, (curveId << 3) | curveRotation);
+    const auto [secondStraight, secondStraightRotation] = Track::getTrackConnectionEnd(firstStraight, firstStraightRotation);
+    addTrack(firstStraight, 0, firstStraightRotation);
+    addTrack(secondStraight, 0, secondStraightRotation);
+
+    TrackFootprintPreview::updatePreview({ selectedSignal, 0x8000, 0, 0, 0, 0 }, 1);
+
+    EXPECT_TRUE(isFootprintHighlighted(curveStart, curveId, curveRotation));
+    EXPECT_TRUE(isFootprintHighlighted(firstStraight, 0, firstStraightRotation));
+    EXPECT_FALSE(isFootprintHighlighted(secondStraight, 0, secondStraightRotation));
+
+    TrackFootprintPreview::updatePreview({ firstStraight, 0x8000, 0, firstStraightRotation, 0, 0 }, 1);
+    EXPECT_TRUE(isFootprintHighlighted(curveStart, curveId, curveRotation));
+    EXPECT_TRUE(isFootprintHighlighted(selectedSignal));
+    EXPECT_FALSE(isFootprintHighlighted(reverseBeyondFootprint));
+}
+
+TEST_F(PathSignalsTest, TrackFootprintHighlightsCompleteSlopedPieceThatIntersectsBudget)
+{
+    constexpr Pos3 selectedSignal{ 320, 320, 32 };
+    constexpr Pos3 slopeStart{ 352, 320, 32 };
+    constexpr uint8_t slopeId = 14;
+    constexpr uint8_t slopeRotation = 2;
+    addTrack(selectedSignal, 0, 0);
+    addTrack(slopeStart, slopeId, slopeRotation);
+    const auto [slopeEnd, slopeEndRotation] = Track::getTrackConnectionEnd(slopeStart, (slopeId << 3) | slopeRotation);
+    addTrack(slopeEnd, 0, slopeEndRotation);
+
+    TrackFootprintPreview::updatePreview({ selectedSignal, 0x8000, 0, 0, 0, 0 }, 1);
+
+    for (const auto& piece : TrackData::getTrackPiece(slopeId))
+    {
+        const auto offset = OpenLoco::Math::Vector::rotate(Pos2{ piece.x, piece.y }, slopeRotation);
+        const auto pos = slopeStart + Pos3{ offset, piece.z };
+        const auto* track = getTrack(pos, slopeId, slopeRotation);
+        ASSERT_NE(track, nullptr);
+        EXPECT_TRUE(TrackFootprintPreview::isHighlighted(pos, *track));
+    }
+    EXPECT_FALSE(isFootprintHighlighted(slopeEnd, 0, slopeEndRotation));
+
+    TrackFootprintPreview::updatePreview({ selectedSignal, 0x8000, 0, 0, 0, 0 }, 3);
+    EXPECT_TRUE(isFootprintHighlighted(slopeEnd, 0, slopeEndRotation));
+}
+
+TEST_F(PathSignalsTest, TrackFootprintKeepsBestBudgetAfterBranchesReconverge)
+{
+    constexpr Pos3 selectedSignal{ 352, 320, 32 };
+    constexpr Pos3 approach{ 320, 320, 32 };
+    constexpr Pos3 junction{ 288, 320, 32 };
+    constexpr Pos3 rejoined{ 224, 320, 32 };
+    constexpr Pos3 lastIncluded{ 192, 320, 32 };
+    constexpr Pos3 beyondFootprint{ 160, 320, 32 };
+    addTrack(selectedSignal, 0, 0);
+    addTrack(approach, 0, 0);
+
+    addTrack(junction, 0, 0);
+    addTrack({ 256, 320, 32 }, 0, 0);
+
+    addTrack(junction, 2, 0);
+    addTrack({ 288, 288, 32 }, 3, 3);
+    addTrack({ 256, 288, 32 }, 3, 0);
+    addTrack({ 256, 320, 32 }, 2, 1);
+
+    for (const auto pos : { rejoined, lastIncluded, beyondFootprint })
+    {
+        addTrack(pos, 0, 0);
+    }
+
+    TrackFootprintPreview::updatePreview({ selectedSignal, 0x4000, 0, 0, 0, 0 }, 5);
+
+    const auto* straightJunctionTrack = getTrack(junction, 0, 0);
+    const auto* curvedJunctionTrack = getTrack(junction, 2, 0);
+    ASSERT_NE(straightJunctionTrack, nullptr);
+    ASSERT_NE(curvedJunctionTrack, nullptr);
+    EXPECT_TRUE(TrackFootprintPreview::isHighlighted(junction, *straightJunctionTrack));
+    EXPECT_TRUE(TrackFootprintPreview::isHighlighted(junction, *curvedJunctionTrack));
+    EXPECT_TRUE(isFootprintHighlighted(rejoined));
+    EXPECT_TRUE(isFootprintHighlighted(lastIncluded));
+    EXPECT_FALSE(isFootprintHighlighted(beyondFootprint));
+}
+
+TEST_F(PathSignalsTest, TrackFootprintRequiresExactOwnerObjectAndHeight)
+{
+    constexpr Pos3 selectedSignal{ 320, 320, 32 };
+    constexpr Pos3 approach{ 352, 320, 32 };
+    constexpr Pos3 elevatedApproach{ 352, 320, 64 };
+    addTrack(selectedSignal, 0, 0);
+    addTrack(approach, 0, 0);
+    addTrack(approach, 0, 0, false, SignalMode::block, OpenLoco::CompanyId(1), 0);
+    addTrack(approach, 0, 0, false, SignalMode::block, OpenLoco::CompanyId(0), 1);
+    addTrack(elevatedApproach, 0, 0);
+
+    TrackFootprintPreview::updatePreview({ selectedSignal, 0x8000, 0, 0, 0, 0 }, 1);
+
+    const auto* matching = getTrack(approach, 0, 0, OpenLoco::CompanyId(0), 0);
+    const auto* wrongOwner = getTrack(approach, 0, 0, OpenLoco::CompanyId(1), 0);
+    const auto* wrongObject = getTrack(approach, 0, 0, OpenLoco::CompanyId(0), 1);
+    ASSERT_NE(matching, nullptr);
+    ASSERT_NE(wrongOwner, nullptr);
+    ASSERT_NE(wrongObject, nullptr);
+    const auto* elevated = getTrack(elevatedApproach);
+    ASSERT_NE(elevated, nullptr);
+    EXPECT_TRUE(TrackFootprintPreview::isHighlighted(approach, *matching));
+    EXPECT_FALSE(TrackFootprintPreview::isHighlighted(approach, *wrongOwner));
+    EXPECT_FALSE(TrackFootprintPreview::isHighlighted(approach, *wrongObject));
+    EXPECT_FALSE(TrackFootprintPreview::isHighlighted(elevatedApproach, *elevated));
+}
+
+TEST_F(PathSignalsTest, TrackFootprintStopsAtSelectedSignalAfterLoop)
+{
+    constexpr Pos3 first{ 320, 320, 32 };
+    constexpr Pos3 second{ 320, 288, 32 };
+    constexpr Pos3 third{ 352, 288, 32 };
+    constexpr Pos3 fourth{ 352, 320, 32 };
+    const std::array<std::pair<Pos3, uint8_t>, 4> loop{ { { first, 0 }, { second, 3 }, { third, 2 }, { fourth, 1 } } };
+    for (const auto& [pos, rotation] : loop)
+    {
+        addTrack(pos, 2, rotation);
+    }
+
+    TrackFootprintPreview::updatePreview({ first, 0xC000, 2, 0, 0, 0 }, 64);
+
+    EXPECT_FALSE(isFootprintHighlighted(first, 2, 0));
+    for (const auto& [pos, rotation] : std::span(loop).subspan(1))
+    {
+        EXPECT_TRUE(isFootprintHighlighted(pos, 2, rotation));
+    }
+}
+
+TEST_F(PathSignalsTest, TrackFootprintHandlesMapBoundaries)
+{
+    constexpr Pos3 firstCorner{ 0, 0, 32 };
+    constexpr auto lastTile = TilePos2{ kMapColumns - 1, kMapRows - 1 };
+    constexpr Pos3 lastCorner{ toWorldSpace(lastTile), 32 };
+    addTrack(firstCorner, 0, 0);
+    addTrack(lastCorner, 0, 0);
+
+    TrackFootprintPreview::updatePreview({ firstCorner, 0xC000, 0, 0, 0, 0 }, 64);
+    EXPECT_FALSE(isFootprintHighlighted(firstCorner));
+
+    TrackFootprintPreview::updatePreview({ lastCorner, 0xC000, 0, 0, 0, 0 }, 64);
+    EXPECT_FALSE(isFootprintHighlighted(lastCorner));
 }
 
 TEST_F(PathSignalsTest, ChoosesLongerRouteWhenShortRouteBeyondSignalIsOccupied)
