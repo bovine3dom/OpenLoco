@@ -162,6 +162,22 @@ TEST_F(StationManagerTest, ProducedCargoPreservesWeightedPaymentAge)
     EXPECT_EQ(cargo.enrouteAge, 3);
 }
 
+TEST_F(StationManagerTest, CargoRatingUsesServiceAgeNotPaymentAge)
+{
+    auto& station = getGameState().stations[enumValue(kStationId)];
+    station.flags |= StationFlags::flag_7;
+    auto& cargo = station.cargoStats[0];
+    cargo.vehicleAge = 10;
+    cargo.age = 255;
+    EXPECT_EQ(station.calculateCargoRating(cargo), 0);
+
+    cargo.age = 5;
+    const auto servicedRating = station.calculateCargoRating(cargo);
+    EXPECT_GT(servicedRating, 0);
+    cargo.enrouteAge = 255;
+    EXPECT_EQ(station.calculateCargoRating(cargo), servicedRating);
+}
+
 TEST(StationCatchmentEstimate, CalculatesExpectedMonthlyBuildingProduction)
 {
     EXPECT_EQ(getBuildingMonthlyProductionEstimateScaled(0, false), 0U);

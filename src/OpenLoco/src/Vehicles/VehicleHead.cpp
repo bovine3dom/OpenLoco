@@ -4030,10 +4030,7 @@ namespace OpenLoco::Vehicles
         {
             cargo.type = *selectedCargo;
         }
-        else if (cargo.qty == 0)
-        {
-            return false;
-        }
+        // An empty visit still offers service for the current cargo type, allowing zero ratings to recover.
         if (cargo.type >= 32 || (policy.cargoToUnload & (1U << cargo.type)) != 0
             || (skipCargoDist && CargoDist::isEnabled(cargo.type)))
         {
