@@ -854,6 +854,7 @@ set(test_files
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/ObjectIndexSelectionTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/RailTrafficTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/SignalFuzzerTests.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/SignalToolTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/StationManagerTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/TileManagerTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/TimetableManagerTests.cpp"

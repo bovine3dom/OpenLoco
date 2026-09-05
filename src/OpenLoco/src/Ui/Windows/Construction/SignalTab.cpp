@@ -29,6 +29,7 @@
 #include "Ui/Widgets/StepperWidget.h"
 #include "Ui/Windows/Construction/Construction.h"
 #include <algorithm>
+#include <cstdlib>
 #include <vector>
 
 using namespace OpenLoco::World;
@@ -382,10 +383,17 @@ namespace OpenLoco::Ui::Windows::Construction::Signal
             return;
         }
 
+        // Held clicks also receive drag updates; map hit-testing alone cannot detect mouse movement.
+        const auto dragOffset = Point{ x, y } - Input::getDragLastLocation();
+        if (!_isDragging && std::abs(dragOffset.x) < 4 && std::abs(dragOffset.y) < 4)
+        {
+            return;
+        }
+
         mapInvalidateSelectionRect();
         removeConstructionGhosts();
 
-        const auto [interaction, _] = ViewportInteraction::getMapCoordinatesFromPos(x, y, ~(ViewportInteraction::InteractionItemFlags::surface | ViewportInteraction::InteractionItemFlags::water));
+        const auto [interaction, _] = ViewportInteraction::getMapCoordinatesFromPos(x, y, ~(ViewportInteraction::InteractionItemFlags::track | ViewportInteraction::InteractionItemFlags::surface | ViewportInteraction::InteractionItemFlags::water));
         if (interaction.type == ViewportInteraction::InteractionItem::noInteraction)
         {
             return;
