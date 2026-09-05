@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+#include "Localisation/StringIds.h"
 #include "Ui/CargoRouteTree.h"
 #include <OpenLoco/CargoDist/CargoDist.h>
 #include <OpenLoco/Objects/CargoObject.h>
@@ -92,6 +93,128 @@ TEST(CargoDistPackets, CoalescesTransferCredits)
     ASSERT_EQ(packets.size(), 1U);
     EXPECT_EQ(packets.quantity(), 5U);
     EXPECT_EQ(packets.packets().front().transferCredit, 12);
+}
+
+TEST(CargoDistPackets, SplitsRevenueContributionsProportionally)
+{
+    CargoPacket packet{ 3, station(1), station(2), 3, {}, {}, station(4), 10 };
+    packet.legOrigin = station(3);
+    packet.revenueContributions = { { EntityId(1), 10 }, { EntityId(2), 1 } };
+
+    const auto taken = packet.extract(1);
+
+    EXPECT_EQ(taken.revenueContributions, (std::vector<RevenueContribution>{ { EntityId(1), 3 } }));
+    EXPECT_EQ(packet.revenueContributions, (std::vector<RevenueContribution>{ { EntityId(1), 7 }, { EntityId(2), 1 } }));
+    EXPECT_EQ(taken.legOrigin, station(3));
+    EXPECT_EQ(packet.legOrigin, station(3));
+    EXPECT_EQ(taken.transferCredit, 3);
+    EXPECT_EQ(packet.transferCredit, 7);
+}
+
+TEST(CargoDistPackets, RepeatedSplitsConserveMaximumRevenueContributions)
+{
+    constexpr auto kQuantity = std::numeric_limits<uint16_t>::max();
+    constexpr auto kWeight = std::numeric_limits<uint32_t>::max();
+    CargoPacket packet{ kQuantity, station(1), station(2), 3 };
+    packet.revenueContributions = { { EntityId(1), kWeight }, { EntityId(2), kWeight - 1 }, { EntityId(3), 1 } };
+    std::map<EntityId, uint64_t> totals;
+    for (const uint16_t amount : { 0, 1, kQuantity / 2, kQuantity - 1 - kQuantity / 2 })
+    {
+        const auto taken = packet.extract(amount);
+        for (const auto& contribution : taken.revenueContributions)
+        {
+            EXPECT_GT(contribution.weight, 0U);
+            totals[contribution.vehicle] += contribution.weight;
+        }
+    }
+
+    EXPECT_EQ(packet.quantity, 0);
+    EXPECT_TRUE(packet.revenueContributions.empty());
+    EXPECT_EQ(totals, (std::map<EntityId, uint64_t>{ { EntityId(1), kWeight }, { EntityId(2), kWeight - 1 }, { EntityId(3), 1 } }));
+}
+
+TEST(CargoDistPackets, CoalescesDifferentRevenueContributorsInVehicleOrder)
+{
+    CargoPacket first{ 2, station(1), station(2), 3 };
+    first.revenueContributions = { { EntityId(2), 5 }, { EntityId(4), 7 } };
+    auto second = first;
+    second.quantity = 3;
+    second.revenueContributions = { { EntityId(1), 9 }, { EntityId(2), 11 }, { EntityId(5), 13 } };
+
+    const auto packets = PacketList::fromPackets({ first, second });
+    const auto reversed = PacketList::fromPackets({ second, first });
+
+    ASSERT_EQ(packets.size(), 1U);
+    EXPECT_EQ(packets.quantity(), 5U);
+    EXPECT_EQ(packets.packets().front().revenueContributions, (std::vector<RevenueContribution>{ { EntityId(1), 9 }, { EntityId(2), 16 }, { EntityId(4), 7 }, { EntityId(5), 13 } }));
+    EXPECT_TRUE(std::ranges::equal(packets.packets(), reversed.packets()));
+}
+
+TEST(CargoDistPackets, SaturatesMergedRevenueContributionWeights)
+{
+    constexpr auto kWeight = std::numeric_limits<uint32_t>::max();
+    CargoPacket first{ 2, station(1), station(2), 3 };
+    first.revenueContributions = { { EntityId(1), kWeight - 1 }, { EntityId(2), kWeight - 1 } };
+    auto second = first;
+    second.revenueContributions = { { EntityId(1), 1 }, { EntityId(2), kWeight } };
+
+    const auto packets = PacketList::fromPackets({ first, second });
+
+    ASSERT_EQ(packets.size(), 1U);
+    EXPECT_EQ(packets.packets().front().revenueContributions, (std::vector<RevenueContribution>{ { EntityId(1), kWeight }, { EntityId(2), kWeight } }));
+}
+
+TEST(CargoDistPackets, PartialMergeConservesRevenueContributions)
+{
+    constexpr auto kQuantity = std::numeric_limits<uint16_t>::max();
+    CargoPacket first{ kQuantity - 1, station(1), station(2), 3 };
+    first.revenueContributions = { { EntityId(1), 5 } };
+    auto second = first;
+    second.quantity = 3;
+    second.revenueContributions = { { EntityId(1), 10 } };
+
+    auto packets = PacketList::fromPackets({ first, second });
+
+    ASSERT_EQ(packets.size(), 2U);
+    EXPECT_EQ(packets.packets()[0].quantity, kQuantity);
+    EXPECT_EQ(packets.packets()[0].revenueContributions, (std::vector<RevenueContribution>{ { EntityId(1), 8 } }));
+    EXPECT_EQ(packets.packets()[1].quantity, 2);
+    EXPECT_EQ(packets.packets()[1].revenueContributions, (std::vector<RevenueContribution>{ { EntityId(1), 7 } }));
+    const auto original = packets;
+    packets.transform([](auto&) {});
+    EXPECT_TRUE(std::ranges::equal(packets.packets(), original.packets()));
+}
+
+TEST(CargoDistPackets, KeepsLegOriginsSeparateUntilCleared)
+{
+    CargoPacket first{ 2, station(1), station(2), 3 };
+    first.legOrigin = station(3);
+    first.revenueContributions = { { EntityId(1), 5 } };
+    auto second = first;
+    second.legOrigin = station(4);
+    second.revenueContributions = { { EntityId(2), 7 } };
+    auto packets = PacketList::fromPackets({ second, first });
+
+    ASSERT_EQ(packets.size(), 2U);
+    EXPECT_EQ(packets.packets()[0].legOrigin, station(3));
+    EXPECT_EQ(packets.packets()[1].legOrigin, station(4));
+    packets.transform([](auto& packet) { packet.legOrigin = StationId::null; });
+    ASSERT_EQ(packets.size(), 1U);
+    EXPECT_EQ(packets.packets().front().revenueContributions, (std::vector<RevenueContribution>{ { EntityId(1), 5 }, { EntityId(2), 7 } }));
+}
+
+TEST(CargoDistPackets, ClearsRemovedLegOriginWithoutLosingContributions)
+{
+    CargoPacket packet{ 2, station(1), station(2), 3 };
+    packet.legOrigin = station(3);
+    packet.revenueContributions = { { EntityId(1), 5 } };
+    auto packets = PacketList::fromPackets({ packet });
+
+    packets.removeStationReferences(station(3));
+
+    ASSERT_EQ(packets.size(), 1U);
+    EXPECT_EQ(packets.packets().front().legOrigin, StationId::null);
+    EXPECT_EQ(packets.packets().front().revenueContributions, packet.revenueContributions);
 }
 
 TEST(CargoDistPackets, CoalescesMatchingHolidayPacketsAcrossOtherCohorts)
@@ -289,6 +412,56 @@ TEST(CargoRouteTree, FlattensExpandedGroupsWithinRowLimit)
     EXPECT_EQ(rows[1].field, CargoRouteField::destination);
     EXPECT_TRUE(rows[1].expanded);
     EXPECT_EQ(omittedRows, 2U);
+}
+
+TEST(CargoRouteTree, KeepsDirectAndAwaitingGroupsDistinctInEveryOrder)
+{
+    const std::vector summaries = {
+        CargoRouteSummary{ station(1), station(4), StationId::null, 5, true },
+        CargoRouteSummary{ station(1), station(4), StationId::null, 3 },
+        CargoRouteSummary{ station(1), station(4), station(2), 2 },
+    };
+    for (size_t i = 0; i < Ui::CargoRouteTree::getGroupOrderNames().size(); ++i)
+    {
+        SCOPED_TRACE(i);
+        const auto order = static_cast<Ui::CargoRouteTree::GroupOrder>(i);
+        const auto tree = getRouteTree(summaries, Ui::CargoRouteTree::getOrder(order));
+        std::set<Ui::CargoRouteTree::GroupKey> expanded;
+        Ui::CargoRouteTree::expandAllGroups(expanded, tree);
+        std::vector<Ui::CargoRouteTree::Row> rows;
+        size_t omitted = 0;
+        Ui::CargoRouteTree::appendRows(rows, tree, order, expanded, 100, omitted);
+        EXPECT_EQ(omitted, 0U);
+        const auto direct = std::find_if(rows.begin(), rows.end(), [](const auto& row) { return row.direct; });
+        const auto awaiting = std::find_if(rows.begin(), rows.end(), [](const auto& row) {
+            return row.field == CargoRouteField::nextHop && row.station == StationId::null && !row.direct;
+        });
+        ASSERT_NE(direct, rows.end());
+        ASSERT_NE(awaiting, rows.end());
+        EXPECT_EQ(direct->quantity, 5U);
+        EXPECT_EQ(awaiting->quantity, 3U);
+        EXPECT_NE(direct->key, awaiting->key);
+        EXPECT_EQ(Ui::CargoRouteTree::getRowFormat(*direct), StringIds::vehicle_cargo_group_direct);
+        EXPECT_EQ(Ui::CargoRouteTree::getRowFormat(*awaiting), StringIds::station_cargo_group_awaiting_route);
+        EXPECT_FALSE(Ui::CargoRouteTree::isStationLinkHit(*direct, 40, 200));
+
+        // Collapsing a direct group must not also collapse the awaiting-route branch.
+        expanded.erase(direct->key);
+        rows.clear();
+        Ui::CargoRouteTree::appendRows(rows, tree, order, expanded, 100, omitted);
+        EXPECT_TRUE(std::all_of(rows.begin(), rows.end(), [](const auto& row) {
+            return !row.expandable || row.expanded == !row.direct;
+        }));
+    }
+}
+
+TEST(CargoRouteTree, StationSummariesRetainImmediateNextHop)
+{
+    PacketList packets;
+    packets.append({ 5, station(1), station(4), 0, servicePoint(7, 0), servicePoint(7, 1), station(4) });
+    const auto summaries = getRouteSummaries(packets);
+    ASSERT_EQ(summaries.size(), 1U);
+    EXPECT_EQ(summaries.front(), (CargoRouteSummary{ station(1), station(4), station(4), 5 }));
 }
 
 TEST(CargoRouteTree, ExpandsAllNestedGroups)

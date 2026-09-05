@@ -1353,13 +1353,15 @@ TEST(CargoDistSimulation, AppliesNativeStationLossAndPacketAgeing)
     EXPECT_EQ(cargo.enrouteAge, 5);
 }
 
-TEST_F(CargoDistServiceSimulationTest, LostCargoReversesTransferRevenueWithoutCashPayment)
+TEST_F(CargoDistServiceSimulationTest, LostCargoDiscardsDeferredRevenueWithoutChargingAnyVehicle)
 {
     auto* head = createVehicle();
     Vehicles::Vehicle train(*head);
     head->aiThoughtId = 0xFF;
     train.veh2->curMonthRevenue = 100;
-    getOrCreateStationCargo(station(1), 0).append({ 10, station(2), station(2), 4, {}, {}, station(2), 60 });
+    CargoPacket packet{ 10, station(2), station(2), 4, {}, {}, station(2) };
+    recordRevenueContribution(packet, head->id, 6);
+    getOrCreateStationCargo(station(1), 0).append(packet);
     StationCargoStats cargo{};
     synchroniseStationCargo(station(1), 0, cargo);
     cargo.quantity = 0;
@@ -1369,12 +1371,12 @@ TEST_F(CargoDistServiceSimulationTest, LostCargoReversesTransferRevenueWithoutCa
 
     EXPECT_EQ(getStationCargoConst(station(1), 0)->quantity(), 0U);
     EXPECT_EQ(cargo.quantity, 0);
-    EXPECT_EQ(train.veh2->curMonthRevenue, 40);
+    EXPECT_EQ(train.veh2->curMonthRevenue, 100);
     EXPECT_EQ(getGameState().companies[0].cash.asInt64(), cashBefore);
     EXPECT_FALSE(consumeVehicleRevenueAdjustment(head->id).has_value());
 }
 
-TEST_F(CargoDistServiceSimulationTest, ExpiredReleasedReturnReversesTransferRevenue)
+TEST_F(CargoDistServiceSimulationTest, ExpiredReleasedReturnDiscardsDeferredRevenue)
 {
     auto* head = createVehicle();
     Vehicles::Vehicle train(*head);
@@ -1386,14 +1388,14 @@ TEST_F(CargoDistServiceSimulationTest, ExpiredReleasedReturnReversesTransferReve
     pending.homeStation = station(2);
     pending.age = std::numeric_limits<uint8_t>::max() - 1;
     pending.released = true;
-    pending.transferCredit = 60;
+    pending.revenueContributions = { { head->id, 60 } };
     getState().pendingHolidayReturns.push_back(pending);
     const auto cashBefore = getGameState().companies[0].cash.asInt64();
 
     updateDaily();
 
     EXPECT_TRUE(getStateConst().pendingHolidayReturns.empty());
-    EXPECT_EQ(train.veh2->curMonthRevenue, 40);
+    EXPECT_EQ(train.veh2->curMonthRevenue, 100);
     EXPECT_EQ(getGameState().companies[0].cash.asInt64(), cashBefore);
 }
 
@@ -1475,19 +1477,123 @@ TEST(CargoDistSimulation, DeliversCargoAtItsFlowSink)
     EXPECT_EQ(stationCargo.quantity, 0);
 }
 
-TEST(CargoDistSimulation, TransferCreditsTrackMarginalProjectedValue)
+TEST(CargoDistSimulation, RevenueSharesDivideOnlyTheActualFareWithoutNegativeShares)
 {
     CargoPacket packet{ 20, station(1), station(2), 3 };
+    recordRevenueContribution(packet, entity(10), 10);
+    recordRevenueContribution(packet, entity(11), 60);
+    recordRevenueContribution(packet, entity(12), 30);
+    EXPECT_EQ(packet.transferCredit, 0);
 
-    const auto firstCredit = accrueTransferCredit(packet, 10);
-    const auto secondCredit = accrueTransferCredit(packet, 100);
-    const auto finalIncome = calculateFinalDeliveryIncome(packet.transferCredit, 110);
+    for (const auto fare : { 0, 1, 60, 100, std::numeric_limits<currency32_t>::max() })
+    {
+        const auto shares = calculateRevenueShares(packet.revenueContributions, entity(12), fare);
+        int64_t total = 0;
+        for (const auto& share : shares)
+        {
+            EXPECT_GE(share.amount, 0);
+            total += share.amount;
+        }
+        EXPECT_EQ(total, fare);
+    }
+    const auto shares = calculateRevenueShares(packet.revenueContributions, entity(12), 60);
+    ASSERT_EQ(shares.size(), 3U);
+    EXPECT_EQ(shares[0].amount, 6);
+    EXPECT_EQ(shares[1].amount, 36);
+    EXPECT_EQ(shares[2].amount, 18);
+}
 
-    EXPECT_EQ(firstCredit, 10);
-    EXPECT_EQ(secondCredit, 90);
-    EXPECT_EQ(packet.transferCredit, 100);
-    EXPECT_EQ(finalIncome, 10);
-    EXPECT_EQ(firstCredit + secondCredit + finalIncome, 110);
+TEST(CargoDistSimulation, RevenueShareRoundingIsDeterministicAndLegacyCreditIsNotRepaid)
+{
+    const std::array contributions = { RevenueContribution{ entity(11), 1 }, RevenueContribution{ entity(10), 1 } };
+    const auto shares = calculateRevenueShares(contributions, entity(11), 1);
+    ASSERT_EQ(shares.size(), 2U);
+    EXPECT_EQ(shares[0].amount, 0);
+    EXPECT_EQ(shares[1].amount, 1);
+    EXPECT_TRUE(calculateRevenueShares(contributions, entity(11), 60, 100).empty());
+    const auto legacyShares = calculateRevenueShares(contributions, entity(11), 100, 60);
+    EXPECT_EQ(legacyShares[0].amount + legacyShares[1].amount, 40);
+    const auto direct = calculateRevenueShares({}, entity(12), 60);
+    ASSERT_EQ(direct.size(), 1U);
+    EXPECT_EQ(direct[0].vehicle, entity(12));
+    EXPECT_EQ(direct[0].amount, 60);
+}
+
+TEST_F(CargoDistServiceSimulationTest, RecordsBoardingDistanceAndDoesNotRecreditDeletedTransferStations)
+{
+    auto* first = createVehicle();
+    auto* second = createVehicle();
+    const VehicleCargoKey firstKey{ Vehicles::Vehicle(*first).cars.firstCar.body->id, VehicleCargoSlot::primary };
+    const VehicleCargoKey secondKey{ Vehicles::Vehicle(*second).cars.firstCar.body->id, VehicleCargoSlot::primary };
+    getGameState().stations[1].x = 64;
+    getGameState().stations[2].x = 3264;
+    getGameState().stations[3].x = 3296;
+    getGameState().stations[1].y = getGameState().stations[2].y = getGameState().stations[3].y = 64;
+    const auto leg = serviceLeg(2, 3, enumValue(second->id), 0, 1);
+    const std::array flows = { FlowShare{ station(2), station(1), station(3), 10, {}, leg.departure, leg.arrival, station(3) } };
+    setFlows(0, flows);
+    CargoPacket packet{ 10, station(1), station(2), 3, {}, {}, station(3) };
+    packet.legOrigin = station(1);
+    getOrCreateVehicleCargo(firstKey).append(packet);
+    Vehicles::VehicleCargo firstCargo{ 1, 0, 10, station(1), 3, 10 };
+    StationCargoStats transferCargo{};
+    const auto transfer = unloadVehicleCargo(firstKey, firstCargo, station(2), transferCargo, {}, false, std::nullopt, first->id);
+    ASSERT_EQ(transfer.transferred, 10);
+    const auto& waiting = getStationCargoConst(station(2), 0)->packets().front();
+    ASSERT_EQ(waiting.revenueContributions.size(), 1U);
+    EXPECT_EQ(waiting.revenueContributions[0].weight, 1000U);
+    EXPECT_EQ(waiting.legOrigin, StationId::null);
+    EXPECT_TRUE(getStateConst().pendingVehicleRevenueAdjustments.empty());
+
+    Vehicles::VehicleCargo secondCargo{ 1, 0, 10, StationId::null, 0, 0 };
+    ASSERT_EQ(loadVehicleCargo(secondKey, secondCargo, station(2), transferCargo, leg), 10);
+    EXPECT_EQ(getVehicleCargoConst(secondKey)->packets().front().legOrigin, station(2));
+    removeStation(station(2));
+    EXPECT_EQ(getVehicleCargoConst(secondKey)->packets().front().legOrigin, StationId::null);
+    StationCargoStats destinationCargo{};
+    destinationCargo.isAccepted(true);
+    const auto delivery = unloadVehicleCargo(secondKey, secondCargo, station(3), destinationCargo, {}, false, std::nullopt, second->id);
+    ASSERT_EQ(delivery.delivered.size(), 1U);
+    const auto shares = calculateRevenueShares(delivery.delivered.packets().front().revenueContributions, second->id, 101);
+    ASSERT_EQ(shares.size(), 2U);
+    EXPECT_EQ(shares[0].vehicle, first->id);
+    EXPECT_EQ(shares[0].amount, 100);
+    EXPECT_EQ(shares[1].vehicle, second->id);
+    EXPECT_EQ(shares[1].amount, 1);
+}
+
+TEST_F(CargoDistServiceSimulationTest, RemovingContributorPreventsPaymentToReusedVehicleId)
+{
+    auto* first = createVehicle();
+    auto* second = createVehicle();
+    const auto firstId = first->id;
+    CargoPacket packet{ 10, station(1), station(2), 3, {}, {}, station(3) };
+    recordRevenueContribution(packet, firstId, 100);
+    recordRevenueContribution(packet, second->id, 1);
+    getOrCreateStationCargo(station(1), 0).append(packet);
+    const VehicleCargoKey key{ Vehicles::Vehicle(*second).cars.firstCar.body->id, VehicleCargoSlot::primary };
+    getOrCreateVehicleCargo(key).append(packet);
+    PendingHolidayReturn pending{};
+    pending.released = true;
+    pending.revenueContributions = packet.revenueContributions;
+    getState().pendingHolidayReturns.push_back(pending);
+
+    removeVehicleService(firstId);
+    EntityManager::freeEntity(first);
+    auto* replacement = createVehicle();
+    ASSERT_EQ(replacement->id, firstId);
+    for (const auto* packets : { getStationCargoConst(station(1), 0), getVehicleCargoConst(key) })
+    {
+        const auto& contributions = packets->packets().front().revenueContributions;
+        ASSERT_EQ(contributions.size(), 1U);
+        EXPECT_EQ(contributions[0].vehicle, second->id);
+        const auto shares = calculateRevenueShares(contributions, second->id, 100);
+        ASSERT_EQ(shares.size(), 1U);
+        EXPECT_EQ(shares[0].vehicle, second->id);
+        EXPECT_EQ(shares[0].amount, 100);
+    }
+    ASSERT_EQ(getStateConst().pendingHolidayReturns[0].revenueContributions.size(), 1U);
+    EXPECT_EQ(getStateConst().pendingHolidayReturns[0].revenueContributions[0].vehicle, second->id);
 }
 
 TEST(CargoDistSimulation, ReassignsCargoWhenItsDestinationStopsAccepting)
@@ -1533,7 +1639,7 @@ TEST(CargoDistSimulation, TransfersCargoAlongItsNextFlowLeg)
     EXPECT_EQ(getStationCargoConst(station(2), 0)->quantityFor(station(3)), 20);
 }
 
-TEST(CargoDistSimulation, TransferCreditFollowsCargoToItsDestination)
+TEST(CargoDistSimulation, DeferredContributionFollowsCargoToItsDestination)
 {
     reset();
     constexpr auto transferLeg = serviceLeg(2, 3, 8, 0, 1);
@@ -1546,26 +1652,34 @@ TEST(CargoDistSimulation, TransferCreditFollowsCargoToItsDestination)
     Vehicles::VehicleCargo firstCargo{ 1, 0, 30, station(1), 3, 20 };
     StationCargoStats transferCargo{};
 
-    const auto transfer = unloadVehicleCargo(firstKey, firstCargo, station(2), transferCargo, {}, false, std::nullopt, [](const auto&) { return 100; });
+    const auto transfer = unloadVehicleCargo(firstKey, firstCargo, station(2), transferCargo, {}, false, std::nullopt, entity(10));
 
-    ASSERT_EQ(transfer.transferCredits.size(), 1U);
-    EXPECT_EQ(transfer.transferCredits.front().amount, 100);
+    EXPECT_EQ(transfer.transferred, 20);
+    EXPECT_TRUE(getStateConst().pendingVehicleRevenueAdjustments.empty());
     const auto* waiting = getStationCargoConst(station(2), 0);
     ASSERT_NE(waiting, nullptr);
     ASSERT_EQ(waiting->size(), 1U);
-    EXPECT_EQ(waiting->packets().front().transferCredit, 100);
+    EXPECT_EQ(waiting->packets().front().transferCredit, 0);
+    ASSERT_EQ(waiting->packets().front().revenueContributions.size(), 1U);
+    EXPECT_EQ(waiting->packets().front().revenueContributions[0].vehicle, entity(10));
+    EXPECT_GT(waiting->packets().front().revenueContributions[0].weight, 0U);
 
     const VehicleCargoKey secondKey{ entity(11), VehicleCargoSlot::primary };
     Vehicles::VehicleCargo secondCargo{ 1, 0, 30, StationId::null, 0, 0 };
     EXPECT_EQ(loadVehicleCargo(secondKey, secondCargo, station(2), transferCargo, transferLeg), 20);
+    EXPECT_EQ(getVehicleCargoConst(secondKey)->packets().front().legOrigin, station(2));
     StationCargoStats destinationCargo{};
     destinationCargo.isAccepted(true);
 
-    const auto delivery = unloadVehicleCargo(secondKey, secondCargo, station(3), destinationCargo, {}, false, std::nullopt);
+    const auto delivery = unloadVehicleCargo(secondKey, secondCargo, station(3), destinationCargo, {}, false, std::nullopt, entity(11));
 
     ASSERT_EQ(delivery.delivered.size(), 1U);
-    EXPECT_EQ(delivery.delivered.packets().front().transferCredit, 100);
-    EXPECT_EQ(calculateFinalDeliveryIncome(delivery.delivered.packets().front().transferCredit, 160), 60);
+    EXPECT_EQ(delivery.delivered.packets().front().transferCredit, 0);
+    const auto shares = calculateRevenueShares(delivery.delivered.packets().front().revenueContributions, entity(11), 60);
+    ASSERT_EQ(shares.size(), 2U);
+    EXPECT_EQ(shares[0].amount + shares[1].amount, 60);
+    EXPECT_GE(shares[0].amount, 0);
+    EXPECT_GE(shares[1].amount, 0);
 }
 
 TEST(CargoDistSimulation, UnresolvedVehicleCargoCommitsSelectedDestination)
@@ -1658,13 +1772,10 @@ TEST(CargoDistSimulation, StoresTransferredCargoAboveNativeStationLimit)
     StationCargoStats stationCargo{};
     synchroniseStationCargo(station(2), 0, stationCargo);
 
-    const auto result = unloadVehicleCargo(key, vehicleCargo, station(2), stationCargo, {}, false, std::nullopt, [](const auto& packet) { return packet.quantity * 10; });
+    const auto result = unloadVehicleCargo(key, vehicleCargo, station(2), stationCargo, {}, false, std::nullopt, entity(10));
 
     EXPECT_EQ(result.transferred, 20);
-    ASSERT_EQ(result.transferCredits.size(), 1U);
-    EXPECT_EQ(result.transferCredits.front().packet.quantity, 20);
-    EXPECT_EQ(result.transferCredits.front().amount, 180);
-    EXPECT_EQ(result.transferCredits.front().packet.transferCredit, 200);
+    EXPECT_TRUE(getStateConst().pendingVehicleRevenueAdjustments.empty());
     EXPECT_EQ(vehicleCargo.qty, 0);
     EXPECT_EQ(stationCargo.quantity, std::numeric_limits<uint16_t>::max());
     EXPECT_EQ(getStationCargoConst(station(2), 0)->quantity(), 65550U);
@@ -1685,16 +1796,16 @@ TEST(CargoDistSimulation, ContinuesOnSameServiceWithoutTransfer)
     Vehicles::VehicleCargo vehicleCargo{ 1, 0, 30, station(1), 3, 20 };
     StationCargoStats stationCargo{};
 
-    const auto result = unloadVehicleCargo(key, vehicleCargo, station(2), stationCargo, {}, false, onward, [](const auto&) { return 100; });
+    const auto result = unloadVehicleCargo(key, vehicleCargo, station(2), stationCargo, {}, false, onward, entity(10));
 
     EXPECT_EQ(result.quantity(), 0);
     EXPECT_EQ(result.transferred, 0);
-    EXPECT_TRUE(result.transferCredits.empty());
     EXPECT_EQ(vehicleCargo.qty, 20);
     EXPECT_EQ(stationCargo.quantity, 0);
     const auto* packets = getVehicleCargoConst(key);
     ASSERT_NE(packets, nullptr);
     ASSERT_EQ(packets->packets().size(), 1);
+    EXPECT_TRUE(packets->packets()[0].revenueContributions.empty());
     EXPECT_EQ(packets->packets()[0].nextHop, station(3));
     EXPECT_EQ(packets->packets()[0].departure, onward.departure);
     EXPECT_EQ(packets->packets()[0].arrival, onward.arrival);

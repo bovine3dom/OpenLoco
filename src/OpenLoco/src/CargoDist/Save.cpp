@@ -23,7 +23,7 @@ namespace OpenLoco::CargoDist
             std::byte{ 'T' },
             std::byte{ 0 },
         };
-        constexpr uint16_t kVersion = 10;
+        constexpr uint16_t kVersion = 11;
         constexpr uint16_t kHeaderSize = 16;
         constexpr uint32_t kMaxStationLists = S5::Limits::kMaxStations * S5::Limits::kMaxCargoObjects;
         constexpr uint32_t kMaxVehicleLists = S5::Limits::kMaxEntities * 2;
@@ -175,6 +175,7 @@ namespace OpenLoco::CargoDist
 
         void validatePacketMetadata(const CargoPacket& packet)
         {
+            require(isValidStation(packet.legOrigin, true), "CargoDist packet has invalid leg origin");
             require(packet.tripKind == PassengerTripKind::ordinary || packet.tripKind == PassengerTripKind::holidayOutbound || packet.tripKind == PassengerTripKind::holidayReturn, "CargoDist packet has invalid trip kind");
             require(packet.tripKind != PassengerTripKind::ordinary || packet.holidayIndustry == IndustryId::null, "Ordinary CargoDist packet has holiday industry");
             require(packet.tripKind != PassengerTripKind::ordinary || packet.homeTown == TownId::null, "Ordinary CargoDist packet has holiday home");
@@ -191,6 +192,42 @@ namespace OpenLoco::CargoDist
         ServicePoint decodeServicePoint(Decoder& decoder)
         {
             return { static_cast<ServiceId>(decoder.read<uint16_t>()), decoder.read<uint16_t>() };
+        }
+
+        void validateRevenueContributions(const std::span<const RevenueContribution> contributions)
+        {
+            require(contributions.size() <= S5::Limits::kMaxEntities, "Too many CargoDist revenue contributions");
+            for (size_t i = 0; i < contributions.size(); ++i)
+            {
+                const auto& contribution = contributions[i];
+                require(entityValue(contribution.vehicle) < S5::Limits::kMaxEntities && contribution.weight != 0, "Invalid CargoDist revenue contribution");
+                require(i == 0 || contributions[i - 1].vehicle < contribution.vehicle, "Non-canonical CargoDist revenue contributions");
+            }
+        }
+
+        void encodeRevenueContributions(Encoder& encoder, const std::span<const RevenueContribution> contributions)
+        {
+            validateRevenueContributions(contributions);
+            encoder.write(static_cast<uint16_t>(contributions.size()));
+            for (const auto& contribution : contributions)
+            {
+                encoder.write(entityValue(contribution.vehicle));
+                encoder.write(contribution.weight);
+            }
+        }
+
+        std::vector<RevenueContribution> decodeRevenueContributions(Decoder& decoder)
+        {
+            const auto count = decoder.read<uint16_t>();
+            require(count <= S5::Limits::kMaxEntities && count <= decoder.remaining() / 6, "Too many CargoDist revenue contributions");
+            std::vector<RevenueContribution> contributions;
+            contributions.reserve(count);
+            for (uint16_t i = 0; i < count; ++i)
+            {
+                contributions.push_back({ EntityId(decoder.read<uint16_t>()), decoder.read<uint32_t>() });
+            }
+            validateRevenueContributions(contributions);
+            return contributions;
         }
 
         void encodePackets(Encoder& encoder, const PacketList& packets, uint32_t maxQuantity)
@@ -222,6 +259,8 @@ namespace OpenLoco::CargoDist
                 encoder.write(enumValue(packet.holidayIndustry));
                 encoder.write(enumValue(packet.homeTown));
                 encoder.write<uint8_t>(0);
+                encoder.write(stationValue(packet.legOrigin));
+                encodeRevenueContributions(encoder, packet.revenueContributions);
             }
         }
 
@@ -229,7 +268,11 @@ namespace OpenLoco::CargoDist
         {
             const auto count = decoder.read<uint32_t>();
             require(count <= maxQuantity, "Too many CargoDist packets");
-            const auto packetSize = version >= 10 ? 31U : version >= 5 ? 26U : version >= 4 ? 18U : version >= 3 ? 16U : 8U;
+            const auto packetSize = version >= 11 ? 35U : version >= 10 ? 31U
+                : version >= 5                                          ? 26U
+                : version >= 4                                          ? 18U
+                : version >= 3                                          ? 16U
+                                                                        : 8U;
             require(count <= decoder.remaining() / packetSize, "Too many CargoDist packets");
             PacketList::Container packets;
             packets.reserve(count);
@@ -262,6 +305,11 @@ namespace OpenLoco::CargoDist
                     packet.holidayIndustry = IndustryId(decoder.read<uint8_t>());
                     packet.homeTown = TownId(decoder.read<uint16_t>());
                     require(decoder.read<uint8_t>() == 0, "Invalid CargoDist packet padding");
+                }
+                if (version >= 11)
+                {
+                    packet.legOrigin = StationId(decoder.read<uint16_t>());
+                    packet.revenueContributions = decodeRevenueContributions(decoder);
                 }
                 require(packet.quantity != 0, "CargoDist packet has zero quantity");
                 require(packet.transferCredit >= 0 && packet.transferCredit <= static_cast<int64_t>(std::numeric_limits<int32_t>::max()) * packet.quantity, "CargoDist packet has invalid transfer credit");
@@ -525,7 +573,7 @@ namespace OpenLoco::CargoDist
         payload.write(static_cast<uint32_t>(state.pendingHolidayReturns.size()));
         for (const auto& pending : state.pendingHolidayReturns)
         {
-            require(pending.quantity != 0 && pending.cargo < state.settings.modes.size() && state.settings.modes[pending.cargo] == DistributionMode::asymmetric && isValidStation(pending.resortStation, true) && isValidStation(pending.homeStation, true) && isValidTown(pending.homeTown) && isValidIndustry(pending.resort) && pending.transferCredit >= 0 && pending.transferCredit <= static_cast<int64_t>(std::numeric_limits<int32_t>::max()) * pending.quantity && (pending.released || (pending.age == 0 && pending.transferCredit == 0)), "Invalid CargoDist pending holiday return");
+            require(pending.quantity != 0 && pending.cargo < state.settings.modes.size() && state.settings.modes[pending.cargo] == DistributionMode::asymmetric && isValidStation(pending.resortStation, true) && isValidStation(pending.homeStation, true) && isValidTown(pending.homeTown) && isValidIndustry(pending.resort) && pending.transferCredit >= 0 && pending.transferCredit <= static_cast<int64_t>(std::numeric_limits<int32_t>::max()) * pending.quantity && (pending.released || (pending.age == 0 && pending.transferCredit == 0 && pending.revenueContributions.empty())), "Invalid CargoDist pending holiday return");
             payload.write(pending.releaseDay);
             payload.write(pending.quantity);
             payload.write(stationValue(pending.resortStation));
@@ -536,6 +584,7 @@ namespace OpenLoco::CargoDist
             payload.write(pending.age);
             payload.write(static_cast<uint8_t>(pending.released));
             payload.write(pending.transferCredit);
+            encodeRevenueContributions(payload, pending.revenueContributions);
         }
 
         require(payload.data().size() <= kMaxSaveDataSize - kHeaderSize, "CargoDist save data is too large");
@@ -771,7 +820,7 @@ namespace OpenLoco::CargoDist
             }
 
             const auto pendingCount = decoder.read<uint32_t>();
-            require(pendingCount <= kMaxFlowLists && pendingCount <= decoder.remaining() / 24, "Too many CargoDist pending holiday returns");
+            require(pendingCount <= kMaxFlowLists && pendingCount <= decoder.remaining() / (version >= 11 ? 26U : 24U), "Too many CargoDist pending holiday returns");
             for (uint32_t i = 0; i < pendingCount; ++i)
             {
                 PendingHolidayReturn pending;
@@ -787,7 +836,11 @@ namespace OpenLoco::CargoDist
                 require(released <= 1, "Invalid CargoDist pending holiday return state");
                 pending.released = released != 0;
                 pending.transferCredit = decoder.readInt64();
-                require(pending.quantity != 0 && pending.cargo < state.settings.modes.size() && state.settings.modes[pending.cargo] == DistributionMode::asymmetric && isValidStation(pending.resortStation, true) && isValidStation(pending.homeStation, true) && isValidTown(pending.homeTown) && isValidIndustry(pending.resort) && pending.transferCredit >= 0 && pending.transferCredit <= static_cast<int64_t>(std::numeric_limits<int32_t>::max()) * pending.quantity && (pending.released || (pending.age == 0 && pending.transferCredit == 0)), "Invalid CargoDist pending holiday return");
+                if (version >= 11)
+                {
+                    pending.revenueContributions = decodeRevenueContributions(decoder);
+                }
+                require(pending.quantity != 0 && pending.cargo < state.settings.modes.size() && state.settings.modes[pending.cargo] == DistributionMode::asymmetric && isValidStation(pending.resortStation, true) && isValidStation(pending.homeStation, true) && isValidTown(pending.homeTown) && isValidIndustry(pending.resort) && pending.transferCredit >= 0 && pending.transferCredit <= static_cast<int64_t>(std::numeric_limits<int32_t>::max()) * pending.quantity && (pending.released || (pending.age == 0 && pending.transferCredit == 0 && pending.revenueContributions.empty())), "Invalid CargoDist pending holiday return");
                 state.pendingHolidayReturns.push_back(pending);
             }
             require(std::is_sorted(state.pendingHolidayReturns.begin(), state.pendingHolidayReturns.end()), "Non-canonical CargoDist pending holiday returns");

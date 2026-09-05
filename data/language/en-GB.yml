@@ -2750,3 +2750,5 @@ strings:
   2695: "{NEWLINE}{COLOUR WINDOW_2}Road compatibility: {COLOUR BLACK}Any compatible road type"
   2696: "Train length: {UINT16} tiles"
   2697: "{SMALLFONT}{COLOUR BLACK}Set the train length used to preview track occupied behind a signal"
+  2698: "{SMALLFONT}{COLOUR WINDOW_2}{INT32} direct"
+  2699: "{STRINGID}: completed journey of {INT16} blocks in {INT16} days; revenue share = {CURRENCY32}"

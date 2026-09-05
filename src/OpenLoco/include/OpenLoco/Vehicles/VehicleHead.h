@@ -1,10 +1,16 @@
 #pragma once
 #include "Vehicle.h"
+#include <span>
 
 namespace OpenLoco
 {
     struct Station;
     struct StationCargoStats;
+}
+
+namespace OpenLoco::CargoDist
+{
+    struct RevenueContribution;
 }
 
 namespace OpenLoco::Vehicles
@@ -229,7 +235,7 @@ namespace OpenLoco::Vehicles
         void getSecondStatus(VehicleStatus& vehStatus) const;
         void applyVehicleRevenue(int64_t revenue);
         void updateLastIncomeStats(uint8_t cargoType, uint16_t cargoQty, uint16_t cargoDist, uint8_t cargoAge, int64_t profit);
-        void deliverCargoPacket(Station& station, StationCargoStats& cargoStats, uint8_t cargoType, uint16_t quantity, StationId origin, uint8_t age, int64_t transferCredit = 0, bool holidayArrival = false);
+        void deliverCargoPacket(Station& station, StationCargoStats& cargoStats, uint8_t cargoType, uint16_t quantity, StationId origin, uint8_t age, int64_t legacyTransferCredit = 0, bool holidayArrival = false, std::span<const CargoDist::RevenueContribution> contributions = {});
         void calculateRefundCost();
     };
     static_assert(sizeof(VehicleHead) <= sizeof(Entity));

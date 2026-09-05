@@ -34,6 +34,14 @@ namespace OpenLoco::CargoDist
         holidayReturn,
     };
 
+    struct RevenueContribution
+    {
+        EntityId vehicle = EntityId::null;
+        uint32_t weight{};
+
+        auto operator<=>(const RevenueContribution&) const = default;
+    };
+
     struct CargoPacket
     {
         uint16_t quantity{};
@@ -43,10 +51,12 @@ namespace OpenLoco::CargoDist
         ServicePoint departure{};
         ServicePoint arrival{};
         StationId destination = StationId::null;
-        int64_t transferCredit{};
+        int64_t transferCredit{}; // Previously booked credit from legacy saves only.
         PassengerTripKind tripKind = PassengerTripKind::ordinary;
         IndustryId holidayIndustry = IndustryId::null;
         TownId homeTown = TownId::null;
+        StationId legOrigin = StationId::null;
+        std::vector<RevenueContribution> revenueContributions{};
 
         auto operator<=>(const CargoPacket&) const = default;
 
@@ -105,6 +115,7 @@ namespace OpenLoco::CargoDist
         StationId destination = StationId::null;
         StationId nextHop = StationId::null;
         uint64_t quantity{};
+        bool direct{}; // Vehicle cargo reaches its destination without changing service.
 
         auto operator<=>(const CargoRouteSummary&) const = default;
     };
@@ -121,6 +132,7 @@ namespace OpenLoco::CargoDist
         StationId station = StationId::null;
         uint64_t quantity{};
         std::vector<CargoRouteNode> children;
+        bool direct{};
 
         auto operator<=>(const CargoRouteNode&) const = default;
     };
@@ -274,6 +286,7 @@ namespace OpenLoco::CargoDist
         uint8_t age{};
         bool released{};
         int64_t transferCredit{};
+        std::vector<RevenueContribution> revenueContributions{};
 
         auto operator<=>(const PendingHolidayReturn&) const = default;
     };

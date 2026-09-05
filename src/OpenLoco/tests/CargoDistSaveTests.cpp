@@ -46,7 +46,16 @@ namespace
         }
     }
 
-    std::vector<std::byte> legacyEncodedState(uint16_t version)
+    template<typename T>
+    void writeValue(std::vector<std::byte>& data, const size_t offset, const T value)
+    {
+        for (size_t i = 0; i < sizeof(T); ++i)
+        {
+            data[offset + i] = static_cast<std::byte>((static_cast<uint64_t>(value) >> (i * 8)) & 0xFF);
+        }
+    }
+
+    std::vector<std::byte> legacyEncodedState(uint16_t version, int64_t transferCredit = 0)
     {
         std::vector<std::byte> data;
         for (const auto value : std::array{ 'O', 'L', 'C', 'D', 'I', 'S', 'T', '\0' })
@@ -93,7 +102,14 @@ namespace
         }
         if (version >= 5)
         {
-            appendValue<int64_t>(data, 0);
+            appendValue<int64_t>(data, transferCredit);
+        }
+        if (version >= 10)
+        {
+            appendValue<uint8_t>(data, enumValue(PassengerTripKind::ordinary));
+            appendValue<uint8_t>(data, enumValue(IndustryId::null));
+            appendValue<uint16_t>(data, enumValue(TownId::null));
+            appendValue<uint8_t>(data, 0);
         }
 
         appendValue<uint32_t>(data, 0);
@@ -139,7 +155,9 @@ namespace
         }
         if (version >= 5)
         {
-            appendValue<uint32_t>(data, 0);
+            appendValue<uint32_t>(data, 1);
+            appendValue<uint16_t>(data, 7);
+            appendValue<int64_t>(data, -45);
         }
         if (version >= 8)
         {
@@ -148,12 +166,24 @@ namespace
             appendValue<uint16_t>(data, 0);
             appendValue<uint32_t>(data, 0);
         }
-
-        const auto payloadSize = static_cast<uint32_t>(data.size() - 16);
-        for (size_t i = 0; i < sizeof(payloadSize); ++i)
+        if (version >= 10)
         {
-            data[12 + i] = static_cast<std::byte>((payloadSize >> (i * 8)) & 0xFF);
+            appendValue<uint32_t>(data, 0);
+            appendValue<uint32_t>(data, 0);
+            appendValue<uint32_t>(data, 1);
+            appendValue<uint32_t>(data, 42);
+            appendValue<uint16_t>(data, 10);
+            appendValue<uint16_t>(data, 2);
+            appendValue<uint16_t>(data, 1);
+            appendValue<uint16_t>(data, 3);
+            appendValue<uint8_t>(data, 2);
+            appendValue<uint8_t>(data, 0);
+            appendValue<uint8_t>(data, 4);
+            appendValue<uint8_t>(data, 1);
+            appendValue<int64_t>(data, transferCredit);
         }
+
+        writeValue<uint32_t>(data, 12, static_cast<uint32_t>(data.size() - 16));
         return data;
     }
 
@@ -358,7 +388,7 @@ TEST(CargoDistSave, RoundTripsCanonicalState)
     expectStatesEqual(original, decoded);
     EXPECT_TRUE(decoded.serviceEdges.empty());
     EXPECT_TRUE(decoded.vehicleServiceLegs.empty());
-    EXPECT_EQ(std::to_integer<uint8_t>(encoded[8]), 10);
+    EXPECT_EQ(std::to_integer<uint8_t>(encoded[8]), 11);
 }
 
 TEST(CargoDistSave, MigratesVersionOneWithoutStationAttraction)
@@ -451,6 +481,71 @@ TEST(CargoDistSave, MigratesVersionNineWithoutHolidayState)
     EXPECT_TRUE(decoded.resorts.empty());
     EXPECT_TRUE(decoded.holidaySources.empty());
     EXPECT_TRUE(decoded.pendingHolidayReturns.empty());
+}
+
+TEST(CargoDistSave, MigratesLegacyCreditsWithoutGuessingContributors)
+{
+    for (uint16_t version = 1; version <= 10; ++version)
+    {
+        SCOPED_TRACE(version);
+        const auto decoded = decodeState(legacyEncodedState(version, 120));
+        const auto& packet = decoded.stationCargo.at({ station(2), 0 }).packets().front();
+        EXPECT_EQ(packet.transferCredit, version >= 5 ? 120 : 0);
+        EXPECT_EQ(packet.legOrigin, StationId::null);
+        EXPECT_TRUE(packet.revenueContributions.empty());
+        if (version >= 5)
+        {
+            EXPECT_EQ(decoded.pendingVehicleRevenueAdjustments.at(entity(7)), -45);
+        }
+        if (version == 10)
+        {
+            ASSERT_EQ(decoded.pendingHolidayReturns.size(), 1U);
+            EXPECT_EQ(decoded.pendingHolidayReturns.front().transferCredit, 120);
+            EXPECT_TRUE(decoded.pendingHolidayReturns.front().revenueContributions.empty());
+        }
+        const auto reloaded = decodeState(encodeState(decoded));
+        expectPacketListsEqual(decoded.stationCargo.at({ station(2), 0 }), reloaded.stationCargo.at({ station(2), 0 }));
+        EXPECT_EQ(decoded.pendingHolidayReturns, reloaded.pendingHolidayReturns);
+        EXPECT_EQ(decoded.pendingVehicleRevenueAdjustments, reloaded.pendingVehicleRevenueAdjustments);
+    }
+}
+
+TEST(CargoDistSave, RoundTripsRevenueContributionsAndLegOrigins)
+{
+    State state;
+    state.settings.modes[0] = DistributionMode::asymmetric;
+    CargoPacket packet{ 7, station(1), station(2), 3, {}, {}, station(2), 48 };
+    packet.revenueContributions = { { entity(0), 1 }, { entity(S5::Limits::kMaxEntities - 1), std::numeric_limits<uint32_t>::max() } };
+    state.stationCargo[{ station(1), 0 }].append(packet);
+    packet.legOrigin = station(1);
+    state.vehicleCargo[{ entity(20), VehicleCargoSlot::primary }].append(packet);
+    packet.quantity = std::numeric_limits<uint16_t>::max() - 1;
+    packet.revenueContributions = { { entity(7), 5 } };
+    state.stationCargo[{ station(2), 0 }].append(packet);
+    packet.quantity = 3;
+    packet.revenueContributions.front().weight = 10;
+    state.stationCargo[{ station(2), 0 }].append(packet);
+    state.pendingHolidayReturns.push_back({ 100, 12, station(2), station(1), TownId(3), IndustryId(2), 0, 9, true, 48, packet.revenueContributions });
+    state.pendingVehicleRevenueAdjustments[entity(7)] = -45;
+
+    const auto encoded = encodeState(state);
+    const auto decoded = decodeState(encoded);
+
+    expectStatesEqual(state, decoded);
+    EXPECT_EQ(encodeState(decoded), encoded);
+}
+
+TEST(CargoDistSave, RoundTripsMaximumContributorCount)
+{
+    State state;
+    CargoPacket packet{ 1, station(1), station(2), 3 };
+    for (uint16_t vehicle = 0; vehicle < S5::Limits::kMaxEntities; ++vehicle)
+    {
+        packet.revenueContributions.push_back({ entity(vehicle), 1 });
+    }
+    state.stationCargo[{ station(1), 0 }].append(packet);
+
+    expectStatesEqual(state, decodeState(encodeState(state)));
 }
 
 TEST(CargoDistSave, RoundTripsHolidayState)
@@ -616,7 +711,7 @@ TEST(CargoDistSave, RejectsPacketCountLargerThanPayload)
 TEST(CargoDistSave, RejectsUnknownVersion)
 {
     auto encoded = encodeState(populatedState());
-    encoded[8] = std::byte{ 11 };
+    encoded[8] = std::byte{ 12 };
 
     EXPECT_THROW(decodeState(encoded), std::runtime_error);
 }
@@ -652,6 +747,92 @@ TEST(CargoDistSave, RejectsNegativeTransferCredit)
     State state;
     state.stationCargo[{ station(2), 0 }].append({ 10, station(1), station(3), 4, {}, {}, station(3), -1 });
 
+    EXPECT_THROW(encodeState(state), std::runtime_error);
+}
+
+TEST(CargoDistSave, RejectsInvalidRevenueContributions)
+{
+    const std::vector<std::vector<RevenueContribution>> invalid = {
+        { { EntityId::null, 1 } },
+        { { entity(S5::Limits::kMaxEntities), 1 } },
+        { { entity(7), 0 } },
+        { { entity(7), 1 }, { entity(7), 2 } },
+        { { entity(8), 1 }, { entity(7), 2 } },
+        std::vector<RevenueContribution>(S5::Limits::kMaxEntities + 1, { entity(7), 1 }),
+    };
+    for (const bool pendingReturn : { false, true })
+    {
+        SCOPED_TRACE(pendingReturn);
+        State state;
+        state.settings.modes[0] = DistributionMode::asymmetric;
+        if (pendingReturn)
+        {
+            state.pendingHolidayReturns.push_back({ 100, 12, station(2), station(1), TownId(3), IndustryId(2), 0, 9, true });
+        }
+        else
+        {
+            state.stationCargo[{ station(1), 0 }].append({ 10, station(1), station(2), 3 });
+        }
+        const auto original = encodeState(state);
+        // The first packet starts at 76; its v11 contribution count follows 33 fixed bytes.
+        const size_t offset = pendingReturn ? original.size() - 2 : 76 + 33;
+        auto truncated = original;
+        writeValue<uint16_t>(truncated, offset, S5::Limits::kMaxEntities);
+        EXPECT_THROW(decodeState(truncated), std::runtime_error);
+
+        for (const auto& contributions : invalid)
+        {
+            SCOPED_TRACE(::testing::PrintToString(contributions));
+            auto encoded = original;
+            std::vector<std::byte> entries;
+            for (const auto& contribution : contributions)
+            {
+                appendValue<uint16_t>(entries, enumValue(contribution.vehicle));
+                appendValue<uint32_t>(entries, contribution.weight);
+            }
+            encoded.insert(encoded.begin() + offset + 2, entries.begin(), entries.end());
+            writeValue<uint16_t>(encoded, offset, static_cast<uint16_t>(contributions.size()));
+            writeValue<uint32_t>(encoded, 12, static_cast<uint32_t>(encoded.size() - 16));
+            EXPECT_THROW(decodeState(encoded), std::runtime_error);
+
+            if (pendingReturn)
+            {
+                state.pendingHolidayReturns.front().revenueContributions = contributions;
+            }
+            else
+            {
+                state.stationCargo.begin()->second.transform([&](auto& packet) { packet.revenueContributions = contributions; });
+            }
+            EXPECT_THROW(encodeState(state), std::runtime_error);
+        }
+    }
+}
+
+TEST(CargoDistSave, RejectsUnreleasedReturnContributions)
+{
+    State state;
+    state.settings.modes[0] = DistributionMode::asymmetric;
+    state.pendingHolidayReturns.push_back({ 100, 12, station(2), station(1), TownId(3), IndustryId(2), 0 });
+    const auto releasedOffset = encodeState(state).size() - 26 + 15;
+    auto& pending = state.pendingHolidayReturns.front();
+    pending.revenueContributions = { { entity(7), 1 } };
+    EXPECT_THROW(encodeState(state), std::runtime_error);
+
+    pending.released = true;
+    auto encoded = encodeState(state);
+    encoded[releasedOffset] = std::byte{ 0 };
+    EXPECT_THROW(decodeState(encoded), std::runtime_error);
+}
+
+TEST(CargoDistSave, RejectsInvalidLegOrigin)
+{
+    State state;
+    state.stationCargo[{ station(1), 0 }].append({ 10, station(1), station(2), 3 });
+    auto encoded = encodeState(state);
+    writeValue<uint16_t>(encoded, 76 + 31, S5::Limits::kMaxStations);
+    EXPECT_THROW(decodeState(encoded), std::runtime_error);
+
+    state.stationCargo.begin()->second.transform([](auto& packet) { packet.legOrigin = station(S5::Limits::kMaxStations); });
     EXPECT_THROW(encodeState(state), std::runtime_error);
 }
 

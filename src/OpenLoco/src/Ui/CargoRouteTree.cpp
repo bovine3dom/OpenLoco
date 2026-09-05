@@ -94,22 +94,11 @@ namespace OpenLoco::Ui::CargoRouteTree
         StringId getFormat(const Row& row, FormatArguments& args)
         {
             args.push<int32_t>(static_cast<int32_t>(std::min<uint64_t>(row.quantity, std::numeric_limits<int32_t>::max())));
-            const auto hasStation = isValidStation(row.station);
-            if (hasStation)
+            if (!row.direct && isValidStation(row.station))
             {
                 appendStationArguments(args, row.station);
             }
-
-            switch (row.field)
-            {
-                case CargoDist::CargoRouteField::origin:
-                    return hasStation ? StringIds::station_cargo_group_source : StringIds::station_cargo_group_source_unknown;
-                case CargoDist::CargoRouteField::destination:
-                    return hasStation ? StringIds::station_cargo_group_destination : StringIds::station_cargo_group_destination_pending;
-                case CargoDist::CargoRouteField::nextHop:
-                    return hasStation ? StringIds::station_cargo_group_via : StringIds::station_cargo_group_awaiting_route;
-            }
-            return StringIds::empty;
+            return getRowFormat(row);
         }
 
         int16_t getDisclosureLeft(const Row& row, const int16_t xOffset)
@@ -141,6 +130,7 @@ namespace OpenLoco::Ui::CargoRouteTree
                 auto key = parentKey;
                 key.depth = depth + 1;
                 key.stations[depth] = node.station;
+                key.direct |= node.direct;
                 const auto expandable = !node.children.empty();
                 const auto expanded = expandable && expandedGroups.contains(key);
                 if (rows.size() < maxRows)
@@ -153,6 +143,7 @@ namespace OpenLoco::Ui::CargoRouteTree
                         .station = node.station,
                         .quantity = node.quantity,
                         .key = key,
+                        .direct = node.direct,
                     });
                 }
                 else
@@ -186,6 +177,10 @@ namespace OpenLoco::Ui::CargoRouteTree
     void sortTree(std::vector<CargoDist::CargoRouteNode>& nodes, const SortMode sortMode)
     {
         std::sort(nodes.begin(), nodes.end(), [sortMode](const auto& lhs, const auto& rhs) {
+            if (lhs.station == rhs.station && (sortMode == SortMode::station || lhs.quantity == rhs.quantity))
+            {
+                return lhs.direct < rhs.direct;
+            }
             if (sortMode == SortMode::amountWaiting)
             {
                 return lhs.quantity == rhs.quantity
@@ -208,6 +203,7 @@ namespace OpenLoco::Ui::CargoRouteTree
                 auto key = parent;
                 key.depth = depth + 1;
                 key.stations[depth] = node.station;
+                key.direct |= node.direct;
                 if (node.children.empty())
                 {
                     continue;
@@ -233,6 +229,22 @@ namespace OpenLoco::Ui::CargoRouteTree
         }
     }
 
+    StringId getRowFormat(const Row& row)
+    {
+        const auto hasStation = isValidStation(row.station);
+        switch (row.field)
+        {
+            case CargoDist::CargoRouteField::origin:
+                return hasStation ? StringIds::station_cargo_group_source : StringIds::station_cargo_group_source_unknown;
+            case CargoDist::CargoRouteField::destination:
+                return hasStation ? StringIds::station_cargo_group_destination : StringIds::station_cargo_group_destination_pending;
+            case CargoDist::CargoRouteField::nextHop:
+                return row.direct ? StringIds::vehicle_cargo_group_direct
+                                  : (hasStation ? StringIds::station_cargo_group_via : StringIds::station_cargo_group_awaiting_route);
+        }
+        return StringIds::empty;
+    }
+
     void drawRow(Gfx::DrawingContext& drawingCtx, const Row& row, const int32_t y, const int32_t width, const int16_t xOffset)
     {
         if (row.expandable)
@@ -255,7 +267,7 @@ namespace OpenLoco::Ui::CargoRouteTree
 
     bool isStationLinkHit(const Row& row, const int16_t x, const int32_t width, const int16_t xOffset)
     {
-        if (!isValidStation(row.station))
+        if (row.direct || !isValidStation(row.station))
         {
             return false;
         }

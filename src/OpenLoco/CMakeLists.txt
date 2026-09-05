@@ -843,6 +843,7 @@ set(test_files
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/CargoDistRoutingTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/CargoDistSaveTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/CargoDistSimulationTests.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/CargoDistVehicleRouteTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/EntityTweenerTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/GameRulesTests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/SaveExtensionTests.cpp"

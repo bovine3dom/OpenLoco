@@ -97,6 +97,7 @@
 #include "World/StationManager.h"
 
 #include <OpenLoco/CargoDist/CargoDist.h>
+#include <OpenLoco/CargoDist/Simulation.h>
 #include <OpenLoco/Math/Trigonometry.hpp>
 #include <OpenLoco/Utility/LookupTable.hpp>
 #include <algorithm>
@@ -357,7 +358,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
 
     namespace Finances
     {
-        static constexpr Ui::Size kMinWindowSize = { 400, 202 };
+        static constexpr Ui::Size kMinWindowSize = { 400, 262 };
         static constexpr Ui::Size kMaxWindowSize = kMinWindowSize;
 
         constexpr uint64_t holdableWidgets = 0;
@@ -2380,8 +2381,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
             CargoRouteTree::SortMode sortMode = CargoRouteTree::SortMode::amountWaiting;
             std::set<CargoDist::VehicleCargoKey> expandedCompartments;
             std::map<CargoDist::VehicleCargoKey, std::set<CargoRouteTree::GroupKey>> expandedGroups;
-            uint64_t cargoRevision = std::numeric_limits<uint64_t>::max();
-            uint64_t routingRevision = std::numeric_limits<uint64_t>::max();
+            CargoDist::VehicleRoutePreview preview;
             std::map<CargoDist::VehicleCargoKey, std::vector<CargoDist::CargoRouteNode>> routeTrees;
         };
 
@@ -2426,12 +2426,9 @@ namespace OpenLoco::Ui::Windows::Vehicle
         static CargoWindowState& getWindowState(const EntityId vehicle)
         {
             auto& state = _windowStates[vehicle];
-            const auto cargoRevision = CargoDist::getStateConst().cargoRevision;
-            const auto routingRevision = CargoDist::getStateConst().routingRevision;
-            if (state.cargoRevision != cargoRevision || state.routingRevision != routingRevision)
+            const auto* head = EntityManager::get<Vehicles::VehicleHead>(vehicle);
+            if (head != nullptr && state.preview.update(*head))
             {
-                state.cargoRevision = cargoRevision;
-                state.routingRevision = routingRevision;
                 state.routeTrees.clear();
             }
             return state;
@@ -2442,13 +2439,12 @@ namespace OpenLoco::Ui::Windows::Vehicle
             _windowStates.erase(vehicle);
         }
 
-        static std::vector<CargoDist::CargoRouteNode>& getRouteTree(CargoWindowState& state, const CargoDist::VehicleCargoKey key, const CargoDist::PacketList& packets)
+        static std::vector<CargoDist::CargoRouteNode>& getRouteTree(CargoWindowState& state, const CargoDist::VehicleCargoKey key)
         {
             auto found = state.routeTrees.find(key);
             if (found == state.routeTrees.end())
             {
-                const auto summaries = CargoDist::getRouteSummaries(packets);
-                found = state.routeTrees.emplace(key, CargoDist::getRouteTree(summaries, CargoRouteTree::getOrder(state.groupOrder))).first;
+                found = state.routeTrees.emplace(key, CargoDist::getRouteTree(state.preview.summaries[key], CargoRouteTree::getOrder(state.groupOrder))).first;
                 CargoRouteTree::sortTree(found->second, state.sortMode);
             }
             else if (state.sortMode == CargoRouteTree::SortMode::station)
@@ -2481,7 +2477,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
             size_t omittedRows = 0;
             std::vector<CargoRouteTree::Row> groupRows;
             const auto maxGroupRows = remainingRouteRows > remainingExpandedCompartments ? remainingRouteRows - remainingExpandedCompartments : 0;
-            CargoRouteTree::appendRows(groupRows, getRouteTree(state, key, *packets), state.groupOrder, state.expandedGroups[key], maxGroupRows, omittedRows);
+            CargoRouteTree::appendRows(groupRows, getRouteTree(state, key), state.groupOrder, state.expandedGroups[key], maxGroupRows, omittedRows);
             --remainingExpandedCompartments;
             for (const auto& group : groupRows)
             {
@@ -2861,7 +2857,7 @@ namespace OpenLoco::Ui::Windows::Vehicle
                         continue;
                     }
                     state.expandedCompartments.insert(key);
-                    CargoRouteTree::expandAllGroups(state.expandedGroups[key], getRouteTree(state, key, *packets));
+                    CargoRouteTree::expandAllGroups(state.expandedGroups[key], getRouteTree(state, key));
                 }
             }
             updateScrollSize(self, 0);
@@ -3310,13 +3306,11 @@ namespace OpenLoco::Ui::Windows::Vehicle
                     args.push<uint16_t>(veh1->lastIncome.cargoAges[i]);
                     args.push<currency32_t>(veh1->lastIncome.cargoProfits[i]);
 
-                    // {STRINGID} transported {INT16} blocks in {INT16} days = {CURRENCY32}
+                    const auto format = CargoDist::isEnabled(cargoType) ? StringIds::vehicle_completed_journey_revenue_share : StringIds::transported_blocks_in_days;
                     pos.x += 4;
-                    tr.drawStringLeftWrapped(pos, self.width - 12, Colour::black, StringIds::transported_blocks_in_days, args);
+                    pos.y = tr.drawStringLeftWrapped(pos, self.width - 12, Colour::black, format, args).y;
                     pos.x -= 4;
-
-                    // TODO: fix function to take pointer to offset
-                    pos.y += 12;
+                    pos.y += 2;
                 }
             }
             else

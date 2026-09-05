@@ -36,6 +36,7 @@ namespace OpenLoco::Ui::CargoRouteTree
     {
         uint8_t depth{};
         std::array<StationId, 3> stations{ StationId::null, StationId::null, StationId::null };
+        bool direct{};
 
         auto operator<=>(const GroupKey&) const = default;
     };
@@ -49,6 +50,7 @@ namespace OpenLoco::Ui::CargoRouteTree
         StationId station = StationId::null;
         uint64_t quantity{};
         GroupKey key{};
+        bool direct{};
     };
 
     inline constexpr int32_t kRowHeight = 10;
@@ -60,6 +62,7 @@ namespace OpenLoco::Ui::CargoRouteTree
     void expandAllGroups(std::set<GroupKey>& expandedGroups, const std::vector<CargoDist::CargoRouteNode>& nodes);
     void appendRows(std::vector<Row>& rows, const std::vector<CargoDist::CargoRouteNode>& nodes, GroupOrder order, const std::set<GroupKey>& expandedGroups, size_t maxRows, size_t& omittedRows);
     void drawDisclosure(Gfx::DrawingContext& drawingCtx, int16_t x, int16_t y, bool expanded);
+    StringId getRowFormat(const Row& row);
     void drawRow(Gfx::DrawingContext& drawingCtx, const Row& row, int32_t y, int32_t width, int16_t xOffset = 0);
     bool isDisclosureHit(const Row& row, int16_t x, int16_t xOffset = 0);
     bool isStationLinkHit(const Row& row, int16_t x, int32_t width, int16_t xOffset = 0);

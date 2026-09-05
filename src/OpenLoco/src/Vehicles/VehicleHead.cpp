@@ -3171,6 +3171,7 @@ namespace OpenLoco::Vehicles
         var_58 = 0;
 
         Vehicle train(head);
+        train.veh1->var_48 |= Flags48::flag2;
         train.cars.applyToComponents([](auto& component) { component.breakdownFlags |= BreakdownFlags::awaitingCargoTransfer; });
     }
 
@@ -3550,7 +3551,7 @@ namespace OpenLoco::Vehicles
         Audio::playSound(Audio::SoundId::income, Audio::ChannelId::ui, loc);
     }
 
-    void VehicleHead::deliverCargoPacket(Station& station, StationCargoStats& cargoStats, uint8_t cargoType, uint16_t quantity, StationId origin, uint8_t age, const int64_t transferCredit, const bool holidayArrival)
+    void VehicleHead::deliverCargoPacket(Station& station, StationCargoStats& cargoStats, uint8_t cargoType, uint16_t quantity, StationId origin, uint8_t age, const int64_t legacyTransferCredit, const bool holidayArrival, std::span<const CargoDist::RevenueContribution> contributions)
     {
         station.deliverCargoToTown(cargoType, quantity);
         auto* sourceStation = StationManager::get(origin);
@@ -3571,11 +3572,40 @@ namespace OpenLoco::Vehicles
             settleCargoIncome();
         }
         company->cargoDelivered[cargoType] = Math::Bound::add(company->cargoDelivered[cargoType], quantity);
-        const auto vehicleIncome = CargoDist::calculateFinalDeliveryIncome(transferCredit, cargoPayment);
-        updateLastIncomeStats(cargoType, quantity, tilesDistance, age, vehicleIncome);
-        if (transferCredit != 0)
+        if (!CargoDist::isEnabled(cargoType))
         {
-            CargoDist::addVehicleRevenueAdjustment(id, -transferCredit);
+            updateLastIncomeStats(cargoType, quantity, tilesDistance, age, cargoPayment);
+        }
+        else if (cargoPayment > 0)
+        {
+            int64_t vehicleIncome = 0;
+            for (const auto& share : CargoDist::calculateRevenueShares(contributions, id, cargoPayment, legacyTransferCredit))
+            {
+                auto* component = EntityManager::get<VehicleBase>(share.vehicle);
+                auto* recipient = component == nullptr ? nullptr : component->asVehicleHead();
+                if (share.amount == 0 || recipient == nullptr || recipient->has38Flags(Flags38::isGhost))
+                {
+                    continue;
+                }
+                if (recipient == this)
+                {
+                    vehicleIncome += share.amount;
+                }
+                else
+                {
+                    // Aggregate remote payouts by day, preserving any active unload's income event.
+                    Vehicle contributor(*recipient);
+                    if (recipient->status != Status::unloading && contributor.veh1->lastIncome.day != static_cast<int32_t>(getCurrentDay()))
+                    {
+                        contributor.veh1->var_48 |= Flags48::flag2;
+                    }
+                    recipient->applyVehicleRevenue(share.amount);
+                    Ui::WindowManager::invalidate(Ui::WindowType::vehicle, enumValue(recipient->id));
+                }
+                recipient->updateLastIncomeStats(cargoType, quantity, tilesDistance, age, share.amount);
+            }
+            // Split vehicle statistics while leaving the whole fare for company cash settlement.
+            CargoDist::addVehicleRevenueAdjustment(id, vehicleIncome - cargoPayment);
         }
 
         if (cargoPayment > 0)
@@ -3682,14 +3712,7 @@ namespace OpenLoco::Vehicles
                     remainingStops.push_back(stop->getStation());
                 }
             }
-            const auto getCargoDistance = [&](const StationId origin) {
-                const auto* sourceStation = StationManager::get(origin);
-                const auto distance = Math::Vector::distance2D(World::Pos2{ station->x, station->y }, World::Pos2{ sourceStation->x, sourceStation->y }) / 32;
-                return static_cast<uint16_t>(std::min<uint32_t>(distance, std::numeric_limits<uint16_t>::max()));
-            };
-            auto result = CargoDist::unloadVehicleCargo(key, cargo, stationId, cargoStats, remainingStops, forceUnload, serviceLeg, [&](const CargoDist::CargoPacket& packet) {
-                return CompanyManager::calculateDeliveredCargoPayment(cargo.type, packet.quantity, getCargoDistance(packet.origin), packet.age);
-            });
+            auto result = CargoDist::unloadVehicleCargo(key, cargo, stationId, cargoStats, remainingStops, forceUnload, serviceLeg, id);
             const auto quantity = result.quantity();
             if (quantity == 0)
             {
@@ -3704,12 +3727,7 @@ namespace OpenLoco::Vehicles
                 {
                     CargoDist::scheduleHolidayReturn(cargo.type, stationId, packet);
                 }
-                deliverCargoPacket(*station, cargoStats, cargo.type, packet.quantity, packet.origin, packet.age, packet.transferCredit, holidayArrival);
-            }
-            for (const auto& credit : result.transferCredits)
-            {
-                updateLastIncomeStats(cargo.type, credit.packet.quantity, getCargoDistance(credit.packet.origin), credit.packet.age, credit.amount);
-                CargoDist::addVehicleRevenueAdjustment(id, credit.amount);
+                deliverCargoPacket(*station, cargoStats, cargo.type, packet.quantity, packet.origin, packet.age, packet.transferCredit, holidayArrival, packet.revenueContributions);
             }
             if (result.transferred != 0)
             {

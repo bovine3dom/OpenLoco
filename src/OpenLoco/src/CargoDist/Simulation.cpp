@@ -209,47 +209,6 @@ namespace OpenLoco::CargoDist
             return cargoObject != nullptr && isTownCargoCategory(cargoObject->cargoCategory);
         }
 
-        int64_t totalTransferCredit(const PacketList& packets)
-        {
-            return std::accumulate(packets.packets().begin(), packets.packets().end(), int64_t{}, [](const auto total, const auto& packet) {
-                return total + packet.transferCredit;
-            });
-        }
-
-        void writeOffTransferCredit(const StationId stationId, const int64_t credit)
-        {
-            const auto* station = StationManager::get(stationId);
-            if (credit == 0 || station == nullptr || station->empty())
-            {
-                return;
-            }
-
-            for (auto* head : VehicleManager::VehicleList())
-            {
-                if (head->owner != station->owner || head->has38Flags(Vehicles::Flags38::isGhost))
-                {
-                    continue;
-                }
-                addVehicleRevenueAdjustment(head->id, -credit);
-                if (head->var_58 == 0)
-                {
-                    head->settleCargoIncome();
-                }
-                return;
-            }
-        }
-
-        void writeOffTransferCredit(const PendingHolidayReturn& pending)
-        {
-            auto station = pending.resortStation;
-            const auto* resortStation = StationManager::get(station);
-            if (resortStation == nullptr || resortStation->empty())
-            {
-                station = pending.homeStation;
-            }
-            writeOffTransferCredit(station, pending.transferCredit);
-        }
-
         uint32_t saturatedAdd(uint32_t lhs, uint32_t rhs)
         {
             return rhs > std::numeric_limits<uint32_t>::max() - lhs
@@ -2574,7 +2533,6 @@ namespace OpenLoco::CargoDist
             }
             return;
         }
-        const auto transferCreditBeforeUpdate = totalTransferCredit(*packets);
         packets->ageAtStation();
         const auto* cargoObject = ObjectManager::get<CargoObject>(cargo);
         bool changed = cargoObject != nullptr && packets->removeUnpayable(*cargoObject) != 0;
@@ -2584,7 +2542,6 @@ namespace OpenLoco::CargoDist
         }
         if (changed)
         {
-            writeOffTransferCredit(station, transferCreditBeforeUpdate - totalTransferCredit(*packets));
             invalidateJourneyGraph(cargo);
             markCargoChanged();
         }
@@ -2632,21 +2589,59 @@ namespace OpenLoco::CargoDist
         return calculateCommittedServiceDemands(cargo);
     }
 
-    currency32_t accrueTransferCredit(CargoPacket& packet, const currency32_t projectedPayment)
+    void recordRevenueContribution(CargoPacket& packet, const EntityId vehicle, const uint32_t distance)
     {
-        const auto uncreditedPayment = static_cast<int64_t>(projectedPayment) - packet.transferCredit;
-        if (uncreditedPayment <= 0)
+        if (vehicle == EntityId::null || packet.quantity == 0)
         {
-            return 0;
+            return;
         }
-        const auto credit = static_cast<currency32_t>(uncreditedPayment);
-        packet.transferCredit += credit;
-        return credit;
+        auto& contributions = packet.revenueContributions;
+        auto found = std::lower_bound(contributions.begin(), contributions.end(), vehicle, [](const auto& contribution, const auto id) { return contribution.vehicle < id; });
+        if (found == contributions.end() || found->vehicle != vehicle)
+        {
+            found = contributions.insert(found, { vehicle, 0 });
+        }
+        const auto weight = static_cast<uint64_t>(packet.quantity) * std::max<uint32_t>(1, distance);
+        found->weight = static_cast<uint32_t>(std::min<uint64_t>(found->weight + weight, std::numeric_limits<uint32_t>::max()));
     }
 
-    int64_t calculateFinalDeliveryIncome(const int64_t transferCredit, const currency32_t grossPayment)
+    std::vector<VehicleRevenueShare> calculateRevenueShares(const std::span<const RevenueContribution> contributions, const EntityId deliveringVehicle, const currency32_t grossPayment, const int64_t legacyTransferCredit)
     {
-        return static_cast<int64_t>(grossPayment) - transferCredit;
+        if (grossPayment <= 0)
+        {
+            return {};
+        }
+        // Old saves already booked these credits but did not retain their recipients.
+        const auto payment = static_cast<currency32_t>(grossPayment - std::clamp<int64_t>(legacyTransferCredit, 0, grossPayment));
+        if (payment == 0)
+        {
+            return {};
+        }
+        const auto totalWeight = std::accumulate(contributions.begin(), contributions.end(), uint64_t{}, [](const auto total, const auto& contribution) { return total + contribution.weight; });
+        if (totalWeight == 0)
+        {
+            return { { deliveringVehicle, payment } };
+        }
+
+        std::vector<VehicleRevenueShare> shares;
+        std::vector<std::pair<uint64_t, size_t>> remainders;
+        auto remaining = payment;
+        for (const auto& contribution : contributions)
+        {
+            const auto weightedPayment = static_cast<uint64_t>(payment) * contribution.weight;
+            const auto amount = static_cast<currency32_t>(weightedPayment / totalWeight);
+            remainders.emplace_back(weightedPayment % totalWeight, shares.size());
+            shares.push_back({ contribution.vehicle, amount });
+            remaining -= amount;
+        }
+        std::sort(remainders.begin(), remainders.end(), [&](const auto& lhs, const auto& rhs) {
+            return lhs.first != rhs.first ? lhs.first > rhs.first : shares[lhs.second].vehicle < shares[rhs.second].vehicle;
+        });
+        for (currency32_t i = 0; i < remaining; ++i)
+        {
+            ++shares[remainders[i].second].amount;
+        }
+        return shares;
     }
 
     void addVehicleRevenueAdjustment(const EntityId vehicle, const int64_t adjustment)
@@ -2736,6 +2731,7 @@ namespace OpenLoco::CargoDist
             }
         }
         const auto quantity = static_cast<uint16_t>(loaded.quantity());
+        loaded.transform([station](CargoPacket& packet) { packet.legOrigin = station; });
         vehiclePackets.append(std::move(loaded));
         if (quantity != 0)
         {
@@ -2750,7 +2746,7 @@ namespace OpenLoco::CargoDist
         return quantity;
     }
 
-    UnloadResult unloadVehicleCargo(VehicleCargoKey key, Vehicles::VehicleCargo& nativeCargo, StationId station, StationCargoStats& nativeStationCargo, std::span<const StationId> remainingStops, bool forceUnload, std::optional<VehicleServiceLeg> onwardLeg, TransferPaymentCalculator transferPayment)
+    UnloadResult unloadVehicleCargo(VehicleCargoKey key, Vehicles::VehicleCargo& nativeCargo, StationId station, StationCargoStats& nativeStationCargo, std::span<const StationId> remainingStops, bool forceUnload, std::optional<VehicleServiceLeg> onwardLeg, const EntityId vehicle)
     {
         if (getVehicleCargoConst(key) == nullptr)
         {
@@ -2888,22 +2884,24 @@ namespace OpenLoco::CargoDist
             }
         }
 
+        const auto recordContribution = [&](CargoPacket& packet) {
+            const auto origin = packet.legOrigin == StationId::null && packet.revenueContributions.empty() ? packet.origin : packet.legOrigin;
+            const auto* from = StationManager::get(origin);
+            const auto* to = StationManager::get(station);
+            const auto distance = from != nullptr && !from->empty() && to != nullptr && !to->empty()
+                ? Math::Vector::distance2D(World::Pos2{ from->x, from->y }, World::Pos2{ to->x, to->y }) / World::kTileSize
+                : 0;
+            recordRevenueContribution(packet, vehicle, distance);
+            packet.legOrigin = StationId::null;
+        };
+        result.delivered.transform(recordContribution);
         if (!transferred.empty())
         {
             auto& stationPackets = getOrCreateStationCargo(station, nativeCargo.type);
             const auto room = std::numeric_limits<uint32_t>::max() - stationPackets.quantity();
             auto retained = transferred.take(room);
             result.transferred = static_cast<uint16_t>(retained.quantity());
-            if (transferPayment)
-            {
-                retained.transform([&](CargoPacket& packet) {
-                    const auto credit = accrueTransferCredit(packet, transferPayment(packet));
-                    if (credit != 0)
-                    {
-                        result.transferCredits.push_back({ packet, credit });
-                    }
-                });
-            }
+            retained.transform(recordContribution);
             stationPackets.append(std::move(retained));
             transferred.transform([](CargoPacket& packet) {
                 packet.nextHop = StationId::null;
@@ -2972,10 +2970,10 @@ namespace OpenLoco::CargoDist
     bool hasOutstandingTransferCredits(const uint8_t cargo)
     {
         const auto hasCredits = [](const PacketList& packets) {
-            return std::any_of(packets.packets().begin(), packets.packets().end(), [](const auto& packet) { return packet.transferCredit != 0; });
+            return std::any_of(packets.packets().begin(), packets.packets().end(), [](const auto& packet) { return packet.transferCredit != 0 || !packet.revenueContributions.empty(); });
         };
         const auto& state = getStateConst();
-        if (std::any_of(state.pendingHolidayReturns.begin(), state.pendingHolidayReturns.end(), [cargo](const auto& pending) { return pending.cargo == cargo && pending.transferCredit != 0; }))
+        if (std::any_of(state.pendingHolidayReturns.begin(), state.pendingHolidayReturns.end(), [cargo](const auto& pending) { return pending.cargo == cargo && (pending.transferCredit != 0 || !pending.revenueContributions.empty()); }))
         {
             return true;
         }
@@ -3187,6 +3185,22 @@ namespace OpenLoco::CargoDist
         const auto isValidPassengerCargo = [validatePassengerCargoTypes](uint8_t cargo) {
             return !validatePassengerCargoTypes || isPassengerCargo(cargo);
         };
+        const auto validContributions = [&gameState](const std::span<const RevenueContribution> contributions) {
+            EntityId previous = EntityId::null;
+            for (const auto& contribution : contributions)
+            {
+                const auto index = enumValue(contribution.vehicle);
+                const auto* vehicle = index < std::size(gameState.entities) ? gameState.entities[index].asBase<Vehicles::VehicleBase>() : nullptr;
+                if (contribution.weight == 0 || vehicle == nullptr || vehicle->getSubType() != Vehicles::VehicleEntityType::head
+                    || vehicle->id != contribution.vehicle || vehicle->has38Flags(Vehicles::Flags38::isGhost)
+                    || (previous != EntityId::null && previous >= contribution.vehicle))
+                {
+                    return false;
+                }
+                previous = contribution.vehicle;
+            }
+            return true;
+        };
 
         const auto validatePackets = [&](const PacketList& packets, const uint8_t cargo) {
             return std::all_of(packets.packets().begin(), packets.packets().end(), [&](const auto& packet) {
@@ -3196,7 +3210,9 @@ namespace OpenLoco::CargoDist
                     ? packet.holidayIndustry == IndustryId::null && packet.homeTown == TownId::null
                     : isValidPassengerCargo(cargo) && enumValue(packet.holidayIndustry) < std::size(gameState.industries) && town < std::size(gameState.towns) && !gameState.towns[town].empty();
                 return validKind && validHoliday
+                    && validContributions(packet.revenueContributions)
                     && isActiveStation(packet.origin)
+                    && (packet.legOrigin == StationId::null || isActiveStation(packet.legOrigin))
                     && (packet.destination == StationId::null || isActiveStation(packet.destination))
                     && (packet.nextHop == StationId::null || isActiveStation(packet.nextHop));
             });
@@ -3247,7 +3263,8 @@ namespace OpenLoco::CargoDist
                 || (pending.resortStation != StationId::null && !isActiveStation(pending.resortStation))
                 || (pending.homeStation != StationId::null && !isActiveStation(pending.homeStation))
                 || pending.transferCredit < 0 || pending.transferCredit > static_cast<int64_t>(std::numeric_limits<int32_t>::max()) * pending.quantity
-                || (!pending.released && (pending.age != 0 || pending.transferCredit != 0)))
+                || !validContributions(pending.revenueContributions)
+                || (!pending.released && (pending.age != 0 || pending.transferCredit != 0 || !pending.revenueContributions.empty())))
             {
                 throw std::runtime_error("Invalid CargoDist pending holiday return state");
             }
@@ -3356,6 +3373,14 @@ namespace OpenLoco::CargoDist
             }
         }
         validateState(state, getGameState());
+        // Legacy saves can contain pending write-offs with no recoverable contributor history.
+        // New adjustments only allocate a pending gross fare and cannot exceed it.
+        for (auto& [vehicle, adjustment] : state.pendingVehicleRevenueAdjustments)
+        {
+            const auto* head = EntityManager::get<Vehicles::VehicleHead>(vehicle);
+            adjustment = std::max(adjustment, -static_cast<int64_t>(head->var_58));
+        }
+        std::erase_if(state.pendingVehicleRevenueAdjustments, [](const auto& item) { return item.second == 0; });
         const auto hasSavedStationAccessibility = state.hasStationAccessibilitySnapshot;
         auto savedStationAccessibility = std::move(state.stationAccessibility);
         state.stationAccessibility.clear();
@@ -3448,7 +3473,6 @@ namespace OpenLoco::CargoDist
                 : getCurrentDay() - it->releaseDay >= std::numeric_limits<uint8_t>::max();
             if (expired)
             {
-                writeOffTransferCredit(*it);
                 changed = true;
                 it = state.pendingHolidayReturns.erase(it);
                 continue;
@@ -3481,6 +3505,7 @@ namespace OpenLoco::CargoDist
             remainingPacket.tripKind = PassengerTripKind::holidayReturn;
             remainingPacket.holidayIndustry = it->resort;
             remainingPacket.homeTown = it->homeTown;
+            remainingPacket.revenueContributions = it->revenueContributions;
             auto returnPacket = remainingPacket.extract(releaseQuantity);
             const auto shares = allocateFixedVia(_holidayFlows, it->cargo, resortStation, resortStation, homeStation, releaseQuantity);
             if (shares.empty())
@@ -3523,6 +3548,7 @@ namespace OpenLoco::CargoDist
             {
                 it->quantity = remainingPacket.quantity;
                 it->transferCredit = remainingPacket.transferCredit;
+                it->revenueContributions = std::move(remainingPacket.revenueContributions);
                 pendingChanged = true;
                 ++it;
             }
@@ -3716,6 +3742,7 @@ namespace OpenLoco::CargoDist
                     pending.age = packet.age;
                     pending.released = true;
                     pending.transferCredit = packet.transferCredit;
+                    pending.revenueContributions = packet.revenueContributions;
                     state.pendingHolidayReturns.push_back(pending);
                     preservedReturns = true;
                 }
@@ -3801,6 +3828,23 @@ namespace OpenLoco::CargoDist
     {
         auto& state = getState();
         state.pendingVehicleRevenueAdjustments.erase(vehicle);
+        // Remove claims before the head's EntityId can be reused by a different vehicle.
+        const auto removeContribution = [vehicle](auto& packet) {
+            std::erase_if(packet.revenueContributions, [vehicle](const auto& contribution) { return contribution.vehicle == vehicle; });
+        };
+        for (auto& [key, packets] : state.stationCargo)
+        {
+            packets.transform(removeContribution);
+        }
+        for (auto& [key, packets] : state.vehicleCargo)
+        {
+            packets.transform(removeContribution);
+        }
+        for (auto& pending : state.pendingHolidayReturns)
+        {
+            removeContribution(pending);
+        }
+        std::sort(state.pendingHolidayReturns.begin(), state.pendingHolidayReturns.end());
         const auto found = state.vehicleServiceLegs.find(vehicle);
         if (found == state.vehicleServiceLegs.end() || found->second.empty())
         {
@@ -3880,5 +3924,166 @@ namespace OpenLoco::CargoDist
             cargo.erase(found);
             cargo.emplace(destination, std::move(packets));
         }
+    }
+
+    static std::vector<CargoRouteSummary> getVehicleRouteSummaries(const Vehicles::VehicleHead& head, const uint8_t cargo, const PacketList& packets, std::array<std::map<FlowKey, std::vector<FlowOption>>, 2>& previewFlows)
+    {
+        const auto& state = getStateConst();
+        const auto found = state.vehicleServiceLegs.find(head.id);
+        const auto legs = found == state.vehicleServiceLegs.end() ? std::span<const VehicleServiceLeg>{} : std::span{ found->second };
+        const auto servicesUnavailable = isServiceRecalculationPending();
+        std::map<std::tuple<StationId, StationId, StationId, bool>, uint64_t> quantities;
+        for (const auto& packet : packets.packets())
+        {
+            auto destination = packet.destination;
+            const auto add = [&](const StationId via, const bool direct, const uint32_t quantity) {
+                quantities[{ packet.origin, destination, via, direct }] += quantity;
+            };
+            const auto preview = [&](const StationId station, const ServicePoint incoming, const uint32_t quantity) {
+                const auto holiday = packet.tripKind != PassengerTripKind::ordinary;
+                auto& flows = previewFlows[holiday];
+                const FlowKey key{ cargo, station, packet.origin, incoming, packet.destination };
+                if (!flows.contains(key))
+                {
+                    const auto& source = holiday ? _holidayFlows : state.flows;
+                    const auto found = source.find(key);
+                    flows.emplace(key, found == source.end() ? std::vector<FlowOption>{} : found->second);
+                }
+                return allocateFixedVia(flows, cargo, station, packet.origin, packet.destination, quantity, incoming);
+            };
+
+            auto station = packet.nextHop;
+            auto departure = packet.departure;
+            auto arrival = packet.arrival;
+            uint32_t remaining = packet.quantity;
+            std::set<std::pair<StationId, ServicePoint>> visited;
+            while (remaining != 0)
+            {
+                if (servicesUnavailable || station == StationId::null
+                    || departure.empty() || arrival.empty() || departure.service != arrival.service
+                    || !visited.emplace(station, arrival).second)
+                {
+                    add(StationId::null, false, remaining);
+                    break;
+                }
+                const auto onward = std::find_if(legs.begin(), legs.end(), [&](const auto& leg) {
+                    return leg.from == station && leg.departure == arrival;
+                });
+                bool forceUnload = false;
+                if (onward != legs.end() && Vehicles::OrderManager::isOrderOffsetValid(head, onward->currentOrder))
+                {
+                    // currentOrder starts immediately after this stop, before its cargo orders.
+                    for (const auto& order : Vehicles::OrderRingView(head.orderTableOffset, onward->currentOrder))
+                    {
+                        if (!order.hasFlags(Vehicles::OrderFlags::HasCargo))
+                        {
+                            break;
+                        }
+                        const auto* unload = order.as<Vehicles::OrderUnloadAll>();
+                        forceUnload |= unload != nullptr && unload->getCargo() == cargo;
+                    }
+                }
+                const auto* currentStation = StationManager::get(station);
+                const auto accepts = currentStation != nullptr && !currentStation->empty() && currentStation->cargoStats[cargo].isAccepted();
+                if (accepts && (station == destination || (forceUnload && packet.tripKind == PassengerTripKind::ordinary)))
+                {
+                    destination = station;
+                    add(StationId::null, true, remaining);
+                    break;
+                }
+                if (station == destination || destination == StationId::null || onward == legs.end())
+                {
+                    add(StationId::null, false, remaining);
+                    break;
+                }
+
+                auto shares = preview(station, arrival, remaining);
+                if (shares.empty())
+                {
+                    shares = preview(station, {}, remaining);
+                }
+                const auto continues = [&](const auto& share) {
+                    return share.via == onward->to && share.departure == onward->departure && share.arrival == onward->arrival;
+                };
+                const auto reverses = !forceUnload && onward->arrival == departure && onward->to != packet.destination;
+                if (reverses)
+                {
+                    std::erase_if(shares, continues);
+                }
+                // Match unloading's preference for staying aboard a faster unplanned connection.
+                if (!forceUnload && !reverses && std::none_of(shares.begin(), shares.end(), continues)
+                    && state.serviceEdges.contains({ cargo, station, onward->to, onward->departure, onward->arrival })
+                    && getJourneyCost(cargo, station, packet.destination, onward->departure) < getJourneyCost(cargo, station, packet.destination))
+                {
+                    shares = { { onward->to, remaining, onward->departure, onward->arrival, packet.destination } };
+                }
+                uint32_t continuing = 0;
+                uint32_t allocated = 0;
+                for (const auto& share : shares)
+                {
+                    allocated += share.amount;
+                    if (share.via == StationId::null || share.departure.empty() || share.arrival.empty())
+                    {
+                        add(StationId::null, false, share.amount);
+                    }
+                    else if (!forceUnload && continues(share))
+                    {
+                        continuing += share.amount;
+                    }
+                    else
+                    {
+                        add(station, false, share.amount);
+                    }
+                }
+                if (allocated < remaining)
+                {
+                    add(StationId::null, false, remaining - allocated);
+                }
+                remaining = continuing;
+                station = onward->to;
+                departure = onward->departure;
+                arrival = onward->arrival;
+            }
+        }
+        std::vector<CargoRouteSummary> summaries;
+        summaries.reserve(quantities.size());
+        for (const auto& [key, quantity] : quantities)
+        {
+            const auto& [origin, destination, via, direct] = key;
+            summaries.push_back({ origin, destination, via, quantity, direct });
+        }
+        return summaries;
+    }
+
+    bool VehicleRoutePreview::update(const Vehicles::VehicleHead& head)
+    {
+        const auto& state = getStateConst();
+        const auto servicesUnavailable = isServiceRecalculationPending();
+        if (!state.graphDirty && _cargoRevision == state.cargoRevision && _routingRevision == state.routingRevision && _servicesUnavailable == servicesUnavailable)
+        {
+            return false;
+        }
+        _cargoRevision = state.cargoRevision;
+        _routingRevision = state.routingRevision;
+        _servicesUnavailable = servicesUnavailable;
+        summaries.clear();
+        // Share private cursors in unloading order, regardless of which compartments are expanded.
+        std::array<std::map<FlowKey, std::vector<FlowOption>>, 2> previewFlows;
+        const auto add = [&](const VehicleCargoKey key, const Vehicles::VehicleCargo& nativeCargo) {
+            const auto* packets = getVehicleCargoConst(key);
+            if (nativeCargo.qty != 0 && nativeCargo.type < 32 && packets != nullptr)
+            {
+                summaries[key] = getVehicleRouteSummaries(head, nativeCargo.type, *packets, previewFlows);
+            }
+        };
+        for (const auto& car : Vehicles::Vehicle(head).cars)
+        {
+            for (const auto& component : car)
+            {
+                add({ component.front->id, VehicleCargoSlot::secondary }, component.front->secondaryCargo);
+                add({ component.body->id, VehicleCargoSlot::primary }, component.body->primaryCargo);
+            }
+        }
+        return true;
     }
 }

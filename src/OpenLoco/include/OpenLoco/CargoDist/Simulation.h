@@ -4,7 +4,6 @@
 #include "CargoDist.h"
 #include "Economy/Currency.h"
 #include <OpenLoco/World/Town.h>
-#include <functional>
 
 namespace OpenLoco
 {
@@ -20,18 +19,15 @@ namespace OpenLoco
 
 namespace OpenLoco::CargoDist
 {
-    struct TransferCredit
+    struct VehicleRevenueShare
     {
-        CargoPacket packet;
+        EntityId vehicle = EntityId::null;
         currency32_t amount{};
     };
-
-    using TransferPaymentCalculator = std::function<currency32_t(const CargoPacket&)>;
 
     struct UnloadResult
     {
         PacketList delivered;
-        std::vector<TransferCredit> transferCredits;
         uint16_t transferred{};
 
         uint32_t quantity() const { return delivered.quantity() + transferred; }
@@ -99,9 +95,9 @@ namespace OpenLoco::CargoDist
     uint32_t getLoadableQuantity(StationId station, uint8_t cargo, const VehicleServiceLeg& serviceLeg);
     std::map<ServiceEdgeKey, CommittedServiceDemand> getCommittedServiceDemands(uint8_t cargo);
     uint16_t loadVehicleCargo(VehicleCargoKey key, Vehicles::VehicleCargo& nativeCargo, StationId station, StationCargoStats& nativeStationCargo, const VehicleServiceLeg& serviceLeg, std::optional<uint8_t> loadCapacity = std::nullopt);
-    UnloadResult unloadVehicleCargo(VehicleCargoKey key, Vehicles::VehicleCargo& nativeCargo, StationId station, StationCargoStats& nativeStationCargo, std::span<const StationId> remainingStops, bool forceUnload, std::optional<VehicleServiceLeg> onwardLeg, TransferPaymentCalculator transferPayment = {});
-    currency32_t accrueTransferCredit(CargoPacket& packet, currency32_t projectedPayment);
-    int64_t calculateFinalDeliveryIncome(int64_t transferCredit, currency32_t grossPayment);
+    UnloadResult unloadVehicleCargo(VehicleCargoKey key, Vehicles::VehicleCargo& nativeCargo, StationId station, StationCargoStats& nativeStationCargo, std::span<const StationId> remainingStops, bool forceUnload, std::optional<VehicleServiceLeg> onwardLeg, EntityId vehicle = EntityId::null);
+    void recordRevenueContribution(CargoPacket& packet, EntityId vehicle, uint32_t distance);
+    std::vector<VehicleRevenueShare> calculateRevenueShares(std::span<const RevenueContribution> contributions, EntityId deliveringVehicle, currency32_t grossPayment, int64_t legacyTransferCredit = 0);
     void addVehicleRevenueAdjustment(EntityId vehicle, int64_t adjustment);
     std::optional<int64_t> consumeVehicleRevenueAdjustment(EntityId vehicle);
 
@@ -125,4 +121,16 @@ namespace OpenLoco::CargoDist
     void removeVehicleService(EntityId vehicle);
     void eraseVehicleCargoForComponent(EntityId component);
     void moveVehicleCargo(VehicleCargoKey source, VehicleCargoKey destination);
+
+    struct VehicleRoutePreview
+    {
+        std::map<VehicleCargoKey, std::vector<CargoRouteSummary>> summaries;
+
+        bool update(const Vehicles::VehicleHead& head);
+
+    private:
+        uint64_t _cargoRevision = std::numeric_limits<uint64_t>::max();
+        uint64_t _routingRevision = std::numeric_limits<uint64_t>::max();
+        bool _servicesUnavailable{};
+    };
 }

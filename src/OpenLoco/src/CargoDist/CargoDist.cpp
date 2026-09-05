@@ -23,7 +23,7 @@ namespace OpenLoco::CargoDist
         struct CargoRouteNodeBuilder
         {
             uint64_t quantity{};
-            std::map<StationId, CargoRouteNodeBuilder> children;
+            std::map<std::pair<StationId, bool>, CargoRouteNodeBuilder> children;
         };
 
         StationId getRouteField(const CargoRouteSummary& route, CargoRouteField field)
@@ -40,13 +40,13 @@ namespace OpenLoco::CargoDist
             return StationId::null;
         }
 
-        std::vector<CargoRouteNode> makeRouteTree(const std::map<StationId, CargoRouteNodeBuilder>& builders)
+        std::vector<CargoRouteNode> makeRouteTree(const std::map<std::pair<StationId, bool>, CargoRouteNodeBuilder>& builders)
         {
             std::vector<CargoRouteNode> nodes;
             nodes.reserve(builders.size());
-            for (const auto& [station, builder] : builders)
+            for (const auto& [key, builder] : builders)
             {
-                nodes.push_back({ station, builder.quantity, makeRouteTree(builder.children) });
+                nodes.push_back({ key.first, builder.quantity, makeRouteTree(builder.children), key.second });
             }
             return nodes;
         }
@@ -254,6 +254,15 @@ namespace OpenLoco::CargoDist
         const auto quotient = transferCredit / quantity;
         const auto remainder = transferCredit % quantity;
         extracted.transferCredit = quotient * amount + (remainder * amount) / quantity;
+        for (size_t i = 0; i < revenueContributions.size(); ++i)
+        {
+            auto& contribution = revenueContributions[i];
+            auto& moved = extracted.revenueContributions[i];
+            moved.weight = static_cast<uint32_t>(static_cast<uint64_t>(contribution.weight) * amount / quantity);
+            contribution.weight -= moved.weight;
+        }
+        std::erase_if(revenueContributions, [](const auto& contribution) { return contribution.weight == 0; });
+        std::erase_if(extracted.revenueContributions, [](const auto& contribution) { return contribution.weight == 0; });
         quantity -= amount;
         transferCredit -= extracted.transferCredit;
         return extracted;
@@ -285,13 +294,14 @@ namespace OpenLoco::CargoDist
             return {};
         }
 
-        std::map<StationId, CargoRouteNodeBuilder> roots;
+        std::map<std::pair<StationId, bool>, CargoRouteNodeBuilder> roots;
         for (const auto& route : summaries)
         {
             auto* level = &roots;
             for (const auto field : order)
             {
-                auto& node = (*level)[getRouteField(route, field)];
+                const auto direct = field == CargoRouteField::nextHop && route.direct;
+                auto& node = (*level)[{ direct ? StationId::null : getRouteField(route, field), direct }];
                 node.quantity = route.quantity > std::numeric_limits<uint64_t>::max() - node.quantity
                     ? std::numeric_limits<uint64_t>::max()
                     : node.quantity + route.quantity;
@@ -370,10 +380,21 @@ namespace OpenLoco::CargoDist
 
     void PacketList::canonicalise()
     {
-        std::sort(_packets.begin(), _packets.end(), [](const auto& lhs, const auto& rhs) {
-            return std::tie(lhs.destination, lhs.nextHop, lhs.origin, lhs.age, lhs.departure, lhs.arrival, lhs.tripKind, lhs.holidayIndustry, lhs.homeTown, lhs.transferCredit)
-                < std::tie(rhs.destination, rhs.nextHop, rhs.origin, rhs.age, rhs.departure, rhs.arrival, rhs.tripKind, rhs.holidayIndustry, rhs.homeTown, rhs.transferCredit);
-        });
+        const auto less = [](const auto& lhs, const auto& rhs) {
+            const auto lhsKey = std::tie(lhs.destination, lhs.nextHop, lhs.origin, lhs.age, lhs.departure, lhs.arrival, lhs.tripKind, lhs.holidayIndustry, lhs.homeTown, lhs.legOrigin);
+            const auto rhsKey = std::tie(rhs.destination, rhs.nextHop, rhs.origin, rhs.age, rhs.departure, rhs.arrival, rhs.tripKind, rhs.holidayIndustry, rhs.homeTown, rhs.legOrigin);
+            if (lhsKey != rhsKey)
+            {
+                return lhsKey < rhsKey;
+            }
+            // Full packets must precede partial ones so repeated canonicalisation cannot remix their histories.
+            if (lhs.quantity != rhs.quantity)
+            {
+                return lhs.quantity > rhs.quantity;
+            }
+            return std::tie(lhs.transferCredit, lhs.revenueContributions) < std::tie(rhs.transferCredit, rhs.revenueContributions);
+        };
+        std::sort(_packets.begin(), _packets.end(), less);
         Container canonical;
         canonical.reserve(_packets.size());
         for (auto packet : _packets)
@@ -387,13 +408,26 @@ namespace OpenLoco::CargoDist
                 auto& previous = canonical.back();
                 if (previous.origin == packet.origin && previous.destination == packet.destination && previous.nextHop == packet.nextHop && previous.age == packet.age
                     && previous.departure == packet.departure && previous.arrival == packet.arrival && previous.tripKind == packet.tripKind
-                    && previous.holidayIndustry == packet.holidayIndustry && previous.homeTown == packet.homeTown)
+                    && previous.holidayIndustry == packet.holidayIndustry && previous.homeTown == packet.homeTown && previous.legOrigin == packet.legOrigin)
                 {
                     const auto room = static_cast<uint32_t>(std::numeric_limits<uint16_t>::max() - previous.quantity);
                     const auto merged = std::min<uint32_t>(room, packet.quantity);
                     const auto extracted = packet.extract(static_cast<uint16_t>(merged));
                     previous.quantity += extracted.quantity;
                     previous.transferCredit += extracted.transferCredit;
+                    for (const auto& contribution : extracted.revenueContributions)
+                    {
+                        auto& contributions = previous.revenueContributions;
+                        const auto found = std::ranges::lower_bound(contributions, contribution.vehicle, {}, &RevenueContribution::vehicle);
+                        if (found == contributions.end() || found->vehicle != contribution.vehicle)
+                        {
+                            contributions.insert(found, contribution);
+                        }
+                        else
+                        {
+                            found->weight += std::min(contribution.weight, std::numeric_limits<uint32_t>::max() - found->weight);
+                        }
+                    }
                 }
             }
             if (packet.quantity != 0)
@@ -401,6 +435,7 @@ namespace OpenLoco::CargoDist
                 canonical.push_back(packet);
             }
         }
+        std::sort(canonical.begin(), canonical.end(), less);
         _packets = std::move(canonical);
     }
 
@@ -445,6 +480,7 @@ namespace OpenLoco::CargoDist
                 ++it;
             }
         }
+        canonicalise();
         result.canonicalise();
         return result;
     }
@@ -509,6 +545,10 @@ namespace OpenLoco::CargoDist
     {
         for (auto& packet : _packets)
         {
+            if (packet.legOrigin == station)
+            {
+                packet.legOrigin = StationId::null;
+            }
             if (packet.origin == station)
             {
                 if (packet.tripKind == PassengerTripKind::ordinary)
