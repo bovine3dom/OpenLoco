@@ -44,6 +44,7 @@ namespace OpenLoco::Economy
     };
 
     static currency32_t _deliveredCargoPayment[32][60]; // 0x009C68F8
+    static uint16_t _deliveredCargoPaymentDistance = 10;
 
     static auto& currencyMultiplicationFactors()
     {
@@ -58,8 +59,9 @@ namespace OpenLoco::Economy
     }
 
     // 0x004375F7
-    void buildDeliveredCargoPaymentsTable()
+    void buildDeliveredCargoPaymentsTable(uint16_t distance)
     {
+        _deliveredCargoPaymentDistance = distance;
         for (uint8_t cargoItem = 0; cargoItem < ObjectManager::getMaxObjects(ObjectType::cargo); ++cargoItem)
         {
             auto* cargoObj = ObjectManager::get<CargoObject>(cargoItem);
@@ -70,7 +72,7 @@ namespace OpenLoco::Economy
 
             for (uint16_t numDays = 2; numDays < 122; numDays += 2)
             {
-                _deliveredCargoPayment[cargoItem][(numDays / 2) - 1] = CompanyManager::calculateDeliveredCargoPayment(cargoItem, 100, 10, numDays);
+                _deliveredCargoPayment[cargoItem][(numDays / 2) - 1] = CompanyManager::calculateDeliveredCargoPayment(*cargoObj, 100, distance, numDays);
             }
         }
     }
@@ -95,7 +97,7 @@ namespace OpenLoco::Economy
             factors[i] += (static_cast<uint64_t>(kInflationFactors[i]) * factors[i]) >> 12;
         }
 
-        buildDeliveredCargoPaymentsTable();
+        buildDeliveredCargoPaymentsTable(_deliveredCargoPaymentDistance);
         Ui::WindowManager::invalidate(Ui::WindowType::companyList);
         Ui::WindowManager::invalidate(Ui::WindowType::buildVehicle);
         Ui::WindowManager::invalidate(Ui::WindowType::construction);

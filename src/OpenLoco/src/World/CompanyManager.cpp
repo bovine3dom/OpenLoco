@@ -43,6 +43,7 @@
 #include <OpenLoco/Math/Bound.hpp>
 #include <array>
 #include <bit>
+#include <limits>
 #include <sfl/static_vector.hpp>
 
 using namespace OpenLoco::Ui;
@@ -851,11 +852,26 @@ namespace OpenLoco::CompanyManager
     // 0x0042F23C
     currency32_t calculateDeliveredCargoPayment(uint8_t cargoItem, int32_t numUnits, int32_t distance, uint16_t numDays)
     {
-        const auto* cargoObj = ObjectManager::get<CargoObject>(cargoItem);
+        return calculateDeliveredCargoPayment(*ObjectManager::get<CargoObject>(cargoItem), numUnits, distance, numDays);
+    }
+
+    currency32_t calculateDeliveredCargoPayment(const CargoObject& cargo, int32_t numUnits, int32_t distance, uint16_t numDays)
+    {
         // Promote to 64bit for second part of payment calc.
-        const auto unitDistancePayment = static_cast<int64_t>(Economy::getInflationAdjustedCost(cargoObj->getPaymentFactor(numDays), cargoObj->paymentIndex, 8));
-        const auto payment = (unitDistancePayment * numUnits * distance) / 4096;
-        return payment;
+        const auto unitDistancePayment = static_cast<int64_t>(Economy::getInflationAdjustedCost(cargo.getPaymentFactor(numDays), cargo.paymentIndex, 8));
+        int64_t weightedDistance = distance;
+        auto divisor = 4096;
+        if (cargo.cargoCategory == CargoCategory::passengers)
+        {
+            // Reduce short-trip fares without penalising long journeys. Keep eighth-tiles until final rounding.
+            weightedDistance = 2LL * std::min(distance, 8)
+                + 10LL * std::clamp(distance - 8, 0, 24)
+                + 9LL * std::clamp(distance - 32, 0, 96)
+                + 8LL * std::max(distance - 128, 0);
+            divisor *= 8;
+        }
+        const auto payment = (unitDistancePayment * numUnits * weightedDistance) / divisor;
+        return std::min<int64_t>(payment, std::numeric_limits<currency32_t>::max());
     }
 
     // 0x0042FDE2

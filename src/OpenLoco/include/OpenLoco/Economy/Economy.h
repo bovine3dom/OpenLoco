@@ -9,7 +9,7 @@ namespace OpenLoco::Economy
     void updateMonthly();
     void setInflationForYear(uint16_t year);
     currency32_t getInflationAdjustedCost(int16_t costFactor, uint8_t costIndex, uint8_t divisor);
-    void buildDeliveredCargoPaymentsTable();
+    void buildDeliveredCargoPaymentsTable(uint16_t distance);
     std::span<currency32_t> getDeliveryCargoPaymentsTable(uint8_t cargoType);
     uint32_t getCurrencyMultiplicationFactor(uint8_t costIndex);
 }

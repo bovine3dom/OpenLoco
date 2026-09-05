@@ -8,6 +8,11 @@
 #include <array>
 #include <cstddef>
 
+namespace OpenLoco
+{
+    struct CargoObject;
+}
+
 namespace OpenLoco::CompanyManager
 {
     void reset();
@@ -43,6 +48,7 @@ namespace OpenLoco::CompanyManager
     void updateYearly();
     void determineAvailableVehicles();
     currency32_t calculateDeliveredCargoPayment(uint8_t cargoItem, int32_t numUnits, int32_t distance, uint16_t numDays);
+    currency32_t calculateDeliveredCargoPayment(const CargoObject& cargo, int32_t numUnits, int32_t distance, uint16_t numDays);
 
     Company* getOpponent();
     StringId getOwnerStatus(CompanyId id, FormatArguments& args);

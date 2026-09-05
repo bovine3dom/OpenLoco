@@ -15,9 +15,11 @@
 #include "Objects/VehicleObject.h"
 #include "OpenLoco.h"
 #include "Ui/Chart.h"
+#include "Ui/Dropdown.h"
 #include "Ui/ToolManager.h"
 #include "Ui/Widget.h"
 #include "Ui/Widgets/CaptionWidget.h"
+#include "Ui/Widgets/DropdownWidget.h"
 #include "Ui/Widgets/FrameWidget.h"
 #include "Ui/Widgets/ImageButtonWidget.h"
 #include "Ui/Widgets/LabelWidget.h"
@@ -974,11 +976,70 @@ namespace OpenLoco::Ui::Windows::CompanyList
     namespace CargoPaymentRates
     {
         static constexpr Ui::Size kWindowSize = { 495, 342 };
+        static constexpr uint16_t kDistances[] = { 4, 8, 10, 16, 32, 64, 128, 256, 542 };
+        static uint16_t _selectedDistance = 10;
+
+        enum widx
+        {
+            distance = Common::widx::tab_speed_records + 1,
+            distanceDropdown,
+        };
+
+        namespace Widx
+        {
+            constexpr WidgetId kDistance{ "distance" };
+            constexpr WidgetId kDistanceDropdown{ "distanceDropdown" };
+        }
 
         static constexpr auto widgets = makeWidgets(
-            Common::makeCommonWidgets(495, 342, StringIds::title_cargo_payment_rates)
+            Common::makeCommonWidgets(495, 342, StringIds::title_cargo_payment_rates),
+            Widgets::dropdownWidgets(Widx::kDistance, Widx::kDistanceDropdown, { kWindowSize.width - kWindowPadding - 120, 25 }, { 120, 12 }, WindowColour::secondary, StringIds::min_forest_radius_blocks));
 
-        );
+        static void prepareDraw(Window& self)
+        {
+            Common::prepareDraw(self);
+
+            auto& distance = self.widgets[widx::distance];
+            distance.left = self.width - kWindowPadding - distance.width();
+            distance.right = self.width - kWindowPadding - 1;
+            auto args = FormatArguments(distance.textArgs);
+            args.push(_selectedDistance);
+
+            auto& dropdown = self.widgets[widx::distanceDropdown];
+            dropdown.left = distance.right - 11;
+            dropdown.right = distance.right - 1;
+        }
+
+        static void onMouseDown(Window& self, WidgetIndex_t, const WidgetId id)
+        {
+            if (id != Widx::kDistanceDropdown)
+            {
+                return;
+            }
+
+            const auto& widget = self.widgets[widx::distance];
+            Dropdown::show(self.x + widget.left, self.y + widget.top, widget.width() - 4, widget.height(), self.getColour(WindowColour::secondary), std::size(kDistances), 0x80);
+            for (size_t i = 0; i < std::size(kDistances); ++i)
+            {
+                Dropdown::add(i, StringIds::min_forest_radius_blocks, kDistances[i]);
+                if (kDistances[i] == _selectedDistance)
+                {
+                    Dropdown::setHighlightedItem(i);
+                }
+            }
+        }
+
+        static void onDropdown(Window& self, WidgetIndex_t, const WidgetId id, int16_t itemIndex)
+        {
+            if (id != Widx::kDistanceDropdown || itemIndex < 0 || static_cast<size_t>(itemIndex) >= std::size(kDistances))
+            {
+                return;
+            }
+
+            _selectedDistance = kDistances[itemIndex];
+            Economy::buildDeliveredCargoPaymentsTable(_selectedDistance);
+            self.invalidate();
+        }
 
         // 0x0043737D
         static void onResize(Window& self)
@@ -1101,7 +1162,7 @@ namespace OpenLoco::Ui::Windows::CompanyList
             _graphSettings.dataEnd = static_cast<uint16_t>(std::size(Economy::getDeliveryCargoPaymentsTable(0)));
             _graphSettings.dataTypeSize = 4;
             _graphSettings.xLabel = StringIds::cargo_delivered_days;
-            _graphSettings.yLabel = StringIds::cargo_delivered_currency;
+            _graphSettings.yLabel = StringIds::currency48;
             _graphSettings.xAxisTickIncrement = (_graphSettings.width - _graphSettings.xOffset) / 60;
             _graphSettings.xAxisLabelIncrement = 20;
             _graphSettings.dword_113DD86 = 0;
@@ -1150,7 +1211,7 @@ namespace OpenLoco::Ui::Windows::CompanyList
 
                 FormatArguments args{};
                 args.push<uint16_t>(100);
-                args.push<uint16_t>(10);
+                args.push(_selectedDistance);
 
                 tr.drawStringCentred(point, Colour::black, StringIds::cargo_deliver_graph_title, args);
             }
@@ -1209,14 +1270,16 @@ namespace OpenLoco::Ui::Windows::CompanyList
         static void tabReset(Window& self)
         {
             self.setSizeFixed(kWindowSize);
-            Economy::buildDeliveredCargoPaymentsTable();
+            Economy::buildDeliveredCargoPaymentsTable(_selectedDistance);
         }
 
         static constexpr WindowEventList kEvents = {
             .onMouseUp = Common::onMouseUp,
             .onResize = onResize,
+            .onMouseDown = onMouseDown,
+            .onDropdown = onDropdown,
             .onUpdate = Common::onUpdate,
-            .prepareDraw = Common::prepareDraw,
+            .prepareDraw = prepareDraw,
             .draw = draw,
         };
 

@@ -2,7 +2,9 @@
 #include "Localisation/StringIds.h"
 #include "Ui/CargoRouteTree.h"
 #include <OpenLoco/CargoDist/CargoDist.h>
+#include <OpenLoco/GameState.h>
 #include <OpenLoco/Objects/CargoObject.h>
+#include <OpenLoco/World/CompanyManager.h>
 
 #include <algorithm>
 #include <gtest/gtest.h>
@@ -34,17 +36,155 @@ namespace
         cargo.paymentFactor = 100;
         return cargo;
     }
+
+    class CargoPayment : public ::testing::Test
+    {
+    protected:
+        CargoObject cargo = cargoExpiringAtSevenDays();
+        uint32_t previousInflationFactor;
+
+        void SetUp() override
+        {
+            previousInflationFactor = getGameState().currencyMultiplicationFactor[cargo.paymentIndex];
+            getGameState().currencyMultiplicationFactor[cargo.paymentIndex] = 1024;
+            cargo.cargoCategory = CargoCategory::passengers;
+        }
+
+        void TearDown() override
+        {
+            getGameState().currencyMultiplicationFactor[cargo.paymentIndex] = previousInflationFactor;
+        }
+    };
 }
 
-TEST(CargoPayment, PaymentFactorDecaysToZero)
+TEST_F(CargoPayment, PaymentFactorDecaysToZero)
 {
-    const auto cargo = cargoExpiringAtSevenDays();
-
     EXPECT_EQ(cargo.getPaymentFactor(2), 100);
     EXPECT_EQ(cargo.getPaymentFactor(3), 84);
     EXPECT_EQ(cargo.getPaymentFactor(5), 54);
     EXPECT_EQ(cargo.getPaymentFactor(6), 23);
     EXPECT_EQ(cargo.getPaymentFactor(7), 0);
+}
+
+TEST_F(CargoPayment, PassengerDistanceBands)
+{
+    // At this rate one passenger pays exactly W(distance), including fractional tiles.
+    cargo.paymentFactor = 8192;
+    constexpr std::pair<int32_t, currency32_t> cases[] = {
+        { 0, 0 },
+        { 1, 2 },
+        { 4, 8 },
+        { 7, 14 },
+        { 8, 16 },
+        { 9, 26 },
+        { 10, 36 },
+        { 16, 96 },
+        { 31, 246 },
+        { 32, 256 },
+        { 33, 265 },
+        { 64, 544 },
+        { 127, 1111 },
+        { 128, 1120 },
+        { 129, 1128 },
+        { 256, 2144 },
+        { 542, 4432 },
+    };
+    for (const auto& [distance, payment] : cases)
+    {
+        EXPECT_EQ(CompanyManager::calculateDeliveredCargoPayment(cargo, 1, distance, 0), payment) << distance;
+    }
+    EXPECT_EQ(CompanyManager::calculateDeliveredCargoPayment(cargo, 0, 542, 0), 0);
+}
+
+TEST_F(CargoPayment, RoundsPassengerPaymentOnlyAfterScaling)
+{
+    cargo.paymentFactor = 126;
+    EXPECT_EQ(CompanyManager::calculateDeliveredCargoPayment(cargo, 100, 4, 0), 12);
+    EXPECT_EQ(CompanyManager::calculateDeliveredCargoPayment(cargo, 100, 10, 0), 55);
+    EXPECT_EQ(CompanyManager::calculateDeliveredCargoPayment(cargo, 100, 33, 0), 407);
+
+    getGameState().currencyMultiplicationFactor[cargo.paymentIndex] = 1027;
+    // Preserve the existing inflation rounding before multiplying quantity and distance.
+    EXPECT_EQ(CompanyManager::calculateDeliveredCargoPayment(cargo, 100, 33, 0), 408);
+}
+
+TEST_F(CargoPayment, PreservesPassengerAgeDecayAndExpiry)
+{
+    constexpr std::pair<uint16_t, currency32_t> cases[] = {
+        { 2, 1600 },
+        { 3, 1344 },
+        { 5, 864 },
+        { 6, 368 },
+        { 7, 0 },
+        { 255, 0 },
+    };
+    for (const auto& [age, payment] : cases)
+    {
+        EXPECT_EQ(CompanyManager::calculateDeliveredCargoPayment(cargo, 8192, 8, age), payment) << age;
+    }
+}
+
+TEST_F(CargoPayment, PassengerPaymentIsMonotonicInDistanceAndAge)
+{
+    cargo.paymentFactor = 126;
+    cargo.maxNonPremiumDays = 7;
+    cargo.nonPremiumRate = 224;
+    cargo.penaltyRate = 808;
+    for (int32_t distance = 0; distance <= 542; ++distance)
+    {
+        auto previous = std::numeric_limits<currency32_t>::max();
+        for (uint16_t age = 0; age <= 255; ++age)
+        {
+            const auto payment = CompanyManager::calculateDeliveredCargoPayment(cargo, 8192, distance, age);
+            ASSERT_GE(payment, 0) << distance << ", " << age;
+            ASSERT_LE(payment, previous) << distance << ", " << age;
+            if (distance != 0)
+            {
+                ASSERT_GE(payment, CompanyManager::calculateDeliveredCargoPayment(cargo, 8192, distance - 1, age));
+                ASSERT_EQ(payment == 0, cargo.getPaymentFactor(age) == 0);
+            }
+            previous = payment;
+        }
+    }
+}
+
+TEST_F(CargoPayment, NonPassengerPaymentsAreUnchanged)
+{
+    for (const auto category : { CargoCategory::mail, CargoCategory::coal, CargoCategory::foods, static_cast<CargoCategory>(100), CargoCategory::null })
+    {
+        cargo.cargoCategory = category;
+        for (const auto inflation : { 1024U, 1027U, 65536U })
+        {
+            getGameState().currencyMultiplicationFactor[cargo.paymentIndex] = inflation;
+            for (const auto distance : { 0, 4, 8, 10, 16, 32, 33, 64, 128, 129, 256, 542 })
+            {
+                for (uint16_t age = 0; age <= 255; ++age)
+                {
+                    const auto rate = static_cast<int64_t>(cargo.getPaymentFactor(age)) * inflation / 256;
+                    ASSERT_EQ(CompanyManager::calculateDeliveredCargoPayment(cargo, 137, distance, age), rate * 137 * distance / 4096);
+                }
+            }
+        }
+    }
+}
+
+TEST_F(CargoPayment, UsesWideIntermediatesForLargeDeliveries)
+{
+    cargo.paymentFactor = std::numeric_limits<int16_t>::max();
+    constexpr auto quantity = std::numeric_limits<uint16_t>::max();
+    constexpr auto expected = int64_t{ 32767 } * 4 * quantity * 4432 / (4096 * 8);
+    EXPECT_EQ(CompanyManager::calculateDeliveredCargoPayment(cargo, quantity, 542, 0), expected);
+}
+
+TEST_F(CargoPayment, CapsPaymentsAtCurrencyLimit)
+{
+    cargo.paymentFactor = std::numeric_limits<int16_t>::max();
+    getGameState().currencyMultiplicationFactor[cargo.paymentIndex] = 1844178;
+    for (const auto category : { CargoCategory::passengers, CargoCategory::mail })
+    {
+        cargo.cargoCategory = category;
+        EXPECT_EQ(CompanyManager::calculateDeliveredCargoPayment(cargo, 100, 542, 0), std::numeric_limits<currency32_t>::max());
+    }
 }
 
 TEST(CargoDistPackets, AppendsAndCoalescesMatchingPackets)
