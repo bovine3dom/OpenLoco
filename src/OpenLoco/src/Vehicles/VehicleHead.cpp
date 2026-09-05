@@ -32,7 +32,6 @@
 #include "Objects/TrackObject.h"
 #include "Objects/VehicleObject.h"
 #include "Random.h"
-#include "S5/Limits.h"
 #include "Scenario/ScenarioManager.h"
 #include "SceneManager.h"
 #include "Tutorial.h"
@@ -90,29 +89,6 @@ namespace OpenLoco::Vehicles
     static constexpr uint16_t kUnbunchingRoundTripMask = kUnbunchingReleased - 1;
     static constexpr uint32_t kUnbunchingTickQuantum = 32;
 
-    struct RoadRouteAvoidance
-    {
-        uint16_t targetOrder;
-        bool active;
-    };
-
-    struct RoadPieceKey
-    {
-        World::Pos3 pos;
-        uint8_t roadId;
-        uint8_t rotation;
-
-        bool operator==(const RoadPieceKey&) const = default;
-    };
-
-    static std::array<std::optional<RoadRouteAvoidance>, S5::Limits::kMaxEntities> _roadRouteAvoidance;
-
-    static RoadRouteAvoidance* getRoadRouteAvoidance(const EntityId vehicle)
-    {
-        const auto index = enumValue(vehicle);
-        return index < _roadRouteAvoidance.size() && _roadRouteAvoidance[index].has_value() ? &*_roadRouteAvoidance[index] : nullptr;
-    }
-
     static World::Pos3 getCanonicalRoadStart(World::Pos3 pos, const TrackAndDirection::_RoadAndDirection tad)
     {
         if (tad.isReversed())
@@ -127,90 +103,78 @@ namespace OpenLoco::Vehicles
         return pos;
     }
 
-    static RoadPieceKey getRoadPieceKey(const World::Pos3& pos, const TrackAndDirection::_RoadAndDirection tad)
+    static bool roadPieceHasTramTrack(const World::Pos3& trackLoc, const TrackAndDirection::_RoadAndDirection tad)
     {
-        return { getCanonicalRoadStart(pos, tad), tad.id(), tad.cardinalDirection() };
-    }
-
-    static std::vector<RoadPieceKey> getOccupiedTramRoads()
-    {
-        std::vector<RoadPieceKey> result;
-        for (auto* head : VehicleManager::VehicleList())
+        const auto startPos = getCanonicalRoadStart(trackLoc, tad);
+        for (const auto& piece : World::TrackData::getRoadPiece(tad.id()))
         {
-            if (head->vehicleType != VehicleType::tram)
+            const auto pos = startPos + World::Pos3{ Math::Vector::rotate(World::Pos2{ piece.x, piece.y }, tad.cardinalDirection()), piece.z };
+            for (const auto& element : World::TileManager::get(pos))
             {
-                continue;
-            }
-            for (auto* component = static_cast<VehicleBase*>(head); component != nullptr; component = component->nextVehicleComponent())
-            {
-                if (component->tileX != -1)
+                const auto* road = element.as<World::RoadElement>();
+                if (road == nullptr
+                    || road->baseHeight() != pos.z
+                    || road->isGhost()
+                    || road->isAiAllocated())
                 {
-                    result.push_back(getRoadPieceKey(component->getTrackLoc(), component->trackAndDirection.road));
+                    continue;
+                }
+                const auto& roadData = World::TrackData::getRoadMiscData(road->roadId());
+                const auto isExactMatch = road->roadId() == tad.id()
+                    && road->rotation() == tad.cardinalDirection()
+                    && road->sequenceIndex() == piece.index;
+                const auto isReverseMatch = roadData.reverseLane != 0
+                    && roadData.reverseRoadId == tad.id()
+                    && ((roadData.reverseRotation + road->rotation()) & 0x3) == tad.cardinalDirection()
+                    && roadData.reverseLane - 1 - road->sequenceIndex() == piece.index;
+                if (!isExactMatch && !isReverseMatch)
+                {
+                    continue;
+                }
+                const auto* roadObj = ObjectManager::get<RoadObject>(road->roadObjectId());
+                if (roadObj != nullptr && !roadObj->hasFlags(RoadObjectFlags::isRoad))
+                {
+                    return true;
                 }
             }
         }
-        return result;
+        return false;
     }
 
-    static bool isAvoidedRoad(const World::Pos3& pos, const TrackAndDirection::_RoadAndDirection tad, const std::span<const RoadPieceKey> avoidedRoads)
+    static bool isOnTramTrack(VehicleHead& head)
     {
-        return std::ranges::find(avoidedRoads, getRoadPieceKey(pos, tad)) != avoidedRoads.end();
+        for (auto* component = static_cast<VehicleBase*>(&head); component != nullptr; component = component->nextVehicleComponent())
+        {
+            if (component->tileX != -1 && roadPieceHasTramTrack(component->getTrackLoc(), component->trackAndDirection.road))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
-    void resetRoadRouteAvoidance()
+    static bool tramStopsAtStation(const StationId stationId)
     {
-        _roadRouteAvoidance = {};
-    }
-
-    void clearRoadRouteAvoidance(const EntityId vehicle)
-    {
-        const auto index = enumValue(vehicle);
-        if (index < _roadRouteAvoidance.size())
+        if (stationId == StationId::null)
         {
-            _roadRouteAvoidance[index].reset();
-        }
-    }
-
-    void armRoadRouteAvoidance(const EntityId vehicle, const uint16_t currentOrder)
-    {
-        const auto index = enumValue(vehicle);
-        if (index >= _roadRouteAvoidance.size())
-        {
-            return;
-        }
-        auto& avoidance = _roadRouteAvoidance[index];
-        if (!avoidance.has_value() || avoidance->targetOrder != currentOrder)
-        {
-            avoidance = RoadRouteAvoidance{ currentOrder, false };
-        }
-    }
-
-    void activateRoadRouteAvoidance(const EntityId vehicle, const uint16_t currentOrder)
-    {
-        auto* avoidance = getRoadRouteAvoidance(vehicle);
-        if (avoidance == nullptr || avoidance->active)
-        {
-            return;
-        }
-        if (avoidance->targetOrder == currentOrder)
-        {
-            avoidance->active = true;
-        }
-        else
-        {
-            clearRoadRouteAvoidance(vehicle);
-        }
-    }
-
-    bool shouldAvoidTramRoads(const EntityId vehicle, const uint16_t currentOrder)
-    {
-        auto* avoidance = getRoadRouteAvoidance(vehicle);
-        if (avoidance != nullptr && avoidance->targetOrder != currentOrder)
-        {
-            clearRoadRouteAvoidance(vehicle);
             return false;
         }
-        return avoidance != nullptr && avoidance->active;
+        for (auto* head : VehicleManager::VehicleList())
+        {
+            if (head->vehicleType != VehicleType::tram || !head->isPlaced() || head->has38Flags(Flags38::isGhost))
+            {
+                continue;
+            }
+            for (const auto& order : head->getCurrentOrders())
+            {
+                const auto* stationOrder = order.as<OrderStopAt>();
+                if (stationOrder != nullptr && stationOrder->getStation() == stationId)
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     static currency32_t addCurrencyClamped(const currency32_t current, const int64_t amount)
@@ -1625,10 +1589,7 @@ namespace OpenLoco::Vehicles
                 }
                 else if (timeoutStatus == SignalTimeoutStatus::turnaroundAtSignalTimeout)
                 {
-                    return tryReverse(canYieldByReversingInCurrentLane(
-                        trackAndDirection.road,
-                        train.veh2->trackAndDirection.road,
-                        isOrdinaryRoadVehicle(*this)));
+                    return tryReverse(canYieldByReversingInCurrentLane(trackAndDirection.road, train.veh2->trackAndDirection.road, isOrdinaryRoadVehicle(*this)));
                 }
             }
 
@@ -1747,7 +1708,7 @@ namespace OpenLoco::Vehicles
     }
 
     // 0x004A8F22
-    bool VehicleHead::tryReverse(bool allowCurrentLaneReversal)
+    bool VehicleHead::tryReverse(const bool allowCurrentLaneReversal)
     {
         if (mode == TransportMode::road && var_52 != 1)
         {
@@ -1766,17 +1727,6 @@ namespace OpenLoco::Vehicles
 
         if (isOnExpectedRoadOrTrack())
         {
-            if (mode == TransportMode::road && isOrdinaryRoadVehicle(*this))
-            {
-                if (allowCurrentLaneReversal)
-                {
-                    armRoadRouteAvoidance(id, currentOrder);
-                }
-                else
-                {
-                    activateRoadRouteAvoidance(id, currentOrder);
-                }
-            }
             auto temp = var_52;
             var_52 = 1;
             sub_4ADB47(false);
@@ -1904,7 +1854,13 @@ namespace OpenLoco::Vehicles
             return true;
         }
 
-        if (pathingShouldReverse())
+        const auto shouldReverse = pathingShouldReverse();
+        const auto isBusAtSharedTramStop = shouldReverse
+            && vehicleType == VehicleType::bus
+            && mode == TransportMode::road
+            && isOnTramTrack(*this)
+            && tramStopsAtStation(departureFrom);
+        if (shouldReverseAfterLoading(shouldReverse, isBusAtSharedTramStop))
         {
             const auto reversed = tryReverse();
             if (reversed)
@@ -1945,10 +1901,7 @@ namespace OpenLoco::Vehicles
         }
         else if (timeoutStatus == SignalTimeoutStatus::turnaroundAtSignalTimeout)
         {
-            return tryReverse(canYieldByReversingInCurrentLane(
-                trackAndDirection.road,
-                train.veh2->trackAndDirection.road,
-                isOrdinaryRoadVehicle(*this)));
+            return tryReverse(canYieldByReversingInCurrentLane(trackAndDirection.road, train.veh2->trackAndDirection.road, isOrdinaryRoadVehicle(*this)));
         }
         else if (al == 4)
         {
@@ -3124,7 +3077,6 @@ namespace OpenLoco::Vehicles
         {
             TimetableManager::arriveAtOrder(id, *orderIndex);
         }
-
         curOrder++;
         currentOrder = curOrder->getOffset() - orderTableOffset;
         Ui::WindowManager::invalidateOrderPageByVehicleNumber(enumValue(id));
@@ -5909,7 +5861,7 @@ namespace OpenLoco::Vehicles
         }
     }
 
-    static void roadTargetedPathingRecurse(const World::Pos3 pos, const uint16_t tad, const CompanyId companyId, const uint8_t roadObjectId, const uint8_t requiredMods, const uint8_t queryMods, const uint32_t allowedStationTypes, const Sub4AC94FTarget& target, const std::span<const RoadPieceKey> avoidedRoads, Sub4AC94FState& state)
+    static void roadTargetedPathingRecurse(const World::Pos3 pos, const uint16_t tad, const CompanyId companyId, const uint8_t roadObjectId, const uint8_t requiredMods, const uint8_t queryMods, const uint32_t allowedStationTypes, const Sub4AC94FTarget& target, Sub4AC94FState& state)
     {
         // 0x01135FAE (copy in from the tc)
         StationId curStationId = StationId::null;
@@ -5923,10 +5875,6 @@ namespace OpenLoco::Vehicles
         curTad._data = tad;
         for (; true;)
         {
-            if (isAvoidedRoad(curPos, curTad, avoidedRoads))
-            {
-                break;
-            }
             bool hasReachedTarget = false;
             if (target.stationId != StationId::null)
             {
@@ -6006,7 +5954,7 @@ namespace OpenLoco::Vehicles
                 const auto connectTad = connection & 0x807FU;
                 auto recurseState = state;
                 recurseState.recursionDepth++;
-                roadTargetedPathingRecurse(curPos, connectTad, companyId, roadObjectId, requiredMods, queryMods, allowedStationTypes, target, avoidedRoads, recurseState);
+                roadTargetedPathingRecurse(curPos, connectTad, companyId, roadObjectId, requiredMods, queryMods, allowedStationTypes, target, recurseState);
                 mergeRoadRoutingResult(state.result, recurseState.result);
             }
             break;
@@ -6025,13 +5973,13 @@ namespace OpenLoco::Vehicles
     // allowedStationTypes : 0x0112C30C
     // target : see above
     // state : see above
-    static RoutingResult roadTargetedPathing(const World::Pos3 pos, const uint16_t tad, const CompanyId companyId, const uint8_t roadObjectId, const uint8_t requiredMods, const uint8_t queryMods, const uint32_t allowedStationTypes, const Sub4AC94FTarget& target, const std::span<const RoadPieceKey> avoidedRoads)
+    static RoutingResult roadTargetedPathing(const World::Pos3 pos, const uint16_t tad, const CompanyId companyId, const uint8_t roadObjectId, const uint8_t requiredMods, const uint8_t queryMods, const uint32_t allowedStationTypes, const Sub4AC94FTarget& target)
     {
         Sub4AC94FState state{};
         state.result.bestDistToTarget = std::numeric_limits<uint16_t>::max();
         state.result.bestTrackWeighting = std::numeric_limits<uint32_t>::max();
         state.result.signalState = RouteSignalState::null;
-        roadTargetedPathingRecurse(pos, tad, companyId, roadObjectId, requiredMods, queryMods, allowedStationTypes, target, avoidedRoads, state);
+        roadTargetedPathingRecurse(pos, tad, companyId, roadObjectId, requiredMods, queryMods, allowedStationTypes, target, state);
         return state.result;
     }
 
@@ -6182,18 +6130,13 @@ namespace OpenLoco::Vehicles
             }
             // 0x004AC5F5
 
-            const auto avoidedRoads = shouldAvoidTramRoads(head.id, head.currentOrder) ? getOccupiedTramRoads() : std::vector<RoadPieceKey>{};
             uint32_t bestConnection = 0;
             for (auto i = 0U; i < rc.connections.size(); ++i)
             {
                 const auto connection = rc.connections[i] & World::Track::AdditionalTaDFlags::basicRaDWithSignalMask;
                 const auto connectionTad = connection & World::Track::AdditionalTaDFlags::basicRaDMask;
-                TrackAndDirection::_RoadAndDirection roadTad{ 0, 0 };
-                roadTad._data = connectionTad;
-
-                const auto isDirectTarget = (pos == target.pos && connectionTad == target.tad)
-                    || (pos == target.reversePos && connectionTad == target.reverseTad);
-                if (isDirectTarget && !isAvoidedRoad(pos, roadTad, avoidedRoads))
+                if ((pos == target.pos && connectionTad == target.tad)
+                    || (pos == target.reversePos && connectionTad == target.reverseTad))
                 {
                     state.result.signalState = RouteSignalState::noSignals;
                     state.result.bestDistToTarget = 0;
@@ -6202,7 +6145,7 @@ namespace OpenLoco::Vehicles
                     return rc.connections[i];
                 }
 
-                auto newResult = roadTargetedPathing(pos, connection, companyId, roadObjId, requiredMods, queryMods, allowedStationTypes, target, avoidedRoads);
+                auto newResult = roadTargetedPathing(pos, connection, companyId, roadObjId, requiredMods, queryMods, allowedStationTypes, target);
 
                 if ((state.hadNewResult == 0 && !isSecondRun) || isRoadRoutingResultBetter(state.result, newResult))
                 {
@@ -7707,7 +7650,6 @@ namespace OpenLoco::Vehicles
             settleCargoIncome();
         }
         TimetableManager::clearVehicleRuntime(id);
-        clearRoadRouteAvoidance(id);
         RoutingManager::clearPathReservations(routingHandle);
         if (tileX == -1)
         {

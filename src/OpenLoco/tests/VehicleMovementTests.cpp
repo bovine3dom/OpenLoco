@@ -22,12 +22,10 @@ namespace
         void SetUp() override
         {
             EntityManager::reset();
-            resetRoadRouteAvoidance();
         }
 
         void TearDown() override
         {
-            resetRoadRouteAvoidance();
             EntityManager::reset();
         }
 
@@ -184,24 +182,9 @@ TEST(VehicleMovement, RoadPathingRetainsBestRecursiveResult)
     EXPECT_EQ(result.signalState, SignalState::noSignals);
 }
 
-TEST_F(VehicleMovementTest, RoadRouteAvoidanceLifecycle)
+TEST(VehicleMovement, BusAtSharedTramStopContinuesForwardAfterLoading)
 {
-    constexpr auto vehicle = EntityId(42);
-
-    armRoadRouteAvoidance(vehicle, 7);
-    EXPECT_FALSE(shouldAvoidTramRoads(vehicle, 7));
-
-    activateRoadRouteAvoidance(vehicle, 7);
-    EXPECT_TRUE(shouldAvoidTramRoads(vehicle, 7));
-
-    // Reversing again while rerouting must not disable the avoidance.
-    armRoadRouteAvoidance(vehicle, 7);
-    activateRoadRouteAvoidance(vehicle, 7);
-    EXPECT_TRUE(shouldAvoidTramRoads(vehicle, 7));
-
-    EXPECT_FALSE(shouldAvoidTramRoads(vehicle, 8));
-
-    armRoadRouteAvoidance(vehicle, 9);
-    activateRoadRouteAvoidance(vehicle, 10);
-    EXPECT_FALSE(shouldAvoidTramRoads(vehicle, 9));
+    EXPECT_TRUE(shouldReverseAfterLoading(true, false));
+    EXPECT_FALSE(shouldReverseAfterLoading(true, true));
+    EXPECT_FALSE(shouldReverseAfterLoading(false, false));
 }

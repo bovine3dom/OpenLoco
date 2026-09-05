@@ -171,8 +171,8 @@ namespace OpenLoco::S5
     static bool requiresExtendedVehicleObjectRule(const SaveExtension::VehicleObjectState* state)
     {
         return state != nullptr && std::ranges::any_of(state->objects, [](const auto& object) {
-            return !isTgvLaPosteObject(object.header);
-        });
+                   return !isTgvLaPosteObject(object.header);
+               });
     }
 
     constexpr bool hasSaveFlags(SaveFlags flags, SaveFlags flagsToTest)
@@ -1366,7 +1366,6 @@ namespace OpenLoco::S5
             applyVehicleCapacityOverrides(cargoDistState);
             CargoDist::reset();
             Vehicles::SharedOrderManager::reset();
-            Vehicles::resetRoadRouteAvoidance();
             Vehicles::RoutingManager::resetPathReservationState();
             Vehicles::VehicleAutoRenewal::reset();
             Vehicles::VehicleReplacement::reset();
